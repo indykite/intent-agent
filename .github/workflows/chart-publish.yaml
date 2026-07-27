@@ -1,0 +1,41 @@
+---
+name: Helm Chart Publish
+
+on: # yamllint disable-line rule:truthy
+  pull_request:
+    branches: ["master"]
+    paths:
+      - "chart/**"
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: ["master"]
+    paths:
+      - "chart/**"
+
+concurrency:
+  group: chart-publish-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish to Artifact Registry
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    # todo: enable
+    # if: github.event.pull_request.draft != true
+    if: false
+    steps:
+      - name: actions/checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0 - https://github.com/actions/checkout/releases
+
+      - name: Publish to Artifact Registry
+        uses: indykite/ops-common/.github/actions/chart-publish@cd7081295c7d8144b29aa9ec2002df4cac269f5b # master
+        with:
+          workload-identity-provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER_MGMT }}
+          gcp-service-account: ${{ vars.GCP_SERVICE_ACCOUNT_NAME }}@${{ secrets.GCP_PROJECT_ID_MGMT }}.iam.gserviceaccount.com
+          artifact-registry-url: "${{ vars.ARTIFACT_REGISTRY_URL }}/${{ secrets.GCP_PROJECT_ID_MGMT }}/indykite"
+          immutable-tags: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}

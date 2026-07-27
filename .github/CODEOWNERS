@@ -1,0 +1,20 @@
+# Each line is a file pattern followed by one or more owners.
+# Later match takes precedence over earlier rule.
+
+# Global rule set for everything, and special cases exclude later
+* @indykite/ai-ml-team
+
+#
+# CI/CD, SAST & linting configs
+/.github/               @indykite/ai-ml-team @indykite/ops
+/chart/                 @indykite/ai-ml-team @indykite/ops
+.pre-commit-config.yaml @indykite/ai-ml-team @indykite/ops
+.checkov.yaml           @indykite/ai-ml-team @indykite/ops
+.deepsource.toml        @indykite/ai-ml-team @indykite/ops
+.hadolint.yml           @indykite/ai-ml-team @indykite/ops
+.markdownlint.yaml      @indykite/ai-ml-team @indykite/ops
+.shellcheckrc           @indykite/ai-ml-team @indykite/ops
+.trivy*                 @indykite/ai-ml-team @indykite/ops
+.yamlfmt.yml            @indykite/ai-ml-team @indykite/ops
+.yamllint.yml           @indykite/ai-ml-team @indykite/ops
+Dockerfile              @indykite/ai-ml-team @indykite/ops

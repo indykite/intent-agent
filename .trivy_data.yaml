@@ -1,0 +1,5 @@
+---
+ksv0125:
+  trusted_registries:
+    - "docker.io"
+    - "europe-west1-docker.pkg.dev" # /indykite-mgmt/indykite/ - TODO: (2025-08-11) doesn't match with the path, vendor's bug?

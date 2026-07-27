@@ -1,0 +1,15 @@
+---
+# This is a config file for https://app.codecov.io/
+# Docs: https://docs.codecov.com/docs/common-recipe-list
+# Validation:
+# cat codecov.yml | curl --data-binary @- https://codecov.io/validate
+coverage:
+  status:
+    project:
+      default:
+        target: 70%
+        threshold: 1%
+
+    patch:
+      default:
+        informational: true

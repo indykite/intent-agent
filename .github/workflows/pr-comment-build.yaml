@@ -1,0 +1,30 @@
+---
+# Inspired by https://github.com/orgs/community/discussions/51403#discussioncomment-5535167
+name: Comment Code Coverage Artifact URL on PR
+
+on: # yamllint disable-line rule:truthy
+  workflow_run:
+    types:
+      - completed
+    workflows:
+      - Build Python project for PR
+
+permissions:
+  contents: read # required by checkout
+  actions: read # required by 'artifact-to-comment' action to access '.../actions/artifacts' API
+  pull-requests: write # required to create/update PR comments
+
+jobs:
+  pull-request-comment:
+    timeout-minutes: 2
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: actions/checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0 - https://github.com/actions/checkout/releases
+
+      - name: Comment Artifact URL on PR
+        uses: indykite/ops-common/.github/actions/artifact-to-comment@cd7081295c7d8144b29aa9ec2002df4cac269f5b # master
+        with:
+          artifact-name: code-coverage
+          artifact-title: Code Coverage

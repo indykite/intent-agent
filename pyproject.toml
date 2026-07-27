@@ -1,0 +1,70 @@
+[project]
+name = "intent-agent"
+description = "Intent Agent"
+readme = "README.md"
+requires-python = "==3.13.*"
+# Dynamic version is required to avoid writing the package version to uv.lock file
+# otherwise uv lock --check fails on a new release, because the version is bumped and doesn't match.
+# See https://github.com/astral-sh/uv/issues/7533
+dynamic = ["version"]
+
+# https://docs.astral.sh/uv/concepts/projects/dependencies/
+dependencies = [
+    "pydantic==2.13.4",
+    "pydantic-settings==2.14.2",
+]
+
+[dependency-groups]
+dev = [
+    "coverage[toml]==7.15.2",
+    "httpx==0.28.1",
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
+    "pytest-mock==3.15.1",
+    "ruff==0.15.22",
+    "validate-pyproject[all]==0.25",
+]
+
+[tool.setuptools]
+packages = ["indykite"]
+
+[tool.coverage.run]
+omit = [
+    "test/*",
+    "integration/*",
+    "tmp/*",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.lint]
+select = [
+    "ALL",
+]
+
+ignore = [
+    "D", # docstrings: https://docs.astral.sh/ruff/rules/#pydocstyle-d
+    "COM812", # https://docs.astral.sh/ruff/rules/missing-trailing-comma/ The formatter enforces consistent use of trailing commas, making the rule redundant.
+    "PLC0415", # https://docs.astral.sh/ruff/rules/import-outside-top-level/
+]
+
+[tool.ruff.lint.extend-per-file-ignores]
+
+"test/**/*.py" = [
+    # at least these should be fine in tests:
+    "S101", # asserts allowed in tests...
+    "ARG", # Unused function args -> fixtures nevertheless are functionally relevant...
+    "FBT", # Don't care about booleans as positional arguments in tests, e.g. via @pytest.mark.parametrize()
+    "SLF", # Private member accessed
+    "ANN", # annotations: https://docs.astral.sh/ruff/rules/#flake8-annotations-ann
+]
+
+"integration/**/*.py" = [
+    # at least these should be fine in tests:
+    "S101", # asserts allowed in tests...
+    "ARG", # Unused function args -> fixtures nevertheless are functionally relevant...
+    "FBT", # Don't care about booleans as positional arguments in tests, e.g. via @pytest.mark.parametrize()
+    "ANN", # annotations: https://docs.astral.sh/ruff/rules/#flake8-annotations-ann
+]

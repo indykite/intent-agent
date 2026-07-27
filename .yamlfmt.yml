@@ -1,0 +1,11 @@
+---
+# https://github.com/google/yamlfmt/blob/main/docs/config-file.md
+exclude:
+  - chart/templates
+formatter:
+  type: basic
+  indent: 2
+  include_document_start: true
+  scan_folded_as_literal: true
+  retain_line_breaks_single: true
+  trim_trailing_whitespace: true

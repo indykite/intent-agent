@@ -1,0 +1,48 @@
+# Byte-compiled / optimized
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build
+*.egg-info/
+
+# Unit test / coverage reports
+htmlcov/
+.coverage
+coverage.xml
+
+# Environments
+.env
+*.env
+!docker.env
+.venv
+env/
+venv/
+.python-version
+
+# emacs tmp files
+*~
+\#*
+.\#*
+
+#IDEA
+.idea/
+
+#VSCode
+.vscode/
+
+# mac
+.DS_Store
+
+# temporary directory
+tmp/
+dist/
+
+# Ignore generated credentials from google-github-actions/auth
+gha-creds-*.json
+
+# Local models directories
+/models/
+
+# Huggingface cache
+/.cache/

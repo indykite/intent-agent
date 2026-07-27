@@ -1,0 +1,58 @@
+---
+# https://trivy.dev/latest/docs/references/configuration/config-file/
+report: "all"
+exit-code: 1
+insecure: false
+debug: false
+quiet: true
+timeout: 10m
+dependency-tree: true
+list-all-pkgs: true
+format: "table"
+ignorefile: .trivyignore.yaml
+
+severity:
+  - UNKNOWN
+  - LOW
+  - MEDIUM
+  - HIGH
+  - CRITICAL
+
+# [EXPERIMENTAL] tables that will be displayed in 'table' format, default '[summary,detailed]'
+# explicit setting breaks CI's 'github' format
+# table-mode:
+#   - summary
+#   - detailed
+
+scan:
+  detection-priority: "precise"
+  disable-telemetry: true
+  offline: true
+  scanners:
+    - vuln
+    - secret
+    - misconfig
+  skip-files: [".env"]
+  skip-dirs: ["**/.terraform/**", "**/.terragrunt-cache/**"]
+  show-suppressed: true
+
+vulnerability:
+  ignore-unfixed: false
+
+misconfiguration:
+  include-non-failures: false
+  scanners:
+    - dockerfile
+    - helm
+    - kubernetes
+    - terraform
+    - terraformplan-json
+    - terraformplan-snapshot
+
+  terraform:
+    exclude-downloaded-modules: true
+
+rego:
+  # Same as '--config-data'
+  data: [.trivy_data.yaml]
+  # TODO: add licensing restrictions, https://trivy.dev/latest/docs/references/configuration/config-file/#license-options

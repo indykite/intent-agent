@@ -1,0 +1,94 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    // org shared config - https://github.com/indykite/ops-common/blob/master/.github/renovate.json
+    "github>indykite/ops-common//.github/renovate.json"
+  ],
+  "enabledManagers": [
+    "github-actions",
+    "dockerfile",
+    "pep621"
+  ],
+  "ignorePaths": [],
+  "ignorePresets": [
+    "group:monorepos",
+    "group:recommended"
+  ],
+  // "All rules are applied, so this effectively means it’s the last matching group that takes effect"
+  "packageRules": [
+    {
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "addLabels": [
+        "SemVer Major"
+      ]
+    },
+    {
+      "matchUpdateTypes": [
+        "minor"
+      ],
+      "addLabels": [
+        "SemVer Minor"
+      ]
+    },
+    {
+      "matchUpdateTypes": [
+        "patch",
+        "digest",
+        "bump"
+      ],
+      "addLabels": [
+        "SemVer Patch"
+      ]
+    },
+    {
+      "matchUpdateTypes": [
+        "patch",
+        "digest",
+        "bump"
+      ],
+      "groupName": "mlops patch dependencies",
+      "groupSlug": "mlops-patch",
+      "matchManagers": [
+        "github-actions",
+        "dockerfile"
+      ]
+    },
+    {
+      "matchUpdateTypes": [
+        "patch",
+        "digest",
+        "bump"
+      ],
+      "groupName": "pep621 patch dependencies",
+      "groupSlug": "pep621-patch",
+      "matchManagers": [
+        "pep621"
+      ]
+    },
+    {
+      /*
+      Python version is pinned. If it is updated, it must happen in multiple places:
+      - Dockerfile
+      - pyproject.toml
+      - Github Workflows
+      */
+      "matchDatasources": ["docker"],
+      "matchUpdateTypes": ["major", "minor"],
+      "matchDepNames": ["python"],
+      "enabled": false
+    },
+    {
+      /*
+      Python version is pinned. If it is updated, it must happen in multiple places:
+      - Dockerfile
+      - pyproject.toml
+      - Github Workflows
+      */
+      "matchManagers": ["pep621"],
+      "matchDepNames": ["python"],
+      "enabled": false
+    }
+  ]
+}

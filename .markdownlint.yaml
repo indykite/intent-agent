@@ -1,0 +1,8 @@
+---
+default: true
+MD007: # ul-indent
+  indent: 4
+MD013: # line-length
+  line_length: 400
+MD060: # Table column style
+  style: any
