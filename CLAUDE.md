@@ -45,6 +45,12 @@ it, and diffs that don't step on each other. Concretely:
 - **`CODEOWNERS` gates review**, not just permissions, on `.github/`, `chart/`, `Dockerfile`, and
   the various lint/security config files (`@indykite/ai-ml-team`, `@indykite/ops`) — expect and
   route review there rather than treating them as free to change unilaterally.
+- **Don't reformat whitespace beyond what a fix actually requires.** Re-aligning a Markdown
+  table's column padding, reflowing unrelated lines, or letting an autoformatter touch a whole
+  file is exactly the kind of change that turns a one-line fix into a noisy, hard-to-review diff.
+  If a formatter/linter genuinely requires wider realignment to pass (e.g. `markdownlint`'s table
+  rules), say so explicitly and let the person confirm before applying it — don't do it silently
+  as a side effect of an unrelated task.
 
 ## Commands
 

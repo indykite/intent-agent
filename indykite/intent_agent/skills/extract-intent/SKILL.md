@@ -109,6 +109,7 @@ The input may be more subtle than clear access questions. Infer the intent and m
 User prompt: *"what policy documents contain information regarding refunds?"*
 
 → **Resource Search**
+
 - Subject: from token (`sub` claim)
 - Action: Read
 - Resource.type: Document
@@ -137,7 +138,7 @@ Return a JSON object with exactly two keys:
 ```
 
 - **prompt**: The initial input prompt, included as reference
-- **evaluations**: Array of AuthZEN evaluation or search request objects (all compliant with https://openid.github.io/authzen/)
+- **evaluations**: Array of AuthZEN evaluation or search request objects (all compliant with <https://openid.github.io/authzen/>)
 
 ## Edge cases
 
