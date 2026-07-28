@@ -258,6 +258,8 @@ def _normalize_intent_response(llm_text: str, original_prompt: str) -> str:
 
 
 class _ActivateSkillArgs(BaseModel):
+    """Arguments schema for the activate_skill tool call."""
+
     name: str
 
 
@@ -265,6 +267,7 @@ class IntentAgent:
     """Owns the LLM, discovered skills, schema cache, and tool bindings for one running instance."""
 
     def __init__(self, settings: Settings) -> None:
+        """Build the LLM, discover skills, and bind tools for this agent instance."""
         self.settings = settings
         self._llm = ChatGoogleGenerativeAI(
             model=settings.gemini_model,
@@ -306,11 +309,13 @@ class IntentAgent:
         self._schema_cache = self.load_data_schema()
 
     def get_cached_schema(self) -> dict[str, Any] | None:
+        """Return the cached schema, fetching it once on first access if not preloaded."""
         if self._schema_cache is None:
             self._schema_cache = self.load_data_schema()
         return self._schema_cache
 
     def _make_get_data_schema_tool(self) -> StructuredTool:
+        """Build the get_data_schema tool bound to this agent's cached schema."""
         agent = self
 
         @tool
@@ -341,6 +346,7 @@ class IntentAgent:
         )
 
         def _invoke(name: str) -> str:
+            """Return the requested skill's content, or an error message if the name is unknown."""
             name = name.strip()
             if name not in self.skill_registry:
                 return f"Unknown skill: {name!r}. Valid skills: {', '.join(valid_names)}."
@@ -384,6 +390,7 @@ class IntentAgent:
             return f"<skill_content name={name!r}>\n{body}\n\nSkill directory: {skill_dir}\n</skill_content>"
 
         def _call(**kwargs: str) -> str:
+            """Adapt the tool's keyword-argument call convention to _invoke."""
             return _invoke(kwargs["name"])
 
         return StructuredTool(
@@ -394,6 +401,7 @@ class IntentAgent:
         )
 
     def build_agent_card(self) -> AgentCard:
+        """Build the A2A agent card advertising this agent's interface and skills."""
         return AgentCard(
             name=self.settings.intent_agent_name,
             description=(
@@ -499,9 +507,11 @@ class IntentExecutor(AgentExecutor):
     """AgentExecutor that extracts intent from incoming text using an LLM."""
 
     def __init__(self, agent: IntentAgent) -> None:
+        """Wrap the given IntentAgent as an A2A AgentExecutor."""
         self._agent = agent
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
+        """Handle one A2A task: extract intent from the prompt and emit the result artifact."""
         access_token = _get_access_token_from_context(context)
         if not access_token:
             raise HTTPException(status_code=401, detail="Authorization required")
@@ -551,6 +561,7 @@ class IntentExecutor(AgentExecutor):
         logger.info("Intent extracted for %s: %s", self._agent.settings.intent_agent_name, final_text)
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
+        """Handle task cancellation by emitting a CANCELED status event."""
         await event_queue.enqueue_event(
             TaskStatusUpdateEvent(
                 task_id=context.task_id,

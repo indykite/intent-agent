@@ -17,7 +17,10 @@ logger = logging.getLogger(__name__)
 
 
 class _HealthRequestHandler(BaseHTTPRequestHandler):
+    """Minimal HTTP handler serving GET /health for the Dockerfile's HEALTHCHECK."""
+
     def do_GET(self) -> None:
+        """Respond 200 to /health, 404 to anything else."""
         if self.path == "/health":
             self.send_response(200)
             self.end_headers()
@@ -27,10 +30,12 @@ class _HealthRequestHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def log_message(self, format_str: str, *args: object) -> None:  # noqa: ARG002 - silence per-request access logs
+        """Silence per-request access logs."""
         return
 
 
 def _start_health_server(port: int) -> HTTPServer:
+    """Start the health server on a background daemon thread and return it."""
     server = HTTPServer(("0.0.0.0", port), _HealthRequestHandler)  # noqa: S104 - health check must be reachable in-container
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -38,6 +43,7 @@ def _start_health_server(port: int) -> HTTPServer:
 
 
 def main() -> None:
+    """Load settings, build the app, start the health server, then serve the A2A app."""
     settings = Settings()
     logging.basicConfig(
         level=getattr(logging, settings.log_level.upper(), logging.INFO),
