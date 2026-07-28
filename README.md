@@ -44,4 +44,80 @@ Although python execution is done through `uv`, all commands are defined in the 
 
 ## Configuration
 
-Example `.env` file can be copied from `.env.example`.
+Example `.env` file can be copied from `.env.example`:
+
+```sh
+cp .env.example .env
+```
+
+| Variable | Default | Description |
+|----------|---------|--------------|
+| `INTENT_PORT` | `6003` | A2A JSON-RPC listen port |
+| `HEALTH_PORT` | `8001` | Health check listen port (`GET /health`) |
+| `ADVERTISED_HOST` | `intent` | Host advertised in the A2A agent card |
+| `INTENT_AGENT_NAME` | `intent_agent` | Agent name in the A2A card |
+| `LOG_LEVEL` | `INFO` | Python logging level |
+| `GEMINI_API_KEY` | — | **Required.** The agent fails to start without it |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini model name |
+| `INDYKITE_BASE_URL` | — | IndyKite API base URL, for fetching the graph schema |
+| `IK_APP_AGENT_KEY` | — | App agent key for the IndyKite API |
+
+`INDYKITE_BASE_URL`/`IK_APP_AGENT_KEY` are optional: without them the agent still starts, just
+without a graph schema to ground extraction against.
+
+## Running the agent
+
+### Locally, with uv
+
+```sh
+cp .env.example .env   # then set GEMINI_API_KEY
+uv run python -m indykite.intent_agent
+```
+
+This starts the A2A JSON-RPC server on `INTENT_PORT` (default `6003`) and a health endpoint on
+`HEALTH_PORT` (default `8001`).
+
+Verify it's up:
+
+```sh
+curl http://localhost:8001/health
+curl http://localhost:6003/.well-known/agent-card.json
+```
+
+Send it a test prompt (note the required `A2A-Version` header, the `SendMessage` method name, and
+`ROLE_USER` role — this is the A2A JSON-RPC transport, not a REST API):
+
+```sh
+curl -X POST http://localhost:6003/ \
+  -H "Content-Type: application/json" \
+  -H "A2A-Version: 1.0" \
+  -H "Authorization: Bearer <any-non-empty-token>" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": "1",
+    "method": "SendMessage",
+    "params": {
+      "message": {
+        "role": "ROLE_USER",
+        "parts": [{"text": "Can I buy 50 shares of AAPL?"}],
+        "messageId": "test-msg-1"
+      }
+    }
+  }'
+```
+
+### With Docker
+
+```sh
+make build_docker_image
+```
+
+`make run_docker_image` runs the image as-is, with no ports published and no env file — useful
+as a smoke test that the image starts, but not for actually reaching the agent. To run it
+reachable locally (the base images are pinned to `linux/amd64`, so this runs under emulation on
+Apple Silicon):
+
+```sh
+docker buildx build --platform linux/amd64 --load -t intent-agent:local .
+docker run --platform linux/amd64 -p 6003:6003 -p 8001:8001 --env-file .env intent-agent:local
+```
