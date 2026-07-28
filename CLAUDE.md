@@ -89,6 +89,10 @@ uv run python -m indykite.intent_agent
 `pyproject.toml` sets `ruff` to `select = ["ALL"]`, only ignoring docstring rules (`D`),
 trailing-comma (`COM812`), and import-outside-top-level (`PLC0415`). In practice this means:
 
+- **Docstrings are ignored by lint (`D`), but are still expected on every function, method, and
+  class.** This is a team convention, not something `ruff` enforces — don't skip them just
+  because nothing will flag it. One concise line describing what it does/returns is enough;
+  match the existing style rather than writing multi-paragraph docstrings.
 - Magic numbers in comparisons (`PLR2004`) must be named module-level constants.
 - Functions have enforced complexity/branch/return-count ceilings (`C901`, `PLR0911`,
   `PLR0912`) — if you're adding branches to `agent.py`'s tool-call loop or the skill parser,
