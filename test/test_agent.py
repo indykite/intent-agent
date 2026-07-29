@@ -12,7 +12,7 @@ def test_discovers_extract_intent_skill():
 
 
 def test_build_app_registers_routes(monkeypatch):
-    """build_app must wire up the agent-card and JSON-RPC routes on the Starlette app."""
+    """build_app must wire up the agent-card and JSON-RPC routes on the app."""
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.delenv("INDYKITE_BASE_URL", raising=False)
     monkeypatch.delenv("IK_APP_AGENT_KEY", raising=False)

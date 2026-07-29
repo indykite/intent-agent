@@ -61,7 +61,9 @@ def main() -> None:
         settings.health_port,
         settings.gemini_model,
     )
-    logger.info("Data schema: %s", "loaded" if agent.get_cached_schema() else "unavailable")
+    logger.info(
+        "Data schema: %s", "loaded" if agent.get_cached_schema() else "unavailable"
+    )
 
     uvicorn.run(app, host="0.0.0.0", port=settings.intent_port, log_level="info")  # noqa: S104 - must be reachable in-container
 

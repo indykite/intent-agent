@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Startup configuration. Fails fast (pydantic validation error) if required fields are missing."""
+    """Startup config. Fails fast (pydantic ValidationError) if fields are missing."""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

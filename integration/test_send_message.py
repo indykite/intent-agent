@@ -10,17 +10,26 @@ _HTTP_OK = 200
 
 
 def test_send_message_end_to_end(monkeypatch, mocker):
-    """Drive a real SendMessage JSON-RPC request through the ASGI app, with only the LLM mocked."""
+    """Drive a SendMessage JSON-RPC request through the ASGI app, LLM mocked."""
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.delenv("INDYKITE_BASE_URL", raising=False)
     monkeypatch.delenv("IK_APP_AGENT_KEY", raising=False)
 
     tool_call_response = AIMessage(
         content="",
-        tool_calls=[{"name": "activate_skill", "args": {"name": "extract-intent"}, "id": "call-1"}],
+        tool_calls=[
+            {
+                "name": "activate_skill",
+                "args": {"name": "extract-intent"},
+                "id": "call-1",
+            }
+        ],
     )
     final_response = AIMessage(
-        content='{"prompt": "Can I buy 50 shares of AAPL?", "evaluations": [{"action": {"name": "buy"}}]}',
+        content=(
+            '{"prompt": "Can I buy 50 shares of AAPL?", '
+            '"evaluations": [{"action": {"name": "buy"}}]}'
+        ),
         tool_calls=[],
     )
     mock_ainvoke = AsyncMock(side_effect=[tool_call_response, final_response])
