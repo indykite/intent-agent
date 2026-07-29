@@ -43,7 +43,7 @@ omit = [
 ]
 
 [tool.ruff]
-line-length = 120
+line-length = 88
 target-version = "py313"
 
 [tool.ruff.lint]
