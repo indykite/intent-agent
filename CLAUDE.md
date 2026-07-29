@@ -90,9 +90,13 @@ uv run python -m indykite.intent_agent
 trailing-comma (`COM812`), and import-outside-top-level (`PLC0415`). In practice this means:
 
 - **Docstrings are ignored by lint (`D`), but are still expected on every function, method, and
-  class.** This is a team convention, not something `ruff` enforces — don't skip them just
-  because nothing will flag it. One concise line describing what it does/returns is enough;
-  match the existing style rather than writing multi-paragraph docstrings.
+  class — including test functions in `test/` and `integration/`.** This is a team convention,
+  not something `ruff` enforces — don't skip them just because nothing will flag it, and don't
+  read the relaxed `test/**/*.py`/`integration/**/*.py` rules (`S101`, `ARG`, `FBT`, `SLF`, `ANN`,
+  see above) as covering docstrings too, since it doesn't. For a test, one line stating what
+  behavior it verifies is enough (e.g. "Settings must fail fast when GEMINI_API_KEY is missing").
+  For everything else, one concise line describing what it does/returns; match the existing style
+  rather than writing multi-paragraph docstrings.
 - Magic numbers in comparisons (`PLR2004`) must be named module-level constants.
 - Functions have enforced complexity/branch/return-count ceilings (`C901`, `PLR0911`,
   `PLR0912`) — if you're adding branches to `agent.py`'s tool-call loop or the skill parser,

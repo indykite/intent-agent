@@ -8,12 +8,14 @@ _DEFAULT_HEALTH_PORT = 8001
 
 
 def test_requires_gemini_api_key(monkeypatch):
+    """Settings must fail fast when GEMINI_API_KEY is missing, not default to an empty key."""
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
 
 
 def test_defaults(monkeypatch):
+    """Every optional Settings field must fall back to its documented default value."""
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     settings = Settings(_env_file=None)
     assert settings.intent_port == _DEFAULT_INTENT_PORT
