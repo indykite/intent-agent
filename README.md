@@ -54,6 +54,7 @@ cp .env.example .env
 |---------------------|--------------------|------------------------------------------------------|
 | `INTENT_PORT`       | `6003`             | A2A JSON-RPC listen port                             |
 | `HEALTH_PORT`       | `8001`             | Health check listen port (`GET /health`)             |
+| `BIND_HOST`         | `0.0.0.0`          | Interface the servers bind to                        |
 | `ADVERTISED_HOST`   | `intent`           | Host advertised in the A2A agent card                |
 | `INTENT_AGENT_NAME` | `intent_agent`     | Agent name in the A2A card                           |
 | `LOG_LEVEL`         | `INFO`             | Python logging level                                 |

@@ -33,12 +33,9 @@ class _HealthRequestHandler(BaseHTTPRequestHandler):
         """Silence per-request access logs."""
 
 
-def _start_health_server(port: int) -> HTTPServer:
+def _start_health_server(bind_host: str, port: int) -> HTTPServer:
     """Start the health server on a background daemon thread and return it."""
-    server = HTTPServer(
-        ("0.0.0.0", port),  # noqa: S104 - reachable in-container skipcq: BAN-B104
-        _HealthRequestHandler,
-    )
+    server = HTTPServer((bind_host, port), _HealthRequestHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server
@@ -55,7 +52,7 @@ def main() -> None:
 
     app, agent = build_app(settings)
 
-    _start_health_server(settings.health_port)
+    _start_health_server(settings.bind_host, settings.health_port)
     logger.info(
         "Starting %s on port %d (health on %d, LLM: Gemini %s)",
         settings.intent_agent_name,
@@ -69,7 +66,7 @@ def main() -> None:
 
     uvicorn.run(
         app,
-        host="0.0.0.0",  # noqa: S104 - reachable in-container skipcq: BAN-B104
+        host=settings.bind_host,
         port=settings.intent_port,
         log_level="info",
     )
