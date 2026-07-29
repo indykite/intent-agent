@@ -429,6 +429,10 @@ class IntentAgent:
             func=_call,
         )
 
+    def _rpc_url(self) -> str:
+        """Build the advertised JSON-RPC URL from the configured host and port."""
+        return f"http://{self.settings.advertised_host}:{self.settings.intent_port}"
+
     def build_agent_card(self) -> AgentCard:
         """Build the A2A agent card advertising this agent's interface and skills."""
         return AgentCard(
@@ -453,7 +457,7 @@ class IntentAgent:
             supported_interfaces=[
                 AgentInterface(
                     protocol_binding="JSONRPC",
-                    url=f"http://{self.settings.advertised_host}:{self.settings.intent_port}",
+                    url=self._rpc_url(),
                     protocol_version="1.0",
                 ),
             ],

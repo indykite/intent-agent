@@ -29,14 +29,16 @@ class _HealthRequestHandler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
 
-    def log_message(self, format_str: str, *args: object) -> None:  # noqa: ARG002 - silence per-request access logs
+    def log_message(self, format_str: str, *args: object) -> None:
         """Silence per-request access logs."""
-        return
 
 
 def _start_health_server(port: int) -> HTTPServer:
     """Start the health server on a background daemon thread and return it."""
-    server = HTTPServer(("0.0.0.0", port), _HealthRequestHandler)  # noqa: S104 - health check must be reachable in-container
+    server = HTTPServer(
+        ("0.0.0.0", port),  # noqa: S104 - reachable in-container skipcq: BAN-B104
+        _HealthRequestHandler,
+    )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server
@@ -65,7 +67,12 @@ def main() -> None:
         "Data schema: %s", "loaded" if agent.get_cached_schema() else "unavailable"
     )
 
-    uvicorn.run(app, host="0.0.0.0", port=settings.intent_port, log_level="info")  # noqa: S104 - must be reachable in-container
+    uvicorn.run(
+        app,
+        host="0.0.0.0",  # noqa: S104 - reachable in-container skipcq: BAN-B104
+        port=settings.intent_port,
+        log_level="info",
+    )
 
 
 if __name__ == "__main__":
