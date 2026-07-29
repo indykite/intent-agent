@@ -425,7 +425,7 @@ wheels = [
 
 [[package]]
 name = "intent-agent"
-source = { editable = "." }
+source = { virtual = "." }
 dependencies = [
     { name = "a2a-sdk", extra = ["http-server", "sql"] },
     { name = "grpcio" },
@@ -453,13 +453,13 @@ dev = [
 requires-dist = [
     { name = "a2a-sdk", extras = ["http-server", "sql"], specifier = "==1.0.0a1" },
     { name = "grpcio" },
-    { name = "httpx", specifier = ">=0.27.0" },
-    { name = "langchain-core", specifier = ">=1.2.5" },
-    { name = "langchain-google-genai", specifier = ">=2.0.0" },
+    { name = "httpx", specifier = "==0.28.1" },
+    { name = "langchain-core", specifier = "==1.5.1" },
+    { name = "langchain-google-genai", specifier = "==4.3.2" },
     { name = "pydantic", specifier = "==2.13.4" },
     { name = "pydantic-settings", specifier = "==2.14.2" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "uvicorn", specifier = ">=0.35.0" },
+    { name = "pyyaml", specifier = "==6.0.3" },
+    { name = "uvicorn", specifier = "==0.51.0" },
 ]
 
 [package.metadata.requires-dev]
