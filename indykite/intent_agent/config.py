@@ -10,6 +10,7 @@ class Settings(BaseSettings):
 
     intent_port: int = 6003
     health_port: int = 8001
+    # skipcq: BAN-B104
     bind_host: str = "0.0.0.0"  # noqa: S104 - reachable from outside container
     advertised_host: str = "intent"
     intent_agent_name: str = "intent_agent"
