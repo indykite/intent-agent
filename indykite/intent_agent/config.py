@@ -24,6 +24,7 @@ class Settings(BaseSettings):
 
     indykite_base_url: str = ""
     ik_app_agent_key: str = ""
+    schema_fetch_timeout_seconds: float = 30.0
 
     @field_validator("gemini_api_key")
     @classmethod

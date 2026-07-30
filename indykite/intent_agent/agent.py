@@ -89,7 +89,9 @@ class IntentAgent:
             temperature=0,
         )
         self._schema_client = schema_client or SchemaClient(
-            settings.indykite_base_url, settings.ik_app_agent_key
+            settings.indykite_base_url,
+            settings.ik_app_agent_key,
+            timeout_seconds=settings.schema_fetch_timeout_seconds,
         )
         self._current_subject_id: ContextVar[str | None] = ContextVar(
             "current_subject_id", default=None

@@ -17,7 +17,7 @@ COPY pyproject.toml uv.lock ./
 # hadolint ignore=DL3013
 RUN pip install --no-cache-dir uv && \
     uv lock --check && \
-    uv sync --no-install-project && \
+    uv sync && \
     rm pyproject.toml uv.lock
 
 COPY indykite ./indykite
