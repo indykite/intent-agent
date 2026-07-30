@@ -25,10 +25,7 @@ def test_gemini_send_message_end_to_end(monkeypatch, mocker):
         ],
     )
     final_response = AIMessage(
-        content=(
-            '{"prompt": "Can I buy 50 shares of AAPL?", '
-            '"evaluations": [{"action": {"name": "buy"}}]}'
-        ),
+        content=('{"prompt": "Can I buy 50 shares of AAPL?", "evaluations": [{"action": {"name": "buy"}}]}'),
         tool_calls=[],
     )
     mock_ainvoke = AsyncMock(side_effect=[tool_call_response, final_response])

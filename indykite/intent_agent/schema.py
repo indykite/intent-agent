@@ -11,9 +11,7 @@ logger = logging.getLogger(__name__)
 class SchemaClient:
     """Fetches and caches the IndyKite schema for one base_url/app_agent_key pair."""
 
-    def __init__(
-        self, base_url: str, app_agent_key: str, *, timeout_seconds: float = 30.0
-    ) -> None:
+    def __init__(self, base_url: str, app_agent_key: str, *, timeout_seconds: float = 30.0) -> None:
         """Store the connection details; no request is made until load()/preload()."""
         self._base_url = base_url
         self._app_agent_key = app_agent_key

@@ -36,9 +36,7 @@ def _parse_frontmatter(raw: str, location: Path) -> tuple[dict[str, Any], str] |
     return meta, parts[2].strip()
 
 
-def _build_skill_record(
-    meta: dict[str, Any], body: str, location: Path
-) -> dict[str, Any] | None:
+def _build_skill_record(meta: dict[str, Any], body: str, location: Path) -> dict[str, Any] | None:
     """Build a skill record from frontmatter/body, or None if fields are missing."""
     name = meta.get("name") or meta.get("title")
     description = meta.get("description")
@@ -115,8 +113,7 @@ def build_skill_catalog_prompt(skills: list[dict[str, Any]]) -> str:
     preamble = _CATALOG_PREAMBLE_PATH.read_text(encoding="utf-8").strip("\n")
     lines = [*preamble.splitlines(), "", "<available_skills>"]
     lines.extend(
-        f"  <skill><name>{skill['name']}</name>"
-        f"<description>{skill['description']}</description></skill>"
+        f"  <skill><name>{skill['name']}</name><description>{skill['description']}</description></skill>"
         for skill in skills
     )
     lines.append("</available_skills>")

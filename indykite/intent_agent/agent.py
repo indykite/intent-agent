@@ -93,9 +93,7 @@ class IntentAgent:
             settings.ik_app_agent_key,
             timeout_seconds=settings.schema_fetch_timeout_seconds,
         )
-        self._current_subject_id: ContextVar[str | None] = ContextVar(
-            "current_subject_id", default=None
-        )
+        self._current_subject_id: ContextVar[str | None] = ContextVar("current_subject_id", default=None)
 
         self.discovered_skills = skills.discover_skills()
         self.system_prompt = skills.build_skill_catalog_prompt(self.discovered_skills)
@@ -137,8 +135,7 @@ class IntentAgent:
             schema = agent.get_cached_schema()
             if schema is None:
                 return (
-                    "Data schema unavailable (INDYKITE_BASE_URL or IK_APP_AGENT_KEY "
-                    "not configured, or fetch failed)."
+                    "Data schema unavailable (INDYKITE_BASE_URL or IK_APP_AGENT_KEY not configured, or fetch failed)."
                 )
             return json.dumps(schema, separators=(",", ":"), ensure_ascii=False)
 
@@ -158,9 +155,7 @@ class IntentAgent:
             """Return the requested skill's content, or an error if unknown."""
             name = name.strip()
             if name not in self.skill_registry:
-                return (
-                    f"Unknown skill: {name!r}. Valid skills: {', '.join(valid_names)}."
-                )
+                return f"Unknown skill: {name!r}. Valid skills: {', '.join(valid_names)}."
             logger.info("Activating skill: %s", name)
             skill = self.skill_registry[name]
             body = skill.get("body") or ""
@@ -204,10 +199,7 @@ class IntentAgent:
                     f"Skill directory: {skill_dir}\n</skill_content>"
                 )
 
-            return (
-                f"<skill_content name={name!r}>\n{body}\n\n"
-                f"Skill directory: {skill_dir}\n</skill_content>"
-            )
+            return f"<skill_content name={name!r}>\n{body}\n\nSkill directory: {skill_dir}\n</skill_content>"
 
         def _call(**kwargs: str) -> str:
             """Adapt the tool's keyword-argument call convention to _invoke."""
@@ -265,9 +257,7 @@ class IntentAgent:
         ]
 
     @staticmethod
-    def _extract_final_text(
-        response: BaseMessage, *, activated_extract_intent: bool, prompt: str
-    ) -> str:
+    def _extract_final_text(response: BaseMessage, *, activated_extract_intent: bool, prompt: str) -> str:
         """Render the LLM's final response, normalizing it if extract-intent ran."""
         raw_response_text = getattr(response, "text", "") or ""
         raw_content = getattr(response, "content", "") or ""
@@ -285,16 +275,12 @@ class IntentAgent:
             final_text = _normalize_intent_response(final_text, prompt)
         return final_text
 
-    def _dispatch_tool_call(
-        self, call: dict[str, Any], messages: list[BaseMessage]
-    ) -> bool:
+    def _dispatch_tool_call(self, call: dict[str, Any], messages: list[BaseMessage]) -> bool:
         """Invoke one tool call, append ToolMessage, report if extract-intent ran."""
         name = call.get("name", "")
         args = call.get("args", {}) or {}
         call_id = call.get("id", "")
-        activated_extract_intent = (
-            name == "activate_skill" and args.get("name") == "extract-intent"
-        )
+        activated_extract_intent = name == "activate_skill" and args.get("name") == "extract-intent"
         tool_obj = next((t for t in self.tools if t.name == name), None)
         if tool_obj:
             try:
@@ -344,9 +330,7 @@ class IntentExecutor(AgentExecutor):
         """Handle one A2A task: extract intent, emit the result artifact."""
         access_token = auth.get_access_token_from_context(context)
         if not access_token:
-            raise HTTPException(
-                status_code=HTTP_401_UNAUTHORIZED, detail="Authorization required"
-            )
+            raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="Authorization required")
 
         subject_id_from_token = auth.get_sub_from_token(access_token)
 
