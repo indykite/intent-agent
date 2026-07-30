@@ -6,6 +6,7 @@ Starts the A2A JSON-RPC app on `INTENT_PORT` and a minimal health endpoint on
 
 import logging
 import threading
+from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import uvicorn
@@ -22,11 +23,11 @@ class _HealthRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         """Respond 200 to /health, 404 to anything else."""
         if self.path == "/health":
-            self.send_response(200)
+            self.send_response(HTTPStatus.OK)
             self.end_headers()
             self.wfile.write(b"ok")
         else:
-            self.send_response(404)
+            self.send_response(HTTPStatus.NOT_FOUND)
             self.end_headers()
 
     def log_message(self, format_str: str, *args: object) -> None:

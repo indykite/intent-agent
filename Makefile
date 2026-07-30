@@ -34,6 +34,9 @@ upgrade_dev:
 project_check:
 	@set -e
 	uv lock --check
+	# fails loudly if .venv has drifted from uv.lock, instead of surfacing as a
+	# confusing import error later in codestyle_check/test
+	uv sync --locked
 	uv run --locked validate-pyproject pyproject.toml
 
 fix:

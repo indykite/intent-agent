@@ -1,11 +1,10 @@
-"""A2A executor, skill discovery, and Gemini-backed intent extraction pipeline.
+"""A2A executor and Gemini-backed intent extraction pipeline.
 
 Ported from the ``iag-demo/intent_agent`` prototype (see the Intent Agent Technical
 Design Document). This is a structural port for this repository's package layout and
 config model, not a rewrite of the extraction pipeline itself.
 """
 
-import base64
 import json
 import logging
 import re
@@ -13,8 +12,6 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
-import httpx
-import yaml
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.server.request_handlers import DefaultRequestHandler
@@ -24,7 +21,6 @@ from a2a.types import (
     AgentCapabilities,
     AgentCard,
     AgentInterface,
-    AgentSkill,
     TaskArtifactUpdateEvent,
     TaskState,
     TaskStatus,
@@ -32,214 +28,20 @@ from a2a.types import (
 )
 from a2a.utils import new_agent_text_message, new_task, new_text_artifact
 from a2a.utils.constants import DEFAULT_RPC_URL
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool, tool
 from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
+from starlette.status import HTTP_401_UNAUTHORIZED
 
+from indykite.intent_agent import auth, skills
 from indykite.intent_agent.config import Settings
+from indykite.intent_agent.schema import SchemaClient
 
 logger = logging.getLogger(__name__)
-
-_SKILLS_DIR = Path(__file__).resolve().parent / "skills"
-_TOOL_CALL_MAX_ITERATIONS = 5
-_SCHEMA_PREVIEW_CHARS = 12000
-_FRONTMATTER_PARTS = 3
-_JWT_PARTS = 3
-_BASE64_PAD_MODULUS = 4
-
-
-def _coerce_str_list(value: object, delimiter: str = ",") -> list[str]:
-    """Normalize a YAML frontmatter value (list, delimited str, or absent) to a list."""
-    if isinstance(value, list):
-        return [str(v) for v in value]
-    if isinstance(value, str):
-        return [s.strip() for s in value.split(delimiter) if s.strip()]
-    return []
-
-
-def _parse_frontmatter(raw: str, location: Path) -> tuple[dict[str, Any], str] | None:
-    """Split a SKILL.md's raw text into its parsed YAML frontmatter and body."""
-    parts = re.split(r"^---\s*$", raw.strip(), maxsplit=2, flags=re.MULTILINE)
-    if len(parts) < _FRONTMATTER_PARTS:
-        logger.warning("Skill file %s has no valid frontmatter (--- ... ---)", location)
-        return None
-    try:
-        meta = yaml.safe_load(parts[1])
-    except yaml.YAMLError:
-        logger.warning("Skill file %s has invalid YAML frontmatter", location)
-        return None
-    if not isinstance(meta, dict):
-        return None
-    return meta, parts[2].strip()
-
-
-def _build_skill_record(
-    meta: dict[str, Any], body: str, location: Path
-) -> dict[str, Any] | None:
-    """Build a skill record from frontmatter/body, or None if fields are missing."""
-    name = meta.get("name") or meta.get("title")
-    description = meta.get("description")
-    if not name or not description:
-        logger.warning("Skill file %s missing name or description", location)
-        return None
-    name = str(name).strip()
-    description = str(description).strip()
-    if not description:
-        return None
-    return {
-        "name": name,
-        "description": description,
-        "location": str(location),
-        "body": body,
-        "tags": _coerce_str_list(meta.get("tags")),
-        "examples": _coerce_str_list(meta.get("examples"), delimiter="\n"),
-    }
-
-
-def _parse_skill_file(location: Path) -> dict[str, Any] | None:
-    """Parse a SKILL.md file into a skill record, or None if invalid."""
-    try:
-        raw = location.read_text(encoding="utf-8")
-    except OSError:
-        logger.warning("Could not read skill file %s", location)
-        return None
-    if not raw.strip():
-        return None
-    parsed = _parse_frontmatter(raw, location)
-    if parsed is None:
-        return None
-    meta, body = parsed
-    return _build_skill_record(meta, body, location)
-
-
-def _discover_skills() -> list[dict[str, Any]]:
-    """Discover skills under _SKILLS_DIR: subdirectories containing a SKILL.md."""
-    skills: list[dict[str, Any]] = []
-    if not _SKILLS_DIR.is_dir():
-        logger.info("Skills directory not found: %s", _SKILLS_DIR)
-        return skills
-    seen: set[str] = set()
-    try:
-        entries = sorted(_SKILLS_DIR.iterdir())
-    except OSError:
-        logger.warning("Error scanning skills dir %s", _SKILLS_DIR)
-        return skills
-    for entry in entries:
-        if entry.name.startswith(".") or entry.name in {"node_modules", ".git"}:
-            continue
-        if not entry.is_dir():
-            continue
-        skill_md = entry / "SKILL.md"
-        if not skill_md.is_file():
-            continue
-        record = _parse_skill_file(skill_md)
-        if not record:
-            continue
-        name = record["name"]
-        if name in seen:
-            logger.warning("Duplicate skill name %r, skipping %s", name, skill_md)
-            continue
-        seen.add(name)
-        skills.append(record)
-    skills.sort(key=lambda s: str(s["name"]))
-    return skills
-
-
-def _build_skill_catalog_prompt(skills: list[dict[str, Any]]) -> str:
-    """Build the tier-1 skill catalog for the system prompt (progressive disclosure)."""
-    if not skills:
-        return ""
-    lines = [
-        "You are an intent extraction agent. Follow these instructions to produce "
-        "AuthZEN-compliant output.",
-        "Your goal is to extract the intent from the user's prompt and return a JSON "
-        "object that can be used to evaluate the intent.",
-        "To do this, use the activate_skill tool to load the full instructions for a "
-        "skill, and the get_data_schema tool to get the data schema.",
-        "First, get the data schema to understand the entities and relationships in "
-        "the system.",
-        "Then, use the activate_skill tool to load the full instructions for the "
-        "extract-intent skill.",
-        "The extract-intent skill uses the data schema to map entities and "
-        "relationships to the AuthZEN-compliant output.",
-        "The following skills provide specialized instructions for specific tasks.",
-        "",
-        "<available_skills>",
-    ]
-    lines.extend(
-        f"  <skill><name>{skill['name']}</name>"
-        f"<description>{skill['description']}</description></skill>"
-        for skill in skills
-    )
-    lines.append("</available_skills>")
-    return "\n".join(lines)
-
-
-def _build_agent_skill_catalog(skills: list[dict[str, Any]]) -> list[AgentSkill]:
-    """Map discovered skill records onto A2A AgentSkill entries for the agent card."""
-    catalog = [
-        AgentSkill(
-            id=str(s["name"]).replace(" ", "-").lower()[:64].strip("-"),
-            name=str(s["name"]).replace("-", " ").title(),
-            description=s["description"],
-            tags=s.get("tags") or ["intent", "nlp", "extraction"],
-            examples=s.get("examples") or [],
-            input_modes=["text/plain"],
-            output_modes=["text/plain"],
-        )
-        for s in skills
-    ]
-    if catalog:
-        return catalog
-    return [
-        AgentSkill(
-            id="extract-intent",
-            name="Extract Intent",
-            description=(
-                "Extract intent from a provided input prompt text. Returns a "
-                "structured description of the user's goal, action, and key entities."
-            ),
-            tags=["intent", "nlp", "extraction"],
-            examples=[],
-            input_modes=["text/plain"],
-            output_modes=["text/plain"],
-        ),
-    ]
-
-
-def _get_sub_from_token(token: str) -> str | None:
-    """Extract the sub claim from a JWT. Returns None if invalid or missing sub."""
-    if not token.strip():
-        return None
-    parts = token.split(".")
-    if len(parts) != _JWT_PARTS:
-        return None
-    payload_b64 = parts[1]
-    padding = _BASE64_PAD_MODULUS - len(payload_b64) % _BASE64_PAD_MODULUS
-    if padding != _BASE64_PAD_MODULUS:
-        payload_b64 += "=" * padding
-    payload_b64 = payload_b64.replace("-", "+").replace("_", "/")
-    try:
-        payload_bytes = base64.b64decode(payload_b64)
-        data = json.loads(payload_bytes)
-    except ValueError:
-        return None
-    sub = data.get("sub")
-    return str(sub) if sub is not None else None
-
-
-def _get_access_token_from_context(context: RequestContext | None) -> str:
-    """Extract the Bearer token from the incoming request's Authorization header."""
-    if not context or not context.call_context:
-        return ""
-    req_headers = context.call_context.state.get("headers") or {}
-    auth = req_headers.get("authorization") or req_headers.get("Authorization") or ""
-    if auth.lower().startswith("bearer "):
-        return auth[7:].strip()
-    return auth.strip()
 
 
 def _normalize_intent_response(llm_text: str, original_prompt: str) -> str:
@@ -272,23 +74,31 @@ class _ActivateSkillArgs(BaseModel):
 class IntentAgent:
     """Owns the LLM, discovered skills, schema cache, and tool bindings for this run."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        llm: BaseChatModel | None = None,
+        schema_client: SchemaClient | None = None,
+    ) -> None:
         """Build the LLM, discover skills, and bind tools for this agent instance."""
         self.settings = settings
-        self._llm = ChatGoogleGenerativeAI(
+        self._llm = llm or ChatGoogleGenerativeAI(
             model=settings.gemini_model,
             api_key=settings.gemini_api_key,
             temperature=0,
         )
-        self._schema_cache: dict[str, Any] | None = None
+        self._schema_client = schema_client or SchemaClient(
+            settings.indykite_base_url, settings.ik_app_agent_key
+        )
         self._current_subject_id: ContextVar[str | None] = ContextVar(
             "current_subject_id", default=None
         )
 
-        self.discovered_skills = _discover_skills()
-        self.system_prompt = _build_skill_catalog_prompt(self.discovered_skills)
+        self.discovered_skills = skills.discover_skills()
+        self.system_prompt = skills.build_skill_catalog_prompt(self.discovered_skills)
         self.skill_registry = {s["name"]: s for s in self.discovered_skills}
-        self.agent_skills = _build_agent_skill_catalog(self.discovered_skills)
+        self.agent_skills = skills.build_agent_skill_catalog(self.discovered_skills)
 
         self.tools = [
             t
@@ -300,34 +110,13 @@ class IntentAgent:
         ]
         self._llm_with_tools = self._llm.bind_tools(self.tools)
 
-    def load_data_schema(self) -> dict[str, Any] | None:
-        """Fetch the graph schema from the Indykite platform, or None on failure."""
-        base_url = self.settings.indykite_base_url
-        app_agent_key = self.settings.ik_app_agent_key
-        if not base_url or not app_agent_key:
-            logger.warning("IK base URL/app-agent key not set - schema unavailable")
-            return None
-        url = f"{base_url.rstrip('/')}/data-schema/v1"
-        headers = {"X-IK-ClientKey": app_agent_key}
-        try:
-            with httpx.Client(timeout=30.0) as client:
-                resp = client.get(url, headers=headers)
-                resp.raise_for_status()
-        except httpx.HTTPError:
-            logger.warning("Failed to load data schema from %s", url)
-            return None
-        logger.info("Loaded data schema from %s", url)
-        return resp.json()
-
     def preload_schema(self) -> None:
         """Fetch and cache the schema once, at startup."""
-        self._schema_cache = self.load_data_schema()
+        self._schema_client.preload()
 
     def get_cached_schema(self) -> dict[str, Any] | None:
         """Return the cached schema, fetching it once if not already preloaded."""
-        if self._schema_cache is None:
-            self._schema_cache = self.load_data_schema()
-        return self._schema_cache
+        return self._schema_client.get_cached()
 
     def _make_get_data_schema_tool(self) -> StructuredTool:
         """Build the get_data_schema tool bound to this agent's cached schema."""
@@ -380,11 +169,11 @@ class IntentAgent:
                 schema = self.get_cached_schema()
                 subject_id = self._current_subject_id.get()
                 if schema:
+                    preview_chars = self.settings.schema_preview_chars
+                    schema_json = json.dumps(schema, indent=2, ensure_ascii=False)
                     schema_block = (
                         "\n\n<data_schema>\n"
-                        + json.dumps(schema, indent=2, ensure_ascii=False)[
-                            :_SCHEMA_PREVIEW_CHARS
-                        ]
+                        + schema_json[:preview_chars]
                         + "\n</data_schema>\n\nUse the above schema to map entity "
                         "types."
                     )
@@ -522,7 +311,7 @@ class IntentAgent:
         final_text = ""
         activated_extract_intent = False
 
-        for _ in range(_TOOL_CALL_MAX_ITERATIONS):
+        for _ in range(self.settings.tool_call_max_iterations):
             response = await self._llm_with_tools.ainvoke(messages)
             tool_calls = getattr(response, "tool_calls", None) or []
 
@@ -551,11 +340,13 @@ class IntentExecutor(AgentExecutor):
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         """Handle one A2A task: extract intent, emit the result artifact."""
-        access_token = _get_access_token_from_context(context)
+        access_token = auth.get_access_token_from_context(context)
         if not access_token:
-            raise HTTPException(status_code=401, detail="Authorization required")
+            raise HTTPException(
+                status_code=HTTP_401_UNAUTHORIZED, detail="Authorization required"
+            )
 
-        subject_id_from_token = _get_sub_from_token(access_token)
+        subject_id_from_token = auth.get_sub_from_token(access_token)
 
         raw_text = ""
         if context.message:
@@ -618,9 +409,14 @@ class IntentExecutor(AgentExecutor):
         )
 
 
-def build_app(settings: Settings) -> tuple[Starlette, IntentAgent]:
+def build_app(
+    settings: Settings,
+    *,
+    llm: BaseChatModel | None = None,
+    schema_client: SchemaClient | None = None,
+) -> tuple[Starlette, IntentAgent]:
     """Construct the Starlette app and its backing IntentAgent for these settings."""
-    agent = IntentAgent(settings)
+    agent = IntentAgent(settings, llm=llm, schema_client=schema_client)
     agent.preload_schema()
     agent_card = agent.build_agent_card()
     handler = DefaultRequestHandler(

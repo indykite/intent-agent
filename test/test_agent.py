@@ -1,12 +1,13 @@
-from indykite.intent_agent.agent import _discover_skills, build_app
+from indykite.intent_agent.agent import build_app
 from indykite.intent_agent.config import Settings
+from indykite.intent_agent.skills import discover_skills
 
 _MIN_EXPECTED_ROUTES = 2
 
 
 def test_discovers_extract_intent_skill():
     """The extract-intent SKILL.md must be discovered from the skills/ directory."""
-    skills = _discover_skills()
+    skills = discover_skills()
     names = {s["name"] for s in skills}
     assert "extract-intent" in names
 

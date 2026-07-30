@@ -82,7 +82,14 @@ uv run python -m indykite.intent_agent
 ```
 
 `make build` is the actual CI gate: `project_check` validates `pyproject.toml` and the lockfile,
+then runs `uv sync --locked` so a `.venv` that's drifted from `uv.lock` fails loudly right there
+instead of surfacing later as a confusing import error out of `codestyle_check`/`test`; then
 `codestyle_check` is `ruff check`, then `pytest test` runs.
+
+`httpx` shows up in both the main `dependencies` and the `dev` group, plus a separate `httpx2` in
+`dev` — this isn't a leftover duplicate. `schema.py`'s production HTTP client uses `httpx`
+directly; `httpx2` is there only because `starlette.testclient` (used by the integration test)
+now prefers it and emits a deprecation warning without it.
 
 ## Linting mechanics (`select = ["ALL"]`)
 

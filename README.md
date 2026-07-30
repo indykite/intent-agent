@@ -49,23 +49,6 @@ Example `.env` file can be copied from `.env.example`:
 ```sh
 cp .env.example .env
 ```
-
-| Variable            | Default            | Description                                          |
-|---------------------|--------------------|------------------------------------------------------|
-| `INTENT_PORT`       | `6003`             | A2A JSON-RPC listen port                             |
-| `HEALTH_PORT`       | `8001`             | Health check listen port (`GET /health`)             |
-| `BIND_HOST`         | `0.0.0.0`          | Interface the servers bind to                        |
-| `ADVERTISED_HOST`   | `intent`           | Host advertised in the A2A agent card                |
-| `INTENT_AGENT_NAME` | `intent_agent`     | Agent name in the A2A card                           |
-| `LOG_LEVEL`         | `INFO`             | Python logging level                                 |
-| `GEMINI_API_KEY`    | —                  | **Required.** The agent fails to start without it    |
-| `GEMINI_MODEL`      | `gemini-2.5-flash` | Gemini model name                                    |
-| `INDYKITE_BASE_URL` | —                  | IndyKite API base URL, for fetching the graph schema |
-| `IK_APP_AGENT_KEY`  | —                  | App agent key for the IndyKite API                   |
-
-`INDYKITE_BASE_URL`/`IK_APP_AGENT_KEY` are optional: without them the agent still starts, just
-without a graph schema to ground extraction against.
-
 ## Running the agent
 
 ### Locally, with uv

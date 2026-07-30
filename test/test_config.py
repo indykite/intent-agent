@@ -22,3 +22,28 @@ def test_defaults(monkeypatch):
     assert settings.health_port == _DEFAULT_HEALTH_PORT
     assert settings.intent_agent_name == "intent_agent"
     assert settings.gemini_model == "gemini-2.5-flash"
+
+
+def test_rejects_blank_gemini_api_key(monkeypatch):
+    """A whitespace-only GEMINI_API_KEY must fail validation, not be treated as set."""
+    monkeypatch.setenv("GEMINI_API_KEY", "   ")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+@pytest.mark.parametrize("port", [0, -1, 65536])
+def test_rejects_out_of_range_intent_port(monkeypatch, port):
+    """INTENT_PORT outside the valid TCP port range (1-65535) must fail validation."""
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("INTENT_PORT", str(port))
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+@pytest.mark.parametrize("port", [0, -1, 65536])
+def test_rejects_out_of_range_health_port(monkeypatch, port):
+    """HEALTH_PORT outside the valid TCP port range (1-65535) must fail validation."""
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("HEALTH_PORT", str(port))
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)

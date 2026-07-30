@@ -12,14 +12,15 @@ ENV LANG=C.UTF-8 \
 
 WORKDIR /app
 
-COPY pyproject.toml uv.lock README.md ./
-COPY indykite ./indykite
+COPY pyproject.toml uv.lock ./
 
 # hadolint ignore=DL3013
 RUN pip install --no-cache-dir uv && \
     uv lock --check && \
-    uv sync && \
+    uv sync --no-install-project && \
     rm pyproject.toml uv.lock
+
+COPY indykite ./indykite
 
 #
 ### Production image

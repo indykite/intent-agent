@@ -1,15 +1,14 @@
 from unittest.mock import AsyncMock
 
 from langchain_core.messages import AIMessage
+from starlette.status import HTTP_200_OK
 from starlette.testclient import TestClient
 
 from indykite.intent_agent.agent import build_app
 from indykite.intent_agent.config import Settings
 
-_HTTP_OK = 200
 
-
-def test_send_message_end_to_end(monkeypatch, mocker):
+def test_gemini_send_message_end_to_end(monkeypatch, mocker):
     """Drive a SendMessage JSON-RPC request through the ASGI app, LLM mocked."""
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.delenv("INDYKITE_BASE_URL", raising=False)
@@ -33,13 +32,11 @@ def test_send_message_end_to_end(monkeypatch, mocker):
         tool_calls=[],
     )
     mock_ainvoke = AsyncMock(side_effect=[tool_call_response, final_response])
-    mocker.patch(
-        "indykite.intent_agent.agent.ChatGoogleGenerativeAI.bind_tools",
-        return_value=mocker.Mock(ainvoke=mock_ainvoke),
-    )
+    fake_bound_llm = mocker.Mock(ainvoke=mock_ainvoke)
+    fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=fake_bound_llm))
 
     settings = Settings(_env_file=None)
-    app, _agent = build_app(settings)
+    app, _agent = build_app(settings, llm=fake_llm)
     client = TestClient(app)
 
     response = client.post(
@@ -59,7 +56,7 @@ def test_send_message_end_to_end(monkeypatch, mocker):
         },
     )
 
-    assert response.status_code == _HTTP_OK
+    assert response.status_code == HTTP_200_OK
     body = response.json()
     result_text = body["result"]["task"]["artifacts"][0]["parts"][0]["text"]
     assert '"buy"' in result_text
