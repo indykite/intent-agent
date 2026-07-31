@@ -1,7 +1,6 @@
 [project]
 name = "intent-agent"
 description = "Intent Agent"
-readme = "README.md"
 requires-python = "==3.13.*"
 # Dynamic version is required to avoid writing the package version to uv.lock file
 # otherwise uv lock --check fails on a new release, because the version is bumped and doesn't match.
@@ -12,6 +11,12 @@ dynamic = ["version"]
 dependencies = [
     "pydantic==2.13.4",
     "pydantic-settings==2.14.2",
+    "a2a-sdk[http-server,sql]==1.0.0a1",
+    "httpx==0.28.1",
+    "uvicorn==0.51.0",
+    "langchain-google-genai==4.3.2",
+    "langchain-core==1.5.1",
+    "PyYAML==6.0.3",
 ]
 
 [dependency-groups]

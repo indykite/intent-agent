@@ -43,8 +43,9 @@ COPY --from=python-deps --chown=nonroot /app ./
 # set the uid as an integer for compatibility with runAsNonRoot in Kubernetes
 USER 65532
 
+# distroless has no shell and no curl; python3 is the only interpreter guaranteed present
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:8001/health || exit 1
+    CMD ["python3", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://localhost:8001/health', timeout=5).status == 200 else 1)"]
 
 # Run the application
 ENTRYPOINT ["python3", "-m", "indykite.intent_agent"]
