@@ -3,7 +3,7 @@
 import logging
 from typing import Any
 
-import httpx
+import httpx2
 
 logger = logging.getLogger(__name__)
 
@@ -26,10 +26,10 @@ class SchemaClient:
         url = f"{self._base_url.rstrip('/')}/data-schema/v1"
         headers = {"X-IK-ClientKey": self._app_agent_key}
         try:
-            with httpx.Client(timeout=self._timeout_seconds) as client:
+            with httpx2.Client(timeout=self._timeout_seconds) as client:
                 resp = client.get(url, headers=headers)
                 resp.raise_for_status()
-        except httpx.HTTPError:
+        except httpx2.HTTPError:
             logger.warning("Failed to load data schema from %s", url)
             return None
         logger.info("Loaded data schema from %s", url)

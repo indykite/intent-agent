@@ -3,7 +3,7 @@
 .PHONY: build fix codestyle_check clean install install_dev upgrade_dev project_check \
 	fix codestyle_check test test_coverage test_coverage_report_text \
 	test_coverage_report_html test_coverage_report_xml start_pipeline integration \
-	build_integration build dry_run build_docker_image run_docker_image
+	build_integration build dry_run build_docker_image start_docker_app start_app
 
 build_integration: build integration dry_run
 build: project_check codestyle_check test
@@ -68,6 +68,10 @@ build_docker_image:
 	docker buildx build --platform linux/amd64 . \
 		-t europe-west1-docker.pkg.dev/indykite-mgmt/indykite/intent-agent:local
 
-run_docker_image:
+start_docker_app:
 	docker run --platform=linux/amd64 \
+		-p 6003:6003 -p 8001:8001 --env-file .env \
 		europe-west1-docker.pkg.dev/indykite-mgmt/indykite/intent-agent:local
+
+start_app:
+	uv run --locked python3 -m indykite.intent_agent

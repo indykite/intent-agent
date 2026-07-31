@@ -9,20 +9,19 @@ dynamic = ["version"]
 
 # https://docs.astral.sh/uv/concepts/projects/dependencies/
 dependencies = [
+    "a2a-sdk[http-server,sql]==1.0.0a1",
+    "httpx2==2.9.1",
+    "langchain-core==1.5.3",
+    "langchain-google-genai==4.3.2",
     "pydantic==2.13.4",
     "pydantic-settings==2.14.2",
-    "a2a-sdk[http-server,sql]==1.0.0a1",
-    "httpx==0.28.1",
-    "uvicorn==0.51.0",
-    "langchain-google-genai==4.3.2",
-    "langchain-core==1.5.1",
+    "uvicorn==0.52.0",
     "PyYAML==6.0.3",
 ]
 
 [dependency-groups]
 dev = [
     "coverage[toml]==7.15.2",
-    "httpx==0.28.1",
     "pytest==9.1.1",
     "pytest-cov==7.1.0",
     "pytest-mock==3.15.1",

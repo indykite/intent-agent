@@ -49,6 +49,7 @@ Example `.env` file can be copied from `.env.example`:
 ```sh
 cp .env.example .env
 ```
+
 ## Running the agent
 
 ### Locally, with uv
@@ -94,14 +95,5 @@ curl -X POST http://localhost:6003/ \
 
 ```sh
 make build_docker_image
-```
-
-`make run_docker_image` runs the image as-is, with no ports published and no env file — useful
-as a smoke test that the image starts, but not for actually reaching the agent. To run it
-reachable locally (the base images are pinned to `linux/amd64`, so this runs under emulation on
-Apple Silicon):
-
-```sh
-docker buildx build --platform linux/amd64 --load -t intent-agent:local .
-docker run --platform linux/amd64 -p 6003:6003 -p 8001:8001 --env-file .env intent-agent:local
+make start_docker_app # runs the image reachable locally
 ```
