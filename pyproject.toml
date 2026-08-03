@@ -9,7 +9,7 @@ dynamic = ["version"]
 
 # https://docs.astral.sh/uv/concepts/projects/dependencies/
 dependencies = [
-    "a2a-sdk[http-server,sql]==1.0.0a1",
+    "a2a-sdk[http-server]==1.1.2",
     "httpx2==2.9.1",
     "langchain-core==1.5.3",
     "langchain-google-genai==4.3.2",
@@ -25,7 +25,7 @@ dev = [
     "pytest==9.1.1",
     "pytest-cov==7.1.0",
     "pytest-mock==3.15.1",
-    "ruff==0.15.22",
+    "ruff==0.16.1",
     "validate-pyproject[all]==0.25",
 ]
 
@@ -52,6 +52,7 @@ ignore = [
     "D", # docstrings: https://docs.astral.sh/ruff/rules/#pydocstyle-d
     "COM812", # https://docs.astral.sh/ruff/rules/missing-trailing-comma/ The formatter enforces consistent use of trailing commas, making the rule redundant.
     "PLC0415", # https://docs.astral.sh/ruff/rules/import-outside-top-level/
+    "CPY001", # https://docs.astral.sh/ruff/rules/missing-copyright-notice/
 ]
 
 [tool.ruff.lint.extend-per-file-ignores]
