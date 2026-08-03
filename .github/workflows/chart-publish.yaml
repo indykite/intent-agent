@@ -25,9 +25,7 @@ jobs:
     name: Publish to Artifact Registry
     timeout-minutes: 10
     runs-on: ubuntu-latest
-    # todo: enable
-    # if: github.event.pull_request.draft != true
-    if: false
+    if: github.event.pull_request.draft != true
     steps:
       - name: actions/checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0 - https://github.com/actions/checkout/releases
@@ -36,6 +34,6 @@ jobs:
         uses: indykite/ops-common/.github/actions/chart-publish@cd7081295c7d8144b29aa9ec2002df4cac269f5b # master
         with:
           workload-identity-provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER_MGMT }}
-          gcp-service-account: ${{ vars.GCP_SERVICE_ACCOUNT_NAME }}@${{ secrets.GCP_PROJECT_ID_MGMT }}.iam.gserviceaccount.com
+          gcp-service-account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
           artifact-registry-url: "${{ vars.ARTIFACT_REGISTRY_URL }}/${{ secrets.GCP_PROJECT_ID_MGMT }}/indykite"
           immutable-tags: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
