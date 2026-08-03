@@ -21,10 +21,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: actions/checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0 - https://github.com/actions/checkout/releases
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 - https://github.com/actions/checkout/releases
 
       - name: Comment Artifact URL on PR
-        uses: indykite/ops-common/.github/actions/artifact-to-comment@cd7081295c7d8144b29aa9ec2002df4cac269f5b # master
+        uses: indykite/ops-common/.github/actions/artifact-to-comment@1ce75b16af13f7d866187bdb3a36a27a48792341 # master
         with:
           artifact-name: code-coverage
           artifact-title: Code Coverage
