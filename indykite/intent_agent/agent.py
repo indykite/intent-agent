@@ -12,6 +12,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
+from a2a.helpers import new_task_from_user_message, new_text_artifact, new_text_message
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.server.request_handlers import DefaultRequestHandler
@@ -26,7 +27,6 @@ from a2a.types import (
     TaskStatus,
     TaskStatusUpdateEvent,
 )
-from a2a.utils import new_agent_text_message, new_task, new_text_artifact
 from a2a.utils.constants import DEFAULT_RPC_URL
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
@@ -348,7 +348,7 @@ class IntentExecutor(AgentExecutor):
 
         prompt = raw_text or "(empty)"
 
-        task = context.current_task or new_task(context.message)
+        task = context.current_task or new_task_from_user_message(context.message)
         await event_queue.enqueue_event(task)
 
         await event_queue.enqueue_event(
@@ -357,7 +357,7 @@ class IntentExecutor(AgentExecutor):
                 context_id=context.context_id,
                 status=TaskStatus(
                     state=TaskState.TASK_STATE_WORKING,
-                    message=new_agent_text_message("Extracting intent..."),
+                    message=new_text_message("Extracting intent..."),
                 ),
             ),
         )
