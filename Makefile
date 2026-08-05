@@ -3,7 +3,8 @@
 .PHONY: build fix codestyle_check clean install install_dev upgrade_dev project_check \
 	fix codestyle_check test test_coverage test_coverage_report_text \
 	test_coverage_report_html test_coverage_report_xml start_pipeline integration \
-	build_integration build dry_run build_docker_image start_docker_app start_app
+	build_integration build dry_run build_docker_image start_docker_app start_app \
+	start_docker_compose stop_docker_compose destroy_docker_compose
 
 build_integration: build integration dry_run
 build: project_check codestyle_check test
@@ -65,13 +66,24 @@ test_coverage_report_xml:
 	@uv run --locked coverage xml -i
 
 build_docker_image:
-	docker buildx build --platform linux/amd64 . \
+	docker buildx build --load --platform linux/amd64,linux/arm64 . \
 		-t europe-west1-docker.pkg.dev/indykite-mgmt/indykite/intent-agent:local
 
 start_docker_app:
-	docker run --platform=linux/amd64 \
-		-p 6003:6003 -p 8001:8001 --env-file .env \
+	docker run \
+		-p 6003:6003 -p 8001:8001 --rm --env-file .env \
 		europe-west1-docker.pkg.dev/indykite-mgmt/indykite/intent-agent:local
 
 start_app:
 	uv run --locked python3 -m indykite.intent_agent
+
+start_docker_compose:
+	@set -e
+	docker compose build
+	docker compose up -d --wait
+
+stop_docker_compose:
+	docker compose stop
+
+destroy_docker_compose:
+	docker compose down --remove-orphans

@@ -24,7 +24,7 @@ COPY indykite ./indykite
 
 #
 ### Production image
-FROM gcr.io/distroless/python3-debian13@sha256:50f6293b98f489c0cf364635d7a3a8211d02af7b3bade01ccbf35b869ebee616 AS runtime
+FROM gcr.io/distroless/python3-debian13@sha256:325c8639176419afb9c3b50b420fbbd65d608f85f1e3f38bc4b8ba80aeac2e8d AS runtime
 
 # Setup env
 ENV LANG=C.UTF-8 \
