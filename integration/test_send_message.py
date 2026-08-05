@@ -13,6 +13,10 @@ def test_gemini_send_message_end_to_end(monkeypatch, mocker):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.delenv("INDYKITE_BASE_URL", raising=False)
     monkeypatch.delenv("IK_APP_AGENT_KEY", raising=False)
+    mocker.patch(
+        "indykite.intent_agent.agent.auth.validate_access_token",
+        return_value={"active": True, "sub": "test-subject"},
+    )
 
     tool_call_response = AIMessage(
         content="",

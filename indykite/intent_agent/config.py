@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     ik_app_agent_key: str = ""
     schema_fetch_timeout_seconds: float = 30.0
 
+    introspect_url: str = ""
+    introspect_client_id: str = ""
+    introspect_client_secret: str = ""
+    introspect_timeout_seconds: float = 5.0
+
     @field_validator("gemini_api_key")
     @classmethod
     def _reject_blank_gemini_api_key(cls, value: str) -> str:
