@@ -9,7 +9,7 @@ import logging
 from http import HTTPStatus
 from typing import Any
 
-import httpx
+import httpx2
 from a2a.server.agent_execution import RequestContext
 
 logger = logging.getLogger(__name__)
@@ -20,17 +20,22 @@ class TokenValidationError(Exception):
 
 
 def get_access_token_from_context(context: RequestContext | None) -> str:
-    """Extract the Bearer token from the incoming request's Authorization header."""
+    """Extract the Bearer token from the incoming request's Authorization header.
+
+    Any non-Bearer scheme (or a missing/malformed header) is treated as no
+    token provided - not passed through as-is - so it can't be forwarded to
+    the introspection endpoint as if it were a bearer token.
+    """
     if not context or not context.call_context:
         return ""
     req_headers = context.call_context.state.get("headers") or {}
     auth_header = req_headers.get("authorization") or req_headers.get("Authorization") or ""
     if auth_header.lower().startswith("bearer "):
         return auth_header[7:].strip()
-    return auth_header.strip()
+    return ""
 
 
-def validate_access_token(
+async def validate_access_token(
     token: str,
     *,
     introspect_url: str,
@@ -46,25 +51,31 @@ def validate_access_token(
     Returns the introspection response body (claims) if the token is active.
     Raises TokenValidationError if the token is inactive, or the call fails.
     """
-    if not token:
+    if not token.strip():
         message = "No token provided"
         raise TokenValidationError(message)
 
+    if not introspect_url.strip() or not client_id.strip() or not client_secret.strip():
+        logger.error("Token introspection is not configured (missing introspect_url/client_id/client_secret)")
+        message = "Introspection endpoint is not configured"
+        raise TokenValidationError(message)
+
     try:
-        response = httpx.post(
-            introspect_url,
-            auth=(client_id, client_secret),
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-            data={
-                "token": token,
-                "token_type_hint": "access_token",
-            },
-            timeout=timeout_seconds,
-        )
-    except httpx.RequestError as exc:
+        async with httpx2.AsyncClient() as client:
+            response = await client.post(
+                introspect_url,
+                auth=(client_id, client_secret),
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+                data={
+                    "token": token,
+                    "token_type_hint": "access_token",
+                },
+                timeout=timeout_seconds,
+            )
+    except httpx2.RequestError as exc:
         logger.warning("Token introspection call failed: %s", exc)
         message = "Unable to reach IdP introspection endpoint"
         raise TokenValidationError(message) from exc
@@ -81,11 +92,25 @@ def validate_access_token(
         message = "Introspection endpoint returned invalid response"
         raise TokenValidationError(message) from exc
 
+    if not isinstance(payload, dict):
+        logger.warning("Token introspection returned a non-object JSON body")
+        message = "Introspection endpoint returned an unexpected response shape"
+        raise TokenValidationError(message)
+
     # Per RFC 7662 Section 2.2: `active` is the one REQUIRED field.
     # Everything else (exp, sub, scope, etc.) is OPTIONAL and IdP-dependent.
     if not payload.get("active"):
         logger.info("Token introspection: token is not active")
         message = "Token is not active"
+        raise TokenValidationError(message)
+
+    # `sub` is OPTIONAL per RFC 7662, but this system's auth design relies on
+    # it as the subject identity for downstream authorization decisions - an
+    # active token missing it must be rejected outright, not silently
+    # forwarded as an anonymous/no-subject request.
+    if not payload.get("sub"):
+        logger.info("Token introspection: active token is missing required sub claim")
+        message = "Token is missing required sub claim"
         raise TokenValidationError(message)
 
     # No `act`/`aud` actor-chain check here: that check belongs to the

@@ -1,6 +1,7 @@
+import asyncio
 from unittest.mock import Mock
 
-import httpx
+import httpx2
 import pytest
 
 from indykite.intent_agent import auth
@@ -19,61 +20,91 @@ def _context_with_headers(headers: dict) -> Mock:
     return context
 
 
-def test_rejects_empty_token():
-    """An empty token must be rejected before any introspection call is made."""
+def _mock_async_client(mocker, *, response=None, side_effect=None):
+    """Patch httpx2.AsyncClient so `async with ... as client: await client.post(...)` yields/raises as given."""
+    client = mocker.MagicMock()
+    client.__aenter__ = mocker.AsyncMock(return_value=client)
+    client.__aexit__ = mocker.AsyncMock(return_value=False)
+    client.post = mocker.AsyncMock(return_value=response, side_effect=side_effect)
+    mock_client_cls = mocker.patch("indykite.intent_agent.auth.httpx2.AsyncClient", return_value=client)
+    return mock_client_cls, client
+
+
+@pytest.mark.parametrize("token", ["", "   ", "\t\n"])
+def test_rejects_blank_token(token):
+    """An empty or whitespace-only token must be rejected before any introspection call is made."""
     with pytest.raises(auth.TokenValidationError):
-        auth.validate_access_token("", **_INTROSPECT_KWARGS)
+        asyncio.run(auth.validate_access_token(token, **_INTROSPECT_KWARGS))
+
+
+@pytest.mark.parametrize("missing_field", ["introspect_url", "client_id", "client_secret"])
+def test_rejects_unconfigured_introspection(mocker, missing_field):
+    """A blank introspection URL/client_id/client_secret must raise before any network call."""
+    mock_client_cls, _client = _mock_async_client(mocker)
+    kwargs = {**_INTROSPECT_KWARGS, missing_field: "   "}
+
+    with pytest.raises(auth.TokenValidationError):
+        asyncio.run(auth.validate_access_token("token", **kwargs))
+
+    mock_client_cls.assert_not_called()
 
 
 def test_returns_claims_for_active_token(mocker):
     """An active token's introspection response must be returned as-is."""
     claims = {"active": True, "sub": "user-1"}
-    mocker.patch("indykite.intent_agent.auth.httpx.post", return_value=httpx.Response(200, json=claims))
+    _mock_async_client(mocker, response=httpx2.Response(200, json=claims))
 
-    result = auth.validate_access_token("token", **_INTROSPECT_KWARGS)
+    result = asyncio.run(auth.validate_access_token("token", **_INTROSPECT_KWARGS))
 
     assert result == claims
 
 
 def test_rejects_inactive_token(mocker):
     """An introspection response with active=False must raise TokenValidationError."""
-    mocker.patch(
-        "indykite.intent_agent.auth.httpx.post",
-        return_value=httpx.Response(200, json={"active": False}),
-    )
+    _mock_async_client(mocker, response=httpx2.Response(200, json={"active": False}))
 
     with pytest.raises(auth.TokenValidationError):
-        auth.validate_access_token("token", **_INTROSPECT_KWARGS)
+        asyncio.run(auth.validate_access_token("token", **_INTROSPECT_KWARGS))
+
+
+def test_rejects_active_token_missing_sub(mocker):
+    """An active token with no sub claim must be rejected, not proceed with subject_id=None."""
+    _mock_async_client(mocker, response=httpx2.Response(200, json={"active": True}))
+
+    with pytest.raises(auth.TokenValidationError):
+        asyncio.run(auth.validate_access_token("token", **_INTROSPECT_KWARGS))
 
 
 def test_rejects_non_200_status(mocker):
     """A non-200 introspection response must raise TokenValidationError."""
-    mocker.patch("indykite.intent_agent.auth.httpx.post", return_value=httpx.Response(500))
+    _mock_async_client(mocker, response=httpx2.Response(500))
 
     with pytest.raises(auth.TokenValidationError):
-        auth.validate_access_token("token", **_INTROSPECT_KWARGS)
+        asyncio.run(auth.validate_access_token("token", **_INTROSPECT_KWARGS))
 
 
 def test_rejects_non_json_response(mocker):
     """A non-JSON introspection response body must raise TokenValidationError."""
-    mocker.patch(
-        "indykite.intent_agent.auth.httpx.post",
-        return_value=httpx.Response(200, content=b"not json"),
-    )
+    _mock_async_client(mocker, response=httpx2.Response(200, content=b"not json"))
 
     with pytest.raises(auth.TokenValidationError):
-        auth.validate_access_token("token", **_INTROSPECT_KWARGS)
+        asyncio.run(auth.validate_access_token("token", **_INTROSPECT_KWARGS))
+
+
+def test_rejects_non_object_json_response(mocker):
+    """A valid JSON body that isn't an object (e.g. a list) must raise TokenValidationError, not AttributeError."""
+    _mock_async_client(mocker, response=httpx2.Response(200, json=["not", "an", "object"]))
+
+    with pytest.raises(auth.TokenValidationError):
+        asyncio.run(auth.validate_access_token("token", **_INTROSPECT_KWARGS))
 
 
 def test_wraps_network_failure(mocker):
-    """A network failure reaching the IdP must raise TokenValidationError, not leak httpx's own exception."""
-    mocker.patch(
-        "indykite.intent_agent.auth.httpx.post",
-        side_effect=httpx.ConnectError("Connection refused"),
-    )
+    """A network failure reaching the IdP must raise TokenValidationError, not leak httpx2's own exception."""
+    _mock_async_client(mocker, side_effect=httpx2.ConnectError("Connection refused"))
 
     with pytest.raises(auth.TokenValidationError):
-        auth.validate_access_token("token", **_INTROSPECT_KWARGS)
+        asyncio.run(auth.validate_access_token("token", **_INTROSPECT_KWARGS))
 
 
 def test_validate_ik_token_is_blocked():
@@ -96,4 +127,10 @@ def test_get_access_token_from_context_no_context():
 def test_get_access_token_from_context_no_call_context():
     """A RequestContext with no call_context must yield an empty token."""
     context = Mock(call_context=None)
+    assert auth.get_access_token_from_context(context) == ""
+
+
+def test_get_access_token_from_context_rejects_non_bearer_scheme():
+    """A non-Bearer Authorization header must yield an empty token, not be passed through as-is."""
+    context = _context_with_headers({"authorization": "Basic dXNlcjpwYXNz"})
     assert auth.get_access_token_from_context(context) == ""

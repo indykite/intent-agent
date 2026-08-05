@@ -334,7 +334,7 @@ class IntentExecutor(AgentExecutor):
 
         settings = self._agent.settings
         try:
-            claims = auth.validate_access_token(
+            claims = await auth.validate_access_token(
                 access_token,
                 introspect_url=settings.introspect_url,
                 client_id=settings.introspect_client_id,
