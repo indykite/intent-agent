@@ -1,10 +1,3 @@
-"""
-TODO before this is production-ready:
-  - Confirm the real INTROSPECT_URL, INTROSPECT_CLIENT_ID, and
-    INTROSPECT_CLIENT_SECRET values for the external IdP (currently unset
-    placeholders in Settings)
-"""
-
 import logging
 from http import HTTPStatus
 from typing import Any
@@ -30,8 +23,9 @@ def get_access_token_from_context(context: RequestContext | None) -> str:
         return ""
     req_headers = context.call_context.state.get("headers") or {}
     auth_header = req_headers.get("authorization") or req_headers.get("Authorization") or ""
-    if auth_header.lower().startswith("bearer "):
-        return auth_header[7:].strip()
+    bearer_str = "bearer "
+    if auth_header.lower().startswith(bearer_str):
+        return auth_header[len(bearer_str) :].strip()
     return ""
 
 
@@ -55,20 +49,12 @@ async def validate_access_token(
         message = "No token provided"
         raise TokenValidationError(message)
 
-    if not introspect_url.strip() or not client_id.strip() or not client_secret.strip():
-        logger.error("Token introspection is not configured (missing introspect_url/client_id/client_secret)")
-        message = "Introspection endpoint is not configured"
-        raise TokenValidationError(message)
-
     try:
         async with httpx2.AsyncClient() as client:
             response = await client.post(
                 introspect_url,
                 auth=(client_id, client_secret),
-                headers={
-                    "Accept": "application/json",
-                    "Content-Type": "application/x-www-form-urlencoded",
-                },
+                headers={"Accept": "application/json"},
                 data={
                     "token": token,
                     "token_type_hint": "access_token",
@@ -76,9 +62,14 @@ async def validate_access_token(
                 timeout=timeout_seconds,
             )
     except httpx2.RequestError as exc:
-        logger.warning("Token introspection call failed: %s", exc)
-        message = "Unable to reach IdP introspection endpoint"
+        logger.warning("Token introspection request failed: %s", exc)
+        message = "Token introspection request failed"
         raise TokenValidationError(message) from exc
+
+    if response.status_code == HTTPStatus.UNAUTHORIZED:
+        logger.error("Token introspection rejected our own client credentials (introspect_client_id/secret)")
+        message = "Introspection endpoint rejected our own client credentials"
+        raise TokenValidationError(message)
 
     if response.status_code != HTTPStatus.OK:
         logger.warning("Token introspection returned unexpected status %s", response.status_code)

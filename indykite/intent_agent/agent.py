@@ -336,7 +336,7 @@ class IntentExecutor(AgentExecutor):
         try:
             claims = await auth.validate_access_token(
                 access_token,
-                introspect_url=settings.introspect_url,
+                introspect_url=str(settings.introspect_url),
                 client_id=settings.introspect_client_id,
                 client_secret=settings.introspect_client_secret,
                 timeout_seconds=settings.introspect_timeout_seconds,
@@ -344,7 +344,7 @@ class IntentExecutor(AgentExecutor):
         except auth.TokenValidationError as exc:
             raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
 
-        subject_id_from_token = claims.get("sub")
+        subject_id_from_token = claims["sub"]
 
         raw_text = ""
         if context.message:

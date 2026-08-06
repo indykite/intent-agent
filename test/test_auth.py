@@ -37,18 +37,6 @@ def test_rejects_blank_token(token):
         asyncio.run(auth.validate_access_token(token, **_INTROSPECT_KWARGS))
 
 
-@pytest.mark.parametrize("missing_field", ["introspect_url", "client_id", "client_secret"])
-def test_rejects_unconfigured_introspection(mocker, missing_field):
-    """A blank introspection URL/client_id/client_secret must raise before any network call."""
-    mock_client_cls, _client = _mock_async_client(mocker)
-    kwargs = {**_INTROSPECT_KWARGS, missing_field: "   "}
-
-    with pytest.raises(auth.TokenValidationError):
-        asyncio.run(auth.validate_access_token("token", **kwargs))
-
-    mock_client_cls.assert_not_called()
-
-
 def test_returns_claims_for_active_token(mocker):
     """An active token's introspection response must be returned as-is."""
     claims = {"active": True, "sub": "user-1"}
@@ -80,6 +68,14 @@ def test_rejects_non_200_status(mocker):
     _mock_async_client(mocker, response=httpx2.Response(500))
 
     with pytest.raises(auth.TokenValidationError):
+        asyncio.run(auth.validate_access_token("token", **_INTROSPECT_KWARGS))
+
+
+def test_rejects_401_as_our_own_credentials_being_invalid(mocker):
+    """A 401 from the introspection endpoint means OUR client credentials are invalid (RFC 7662 2.3), not the token."""
+    _mock_async_client(mocker, response=httpx2.Response(401))
+
+    with pytest.raises(auth.TokenValidationError, match="our own client credentials"):
         asyncio.run(auth.validate_access_token("token", **_INTROSPECT_KWARGS))
 
 
