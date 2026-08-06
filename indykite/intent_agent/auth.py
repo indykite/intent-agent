@@ -83,6 +83,11 @@ async def validate_access_token(
         message = "Introspection endpoint returned invalid response"
         raise TokenValidationError(message) from exc
 
+    return _validate_introspection_claims(payload)
+
+
+def _validate_introspection_claims(payload: object) -> dict[str, Any]:
+    """Validate a parsed introspection response body, raising TokenValidationError on any failure."""
     if not isinstance(payload, dict):
         logger.warning("Token introspection returned a non-object JSON body")
         message = "Introspection endpoint returned an unexpected response shape"
@@ -104,10 +109,42 @@ async def validate_access_token(
         message = "Token is missing required sub claim"
         raise TokenValidationError(message)
 
-    # No `act`/`aud` actor-chain check here: that check belongs to the
-    # ik_token (see validate_ik_token) - the access_token's `sub` is the
-    # original workflow initiator (typically the human) and is not expected
-    # to carry an `act` claim.
+    # No ITS configured,today's only working setup
+    # The `act` claim identifying the calling agent lives directly on the
+    # access_token's introspection response instead. `aud` must equal the
+    # topmost/most-recent `act.sub`. `act` can nest for multi-hop delegation;
+    # ASSUMPTION (not yet confirmed against a real IdP response) is that the
+    # outermost `act` is the most recent actor, so compare `aud` against
+    # `act.sub` at the top level only, not any nested act - FLAG for review
+    # before relying on this in production.
+
+    act_claim = payload.get("act")
+    if not isinstance(act_claim, dict) or not act_claim.get("sub"):
+        logger.info("Token introspection: missing act claim")
+        message = "Token is missing required act claim"
+        raise TokenValidationError(message)
+
+    latest_actor = act_claim["sub"]
+    token_aud = payload.get("aud")
+
+    if token_aud != latest_actor:
+        logger.info(
+            "Token introspection: aud (%s) does not match latest actor (%s)",
+            token_aud,
+            latest_actor,
+        )
+        message = "Token audience does not match latest actor"
+        raise TokenValidationError(message)
+
+    # OPEN QUESTION / GAP (not yet confirmed, not yet implemented): this only
+    # checks `aud` for one meaning - "does it identify the latest actor" (RFC
+    # 8693). It does NOT check the other, classic OAuth meaning of `aud` -
+    # "was this token actually issued with the intent agent/IAG as its
+    # intended recipient." Nothing here confirms a token minted for some
+    # OTHER resource server couldn't be replayed against this one (audience
+    # confusion / confused-deputy). Whether the external IdP's `aud` can
+    # serve both purposes at once, or whether resource-server audience
+    # restriction needs its own separate check, is unconfirmed
     return payload
 
 
@@ -133,17 +170,20 @@ def validate_ik_token(ik_token: str) -> dict[str, Any]:
     TODO: implement once ITS introspection endpoint is available. Expected
     shape mirrors validate_access_token() above: POST the ik_token to ITS,
     check an "active"-equivalent field, return the claims/payload.
-
-    TODO: this function (not validate_access_token) is where the actor-chain
-    check belongs: `aud` must equal the topmost/most-recent `act.sub` in the
-    ik_token's introspection response - the ik_token is signed proof of which
-    client is actually calling the intent agent. `act` can nest for
-    multi-hop delegation; ASSUMPTION (not yet confirmed against a real ITS
-    response) is that the outermost `act` is the most recent actor, so
-    compare `aud` against `act.sub` at the top level only, not any nested
-    act - FLAG for review before relying on this in production.
     """
     message = (
         "ik_token validation via ITS is not yet implemented - blocked on the ITS introspection endpoint. See ENG-8846."
     )
+    raise NotImplementedError(message)
+
+
+def validate_app_agent_token(app_agent_token: str) -> dict[str, Any]:
+    """
+    Validate the calling agent's AppAgentToken - authenticates the calling
+    client itself, independent of whatever access_token/ik_token it presents.
+
+    TODO: implement once the backend team's design and the validation
+    mechanism are confirmed. Not wired into agent.py either way.
+    """
+    message = "AppAgentToken validation is not yet implemented - blocked on the backend team's design."
     raise NotImplementedError(message)
