@@ -11,8 +11,15 @@ from indykite.intent_agent.config import Settings
 def test_gemini_send_message_end_to_end(monkeypatch, mocker):
     """Drive a SendMessage JSON-RPC request through the ASGI app, LLM mocked."""
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("INTROSPECT_URL", "https://idp.example.com/introspect")
+    monkeypatch.setenv("INTROSPECT_CLIENT_ID", "client-id")
+    monkeypatch.setenv("INTROSPECT_CLIENT_SECRET", "client-secret")
     monkeypatch.delenv("INDYKITE_BASE_URL", raising=False)
     monkeypatch.delenv("IK_APP_AGENT_KEY", raising=False)
+    mocker.patch(
+        "indykite.intent_agent.agent.auth.validate_access_token",
+        return_value={"active": True, "sub": "test-subject"},
+    )
 
     tool_call_response = AIMessage(
         content="",

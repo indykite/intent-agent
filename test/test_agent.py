@@ -15,6 +15,9 @@ def test_discovers_extract_intent_skill():
 def test_build_app_registers_routes(monkeypatch):
     """build_app must wire up the agent-card and JSON-RPC routes on the app."""
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("INTROSPECT_URL", "https://idp.example.com/introspect")
+    monkeypatch.setenv("INTROSPECT_CLIENT_ID", "client-id")
+    monkeypatch.setenv("INTROSPECT_CLIENT_SECRET", "client-secret")
     monkeypatch.delenv("INDYKITE_BASE_URL", raising=False)
     monkeypatch.delenv("IK_APP_AGENT_KEY", raising=False)
     settings = Settings(_env_file=None)

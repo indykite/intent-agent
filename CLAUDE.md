@@ -40,6 +40,13 @@ clash. Concretely:
   for something already has home — e.g. new runtime config = typed field on `Settings`, not fresh
   `os.getenv` call; new LLM capability = new `skills/<name>/SKILL.md`, not inline prompt text
   bolted onto `agent.py`.
+- **New `Settings` (pydantic) fields need validation, not just a type annotation.** A bare
+  `str`/`float` default silently accepts blank or malformed values until they cause a confusing
+  failure deep in a request path instead of a clear one at startup. Match the existing pattern:
+  required fields use `Field(min_length=1)` plus a `field_validator` rejecting whitespace-only
+  values (`min_length` alone accepts one) — and reach for a more specific pydantic type where one
+  exists (e.g. `HttpUrl` for URL fields, see `introspect_url`) rather than a plain `str` plus
+  hand-rolled checks.
 - **`CODEOWNERS` gates review**, not just permissions, on `.github/`, `chart/`, `Dockerfile`, and
   various lint/security config files (`@indykite/ai-ml-team`, `@indykite/ops`) — expect and route
   review there, not free to change unilaterally.
@@ -109,14 +116,17 @@ Six modules carry whole service:
   typed field here; don't reach for `os.getenv` elsewhere.
 - **`agent.py`** — the pipeline glue: `IntentAgent` class (owns LLM, discovered skills, schema
   cache, tool bindings, tool-call loop), A2A `IntentExecutor`. `build_app(settings) -> (Starlette
-  app, IntentAgent)` = entrypoint into this module. Delegates skill discovery to `skills.py`, JWT
-  auth to `auth.py`, schema fetch/cache to `schema.py`'s `SchemaClient`.
+  app, IntentAgent)` = entrypoint into this module. Delegates skill discovery to `skills.py`,
+  access_token validation to `auth.py`, schema fetch/cache to `schema.py`'s `SchemaClient`.
 - **`skills.py`** — `SKILL.md` discovery/YAML-frontmatter parsing under `skills/`, builds the
   tier-1 system-prompt catalog (`skill_catalog_preamble.txt` + skill names/descriptions) and the
   A2A `AgentSkill` list for the agent card.
 - **`schema.py`** — `SchemaClient`: fetches/caches the IndyKite graph schema (JGF) over `httpx2`.
-- **`auth.py`** — pulls the Bearer token off the A2A request context and decodes the JWT `sub`
-  claim (no signature verification).
+- **`auth.py`** — pulls the Bearer `access_token` off the A2A request context and validates it via
+  RFC 7662 Token Introspection against the external IdP (no local JWT decode/signature check -
+  the introspection call itself is what covers signature validity). The `ik_token`/IndyKite Token
+  Service leg (`validate_ik_token`) is a deliberate `NotImplementedError` stub, blocked on ITS not
+  existing yet (`ENG-8846`) - not wired into `agent.py` yet either.
 - **`__main__.py`** — process entrypoint (`python -m indykite.intent_agent`). Wires `Settings()`,
   calls `build_app`, starts background health server on `HEALTH_PORT` (default 8001) using
   stdlib `http.server` — deliberately **not** part of main Starlette app, second listener —
@@ -139,9 +149,10 @@ still starts, runs — schema tool just reports unavailable, LLM falls back to g
 
 **A2A transport quirks** (worth knowing before curling this service or writing integration
 test): JSON-RPC method name is `SendMessage`, not `message/send`; requests need
-`A2A-Version: 1.0` header; message `role` must be literal `ROLE_USER`; any non-empty
-`Authorization: Bearer <token>` required — `sub` claim extracted from JWT payload direct, no
-signature verification (hardening tracked separately, not implemented in this port).
+`A2A-Version: 1.0` header; message `role` must be literal `ROLE_USER`; `Authorization: Bearer
+<token>` required and validated via RFC 7662 introspection against the external IdP (real network
+call - a valid-looking-but-fake token, like the old JWT-decode design accepted, is now rejected);
+`subject_id` comes from the introspection response's `sub` claim, not a locally-decoded one.
 
 ## Docker
 

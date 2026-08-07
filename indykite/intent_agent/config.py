@@ -1,6 +1,6 @@
 """Runtime configuration for the Intent Agent, loaded from environment / .env."""
 
-from pydantic import Field, field_validator
+from pydantic import Field, HttpUrl, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,11 +26,25 @@ class Settings(BaseSettings):
     ik_app_agent_key: str = ""
     schema_fetch_timeout_seconds: float = 30.0
 
+    introspect_url: HttpUrl
+    introspect_client_id: str = Field(min_length=1)
+    introspect_client_secret: str = Field(min_length=1)
+    introspect_timeout_seconds: float = 5.0
+
     @field_validator("gemini_api_key")
     @classmethod
     def _reject_blank_gemini_api_key(cls, value: str) -> str:
         """Reject a whitespace-only key (``min_length`` alone would accept one)."""
         if not value.strip():
             message = "GEMINI_API_KEY must not be blank"
+            raise ValueError(message)
+        return value
+
+    @field_validator("introspect_client_id", "introspect_client_secret")
+    @classmethod
+    def _reject_blank_introspect_config(cls, value: str, info: ValidationInfo) -> str:
+        """Reject a whitespace-only value (``min_length`` alone would accept one)."""
+        if not value.strip():
+            message = f"{info.field_name} must not be blank"
             raise ValueError(message)
         return value

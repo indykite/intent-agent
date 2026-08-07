@@ -332,7 +332,19 @@ class IntentExecutor(AgentExecutor):
         if not access_token:
             raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="Authorization required")
 
-        subject_id_from_token = auth.get_sub_from_token(access_token)
+        settings = self._agent.settings
+        try:
+            claims = await auth.validate_access_token(
+                access_token,
+                introspect_url=str(settings.introspect_url),
+                client_id=settings.introspect_client_id,
+                client_secret=settings.introspect_client_secret,
+                timeout_seconds=settings.introspect_timeout_seconds,
+            )
+        except auth.TokenValidationError as exc:
+            raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+
+        subject_id_from_token = claims["sub"]
 
         raw_text = ""
         if context.message:
