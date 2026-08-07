@@ -95,7 +95,7 @@ def _validate_introspection_claims(payload: object) -> dict[str, Any]:
 
     # Per RFC 7662 Section 2.2: `active` is the one REQUIRED field.
     # Everything else (exp, sub, scope, etc.) is OPTIONAL and IdP-dependent.
-    if not payload.get("active"):
+    if payload.get("active") is not True:
         logger.info("Token introspection: token is not active")
         message = "Token is not active"
         raise TokenValidationError(message)
