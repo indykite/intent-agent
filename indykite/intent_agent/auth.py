@@ -109,15 +109,6 @@ def _validate_introspection_claims(payload: object) -> dict[str, Any]:
         message = "Token is missing required sub claim"
         raise TokenValidationError(message)
 
-    # No ITS configured,today's only working setup
-    # The `act` claim identifying the calling agent lives directly on the
-    # access_token's introspection response instead. `aud` must equal the
-    # topmost/most-recent `act.sub`. `act` can nest for multi-hop delegation;
-    # ASSUMPTION (not yet confirmed against a real IdP response) is that the
-    # outermost `act` is the most recent actor, so compare `aud` against
-    # `act.sub` at the top level only, not any nested act - FLAG for review
-    # before relying on this in production.
-
     act_claim = payload.get("act")
     if not isinstance(act_claim, dict) or not act_claim.get("sub"):
         logger.info("Token introspection: missing act claim")
@@ -136,15 +127,6 @@ def _validate_introspection_claims(payload: object) -> dict[str, Any]:
         message = "Token audience does not match latest actor"
         raise TokenValidationError(message)
 
-    # OPEN QUESTION / GAP (not yet confirmed, not yet implemented): this only
-    # checks `aud` for one meaning - "does it identify the latest actor" (RFC
-    # 8693). It does NOT check the other, classic OAuth meaning of `aud` -
-    # "was this token actually issued with the intent agent/IAG as its
-    # intended recipient." Nothing here confirms a token minted for some
-    # OTHER resource server couldn't be replayed against this one (audience
-    # confusion / confused-deputy). Whether the external IdP's `aud` can
-    # serve both purposes at once, or whether resource-server audience
-    # restriction needs its own separate check, is unconfirmed
     return payload
 
 
