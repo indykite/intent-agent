@@ -27,6 +27,9 @@ dev = [
     "pytest-mock==3.15.1",
     "ruff==0.16.1",
     "validate-pyproject[all]==0.25",
+    "pybindgen==0.22.1",
+    "setuptools==83.0.0",
+    "wheel==0.47.0",
 ]
 
 [tool.setuptools]
