@@ -45,7 +45,7 @@ jobs:
 
       - name: Build project using composite action
         id: build_python
-        uses: indykite/ops-common/.github/actions/python-build@1ce75b16af13f7d866187bdb3a36a27a48792341 # master
+        uses: indykite/ops-common/.github/actions/python-build@ae5cdc631e7e14ae44b4bb8b965204825c7c7d0d # master
         with:
           codecov-token: ${{ secrets.CODECOV_TOKEN }}
           python-version: 3.13

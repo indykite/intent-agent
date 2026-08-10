@@ -1,7 +1,7 @@
 # Inspired by
 # https://sourcery.ai/blog/python-docker/
 # https://fastapi.tiangolo.com/deployment/docker/#dockerfile
-FROM python:3.13-trixie@sha256:54e7879ce487f34f8ee85fc37e7547e843a2358bbcb19ecc273869e9d9fcc7dc AS python-deps
+FROM python:3.13-trixie@sha256:69719dbce933473eb3632ee1c3b25788e71752d615ddee02536475be4d9e310b AS python-deps
 
 # Setup env
 ENV LANG=C.UTF-8 \
