@@ -73,7 +73,7 @@ Send it a test prompt (note the required `A2A-Version` header, the `SendMessage`
 `ROLE_USER` role — this is the A2A JSON-RPC transport, not a REST API):
 
 ```sh
-curl -X POST http://localhost:6003/ \
+curl -vvv -X POST http://localhost:6003/ \
   -H "Content-Type: application/json" \
   -H "A2A-Version: 1.0" \
   -H "Authorization: Bearer <any-non-empty-token>" \
@@ -96,4 +96,12 @@ curl -X POST http://localhost:6003/ \
 ```sh
 make build_docker_image
 make start_docker_app # runs the image reachable locally
+```
+
+## Testing with Claude
+
+https://github.com/a2anet/a2a-mcp
+
+```sh
+claude mcp add my-server -e A2A_MCP_AGENT_CARDS="{\"intent-agent\": {\"url\": \"http://localhost:6003/.well-known/agent-card.json\"}}" -- uvx a2anet-mcp
 ```
