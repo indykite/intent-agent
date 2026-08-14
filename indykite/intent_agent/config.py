@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     introspect_client_secret: str = Field(min_length=1)
     introspect_timeout_seconds: float = 5.0
 
+    subject_type: str = Field(min_length=1)
+
     @field_validator("gemini_api_key")
     @classmethod
     def _reject_blank_gemini_api_key(cls, value: str) -> str:
@@ -40,7 +42,7 @@ class Settings(BaseSettings):
             raise ValueError(message)
         return value
 
-    @field_validator("introspect_client_id", "introspect_client_secret")
+    @field_validator("introspect_client_id", "introspect_client_secret", "subject_type")
     @classmethod
     def _reject_blank_introspect_config(cls, value: str, info: ValidationInfo) -> str:
         """Reject a whitespace-only value (``min_length`` alone would accept one)."""

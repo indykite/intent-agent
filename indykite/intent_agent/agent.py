@@ -7,8 +7,6 @@ config model, not a rewrite of the extraction pipeline itself.
 
 import json
 import logging
-import re
-from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -39,30 +37,11 @@ from starlette.status import HTTP_401_UNAUTHORIZED
 
 from indykite.intent_agent import auth, skills
 from indykite.intent_agent.config import Settings
+from indykite.intent_agent.errors import SchemaUnavailableError, schema_unavailable_error
 from indykite.intent_agent.schema import SchemaClient
+from indykite.intent_agent.subject_binding import normalize_intent_response, validate_subject_type
 
 logger = logging.getLogger(__name__)
-
-
-def _normalize_intent_response(llm_text: str, original_prompt: str) -> str:
-    """Ensure the response is valid JSON with prompt/evaluations, wrap it if needed."""
-    text = llm_text.strip()
-    json_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
-    if json_match:
-        text = json_match.group(1).strip()
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        return json.dumps(
-            {"prompt": original_prompt, "evaluations": [], "raw_response": text[:500]},
-            indent=2,
-            ensure_ascii=False,
-        )
-    if not isinstance(data, dict):
-        data = {"prompt": original_prompt, "evaluations": [data] if data else []}
-    data.setdefault("prompt", original_prompt)
-    data.setdefault("evaluations", [])
-    return json.dumps(data, indent=2, ensure_ascii=False)
 
 
 class _ActivateSkillArgs(BaseModel):
@@ -93,8 +72,6 @@ class IntentAgent:
             settings.ik_app_agent_key,
             timeout_seconds=settings.schema_fetch_timeout_seconds,
         )
-        self._current_subject_id: ContextVar[str | None] = ContextVar("current_subject_id", default=None)
-
         self.discovered_skills = skills.discover_skills()
         self.system_prompt = skills.build_skill_catalog_prompt(self.discovered_skills)
         self.skill_registry = {s["name"]: s for s in self.discovered_skills}
@@ -113,6 +90,11 @@ class IntentAgent:
     def preload_schema(self) -> None:
         """Fetch and cache the schema once, at startup."""
         self._schema_client.preload()
+        schema = self.get_cached_schema()
+        if schema is None:
+            message = "Data schema unavailable at cold start, the process cannot proceed without it."
+            raise SchemaUnavailableError(message)
+        validate_subject_type(schema, self.settings.subject_type)
 
     def get_cached_schema(self) -> dict[str, Any] | None:
         """Return the cached schema, fetching it once if not already preloaded."""
@@ -133,16 +115,12 @@ class IntentAgent:
             Subjects.
             """
             schema = agent.get_cached_schema()
-            if schema is None:
-                return (
-                    "Data schema unavailable (INDYKITE_BASE_URL or IK_APP_AGENT_KEY not configured, or fetch failed)."
-                )
             return json.dumps(schema, separators=(",", ":"), ensure_ascii=False)
 
         return get_data_schema
 
     def _make_activate_skill_tool(self) -> StructuredTool | None:
-        """Create activate_skill; extract-intent injects schema and token subject."""
+        """Create activate_skill; extract-intent injects the data schema."""
         if not self.skill_registry:
             return None
         valid_names = sorted(self.skill_registry.keys())
@@ -164,38 +142,16 @@ class IntentAgent:
 
             if name == "extract-intent":
                 schema = self.get_cached_schema()
-                subject_id = self._current_subject_id.get()
-                if schema:
-                    preview_chars = self.settings.schema_preview_chars
-                    schema_json = json.dumps(schema, indent=2, ensure_ascii=False)
-                    schema_block = (
-                        "\n\n<data_schema>\n"
-                        + schema_json[:preview_chars]
-                        + "\n</data_schema>\n\nUse the above schema to map entity "
-                        "types."
-                    )
-                else:
-                    schema_block = (
-                        "\n\nNo data schema available. Use generic types "
-                        "(e.g., subject type 'user', resource type 'record')."
-                    )
-                if subject_id:
-                    subject_block = (
-                        f"\n\n<subject_from_token>The access token's 'sub' "
-                        f"claim is: {subject_id!r}. "
-                        "Use this as subject.id for Evaluation, Resource Search, and "
-                        "Action Search. For Subject Search, omit subject.id."
-                        "</subject_from_token>"
-                    )
-                else:
-                    subject_block = (
-                        "\n\n<subject_from_token>No subject from token. For Subject "
-                        "Search omit subject.id. For others, omit or infer from "
-                        "prompt.</subject_from_token>"
-                    )
+                preview_chars = self.settings.schema_preview_chars
+                schema_json = json.dumps(schema, indent=2, ensure_ascii=False)
+                schema_block = (
+                    "\n\n<data_schema>\n"
+                    + schema_json[:preview_chars]
+                    + "\n</data_schema>\n\nUse the above schema to map entity types."
+                )
                 return (
                     f"<skill_content name={name!r}>\n"
-                    f"{schema_block}{subject_block}\n\n{body}\n\n"
+                    f"{schema_block}\n\n{body}\n\n"
                     f"Skill directory: {skill_dir}\n</skill_content>"
                 )
 
@@ -223,7 +179,12 @@ class IntentAgent:
             description=(
                 "Intent agent that extracts intent from a prompt and returns "
                 "AuthZEN-compliant evaluation or search request objects. Uses the "
-                "data schema to map entities to Subject, Action, and Resource."
+                "data schema to map entities to Subject, Action, and Resource. "
+                "Requires a reachable data schema - requests fail if it's unavailable. "
+                'On failure, returns {"prompt", "error", "reason", "obligation"} '
+                'instead of "evaluations" - reason and obligation are natural-language '
+                "strings meant to be fed to the caller's own LLM, e.g. to explain the "
+                "failure to a user or ask them to clarify."
             ),
             version="1.0.0",
             provider={
@@ -257,7 +218,14 @@ class IntentAgent:
         ]
 
     @staticmethod
-    def _extract_final_text(response: BaseMessage, *, activated_extract_intent: bool, prompt: str) -> str:
+    def _extract_final_text(
+        response: BaseMessage,
+        *,
+        activated_extract_intent: bool,
+        prompt: str,
+        subject_id: str | None,
+        subject_type: str,
+    ) -> str:
         """Render the LLM's final response, normalizing it if extract-intent ran."""
         raw_response_text = getattr(response, "text", "") or ""
         raw_content = getattr(response, "content", "") or ""
@@ -272,7 +240,12 @@ class IntentAgent:
         else:
             final_text = str(raw_response_text or raw_content or "")
         if activated_extract_intent:
-            final_text = _normalize_intent_response(final_text, prompt)
+            final_text = normalize_intent_response(
+                final_text,
+                prompt,
+                subject_id=subject_id,
+                subject_type=subject_type,
+            )
         return final_text
 
     def _dispatch_tool_call(self, call: dict[str, Any], messages: list[BaseMessage]) -> bool:
@@ -293,8 +266,20 @@ class IntentAgent:
         return activated_extract_intent
 
     async def run_extraction(self, prompt: str, subject_id: str | None) -> str:
-        """Run the LLM tool-call loop for one prompt, return the final response text."""
-        self._current_subject_id.set(subject_id)
+        """Run the LLM tool-call loop for one prompt, return the final response text.
+
+        Checks schema availability upfront, before any LLM call: subject.type can't be
+        verified without it, so there's no point spending an LLM call (or several, across
+        tool-call iterations) on a result that would just be discarded afterward.
+        """
+        if self.get_cached_schema() is None:
+            logger.error(
+                "Schema unavailable - cannot verify subject_type %r; skipping extraction for prompt %r",
+                self.settings.subject_type,
+                prompt,
+            )
+            return json.dumps(schema_unavailable_error(prompt), indent=2, ensure_ascii=False)
+
         messages = self.build_initial_messages(prompt)
         final_text = ""
         activated_extract_intent = False
@@ -308,6 +293,8 @@ class IntentAgent:
                     response,
                     activated_extract_intent=activated_extract_intent,
                     prompt=prompt,
+                    subject_id=subject_id,
+                    subject_type=self.settings.subject_type,
                 )
                 break
 

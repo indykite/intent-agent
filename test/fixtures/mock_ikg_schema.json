@@ -1,0 +1,634 @@
+{
+  "graph": {
+    "nodes": {
+      "Car": {
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "external_id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "make": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "model": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "vin": {
+              "types": [
+                {
+                  "type": "FLOAT NOT NULL",
+                  "count": 1
+                },
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 3
+            },
+            "year": {
+              "types": [
+                {
+                  "type": "FLOAT NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            }
+          },
+          "system_labels": [
+            {
+              "name": "Resource",
+              "count": 3
+            }
+          ],
+          "user_defined_labels": [
+            {
+              "name": "Car",
+              "count": 3
+            },
+            {
+              "name": "Collectable",
+              "count": 1
+            },
+            {
+              "name": "Rare",
+              "count": 1
+            }
+          ],
+          "node_count": 3
+        }
+      },
+      "Company": {
+        "metadata": {
+          "properties": {
+            "address": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "email": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "external_id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "name": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "number_of_employees": {
+              "types": [
+                {
+                  "type": "FLOAT NOT NULL",
+                  "count": 2
+                },
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 3
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "vehicle_fleet_size": {
+              "types": [
+                {
+                  "type": "FLOAT NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            }
+          },
+          "system_labels": [
+            {
+              "name": "DigitalTwin",
+              "count": 3
+            },
+            {
+              "name": "Resource",
+              "count": 3
+            }
+          ],
+          "user_defined_labels": [
+            {
+              "name": "Company",
+              "count": 3
+            },
+            {
+              "name": "MobilePhones",
+              "count": 1
+            }
+          ],
+          "node_count": 3
+        }
+      },
+      "Customer": {
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            },
+            "driver_license": {
+              "metadata": {
+                "assurance_level": {
+                  "types": [
+                    {
+                      "type": "INTEGER NOT NULL",
+                      "count": 1
+                    }
+                  ],
+                  "count": 1
+                },
+                "country": {
+                  "types": [
+                    {
+                      "type": "FLOAT NOT NULL",
+                      "count": 1
+                    }
+                  ],
+                  "count": 1
+                },
+                "is_verified": {
+                  "types": [
+                    {
+                      "type": "BOOLEAN NOT NULL",
+                      "count": 1
+                    }
+                  ],
+                  "count": 1
+                },
+                "source": {
+                  "types": [
+                    {
+                      "type": "STRING NOT NULL",
+                      "count": 1
+                    }
+                  ],
+                  "count": 1
+                }
+              },
+              "types": [
+                {
+                  "type": "FLOAT NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            },
+            "email": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            },
+            "external_id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            },
+            "family_name": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            },
+            "given_name": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            },
+            "hobbies": {
+              "types": [
+                {
+                  "type": "LIST<STRING NOT NULL> NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            }
+          },
+          "system_labels": [
+            {
+              "name": "DigitalTwin",
+              "count": 2
+            },
+            {
+              "name": "Resource",
+              "count": 2
+            }
+          ],
+          "user_defined_labels": [
+            {
+              "name": "Customer",
+              "count": 2
+            }
+          ],
+          "node_count": 2
+        }
+      },
+      "_Application": {
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "external_id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            }
+          },
+          "system_labels": [
+            {
+              "name": "DigitalTwin",
+              "count": 1
+            },
+            {
+              "name": "Resource",
+              "count": 1
+            },
+            {
+              "name": "_Application",
+              "count": 1
+            }
+          ],
+          "user_defined_labels": null,
+          "node_count": 1
+        }
+      }
+    },
+    "metadata": {
+      "created_at": "2026-08-11T12:38:32Z",
+      "updated_at": "2026-08-11T12:39:32Z"
+    },
+    "edges": [
+      {
+        "source": "Customer",
+        "relation": "RENT",
+        "target": "Car",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "since": {
+              "types": [
+                {
+                  "type": "FLOAT NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            }
+          },
+          "count": 3
+        },
+        "directed": true
+      },
+      {
+        "source": "Customer",
+        "relation": "OWN",
+        "target": "Car",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "since": {
+              "types": [
+                {
+                  "type": "FLOAT NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            }
+          },
+          "count": 1
+        },
+        "directed": true
+      },
+      {
+        "source": "Customer",
+        "relation": "WORKS_AT",
+        "target": "Company",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            },
+            "full_time": {
+              "types": [
+                {
+                  "type": "BOOLEAN NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            },
+            "role": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            },
+            "since": {
+              "types": [
+                {
+                  "type": "FLOAT NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            }
+          },
+          "count": 2
+        },
+        "directed": true
+      },
+      {
+        "source": "Company",
+        "relation": "OWN",
+        "target": "Car",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "since": {
+              "types": [
+                {
+                  "type": "FLOAT NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            }
+          },
+          "count": 1
+        },
+        "directed": true
+      }
+    ],
+    "directed": true
+  }
+}
