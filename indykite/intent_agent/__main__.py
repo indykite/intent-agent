@@ -6,8 +6,10 @@ background thread.
 """
 
 import logging
+import logging.config
 import threading
 import time
+from typing import Any
 
 import uvicorn
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
@@ -19,6 +21,7 @@ from starlette.routing import Route
 
 from indykite.intent_agent.agent import build_app
 from indykite.intent_agent.config import Settings
+from indykite.intent_agent.logging_config import build_logging_config
 
 logger = logging.getLogger(__name__)
 
@@ -63,9 +66,16 @@ def build_observability_app() -> Starlette:
     return Starlette(routes=[Route("/health", _health), Route("/metrics", _metrics)])
 
 
-def _start_observability_server(bind_host: str, port: int) -> uvicorn.Server:
+def _start_observability_server(bind_host: str, port: int, logging_config: dict[str, Any]) -> uvicorn.Server:
     """Start the observability app on a background daemon thread and return the server."""
-    config = uvicorn.Config(build_observability_app(), host=bind_host, port=port, log_level="warning", access_log=False)
+    config = uvicorn.Config(
+        build_observability_app(),
+        host=bind_host,
+        port=port,
+        log_level="warning",
+        log_config=logging_config,
+        access_log=False,
+    )
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
@@ -75,16 +85,14 @@ def _start_observability_server(bind_host: str, port: int) -> uvicorn.Server:
 def main() -> None:
     """Load settings, build the app, start the observability server, then serve the A2A app."""
     settings = Settings()
-    logging.basicConfig(
-        level=getattr(logging, settings.log_level.upper(), logging.INFO),
-        format="%(asctime)s - %(levelname)s - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    log_level = settings.log_level.upper()
+    logging_config = build_logging_config(log_level)
+    logging.config.dictConfig(logging_config)
 
     app, agent = build_app(settings)
     app.add_middleware(MetricsMiddleware)
 
-    _start_observability_server(settings.bind_host, settings.health_port)
+    _start_observability_server(settings.bind_host, settings.health_port, logging_config)
     logger.info(
         "Starting %s on port %d (observability on %d, LLM: Gemini %s)",
         settings.intent_agent_name,
@@ -98,7 +106,8 @@ def main() -> None:
         app,
         host=settings.bind_host,
         port=settings.intent_port,
-        log_level="info",
+        log_level=log_level.lower(),
+        log_config=logging_config,
     )
 
 
