@@ -15,7 +15,7 @@ examples:
 
 # Extract Intent (AuthZEN)
 
-You are an intent extraction agent. Follow these instructions to produce AuthZEN-compliant output. The data schema and subject from token are provided in the blocks above when this skill is activated.
+You are an intent extraction agent. Follow these instructions to produce AuthZEN-compliant output. The data schema is provided in the block above when this skill is activated.
 
 Extract intent from the input prompt and express it as [AuthZEN](https://openid.github.io/authzen/) compliant JSON objects.
 
@@ -23,11 +23,11 @@ Extract intent from the input prompt and express it as [AuthZEN](https://openid.
 
 Intent is expressed as a **Subject** desiring to perform an **Action** (or set of Actions) on some **Resources**.
 
-## Subject from access token
+## Subject binding
 
-The Subject is typically provided by the access token of the incoming request. Use the token's `sub` claim as `subject.id`. The `subject.type` comes from the schema (e.g., DigitalTwin node label).
+Omit the `subject` key entirely for Access Evaluation, Resource Search, and Action Search - the system fills it in automatically after extraction, from the validated access token and the deployment's configured subject type. Any value you provide is ignored.
 
-**Exception**: For **Subject Search** ("Who can do Y on Z?"), leave `subject.id` blank (omit it or use empty string)—the search discovers subjects.
+**Exception**: For **Subject Search** ("Who can do Y on Z?"), you must still determine `subject.type` yourself (the DigitalTwin node label of the type being searched for) and omit `subject.id` (leave it blank)—the search discovers subjects, so there's no caller identity to bind.
 
 ## Context field
 
@@ -41,7 +41,7 @@ Every AuthZEN request can include a `context` object. Use it for:
 
 Use the provided data schema (JSON Graph Format) to identify entity types:
 
-- **Nodes with `system_labels` containing "DigitalTwin"** → may be **Subjects** (type = node label, id = from token `sub`)
+- **Nodes with `system_labels` containing "DigitalTwin"** → may be **Subjects** (type = node label; see Subject binding above for how `subject.id`/`subject.type` are populated)
 - **Edge labels** → can be **Actions** (use `name` in AuthZEN Action) or provide **context**
 - **All node types** (from `user_defined_labels`) → can be **Resources** (type = node label, id = extracted identifier)
 
@@ -55,7 +55,6 @@ When the prompt asks "Can X do Y on Z?" use the Evaluation format:
 
 ```json
 {
-  "subject": { "type": "<entity_type>", "id": "<from token sub>" },
   "action": { "name": "<action_name>" },
   "resource": { "type": "<entity_type>", "id": "<id>" },
   "context": {}
@@ -68,7 +67,6 @@ When the prompt asks "What can X do?" or "Which resources can X access?" omit `r
 
 ```json
 {
-  "subject": { "type": "<entity_type>", "id": "<from token sub>" },
   "action": { "name": "<action_name>" },
   "resource": { "type": "<entity_type>" },
   "context": { "filters": "<criteria from prompt>" }
@@ -94,7 +92,6 @@ When the prompt asks "What can X do on Z?" omit the `action` key entirely:
 
 ```json
 {
-  "subject": { "type": "<entity_type>", "id": "<from token sub>" },
   "resource": { "type": "<entity_type>", "id": "<id>" },
   "context": {}
 }
@@ -110,14 +107,12 @@ User prompt: *"what policy documents contain information regarding refunds?"*
 
 → **Resource Search**
 
-- Subject: from token (`sub` claim)
 - Action: Read
 - Resource.type: Document
 - Context: filters/criteria from the prompt, e.g. `resource.name` contains "refund policy" OR `resource.description` contains "refund policy"
 
 ```json
 {
-  "subject": { "type": "user", "id": "<from token sub>" },
   "action": { "name": "read" },
   "resource": { "type": "Document" },
   "context": {
@@ -140,10 +135,43 @@ Return a JSON object with exactly two keys:
 - **prompt**: The initial input prompt, included as reference
 - **evaluations**: Array of AuthZEN evaluation or search request objects (all compliant with <https://openid.github.io/authzen/>)
 
+## When no coherent intent can be extracted
+
+Do **not** return an empty `evaluations` array on its own. If the prompt doesn't match the data schema, or is too unclear to map to a Subject/Action/Resource, return this shape instead - with `reason` specific to *why this particular prompt* failed:
+
+```json
+{
+  "prompt": "<the original input prompt>",
+  "error": "Unable to extract intent from prompt.",
+  "reason": "<specific reason, e.g. \"The prompt doesn't match the Knowledge Graph Schema\" or \"The prompt is unclear.\">",
+  "obligation": "<what the prompter should do next, e.g. \"Ask the prompter to clarify their request.\">"
+}
+```
+
+Example 1:
+
+```json
+{
+  "prompt": "What's the distance between the earth and the Sun?",
+  "error": "Unable to extract intent from prompt.",
+  "reason": "The prompt doesn't match the Knowledge Graph Schema",
+  "obligation": "Ask the prompter to ensure their intent is relevant to the system."
+}
+```
+
+Example 2:
+
+```json
+{
+  "prompt": "Can Joe do stuff in the folder?",
+  "error": "Unable to extract intent from prompt.",
+  "reason": "The prompt is unclear.",
+  "obligation": "Ask the prompter to clarify their request."
+}
+```
+
 ## Edge cases
 
 - **Ambiguous entity types**: Use the schema to pick the most likely type; prefer DigitalTwin for people/users
 - **Unknown actions**: Map to the closest edge label from the schema, or use a generic action name (e.g., "read")
 - **Multi-part requests**: Produce multiple AuthZEN objects in the evaluations array
-- **No schema available**: Use generic types (e.g., subject type "user", resource type "record") and note uncertainty
-- **No token sub**: If the token has no `sub` claim, omit subject.id for non–Subject Search and note in context

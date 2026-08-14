@@ -13,6 +13,7 @@ def _set_baseline_env(monkeypatch):
     monkeypatch.setenv("INTROSPECT_URL", "https://idp.example.com/introspect")
     monkeypatch.setenv("INTROSPECT_CLIENT_ID", "client-id")
     monkeypatch.setenv("INTROSPECT_CLIENT_SECRET", "client-secret")
+    monkeypatch.setenv("SUBJECT_TYPE", "Customer")
 
 
 def test_requires_gemini_api_key(monkeypatch):
@@ -91,3 +92,20 @@ def test_introspect_url_stringifies_without_mangling_path(monkeypatch):
     _set_baseline_env(monkeypatch)
     settings = Settings(_env_file=None)
     assert str(settings.introspect_url) == "https://idp.example.com/introspect"
+
+
+def test_requires_subject_type(monkeypatch):
+    """Settings must fail fast when SUBJECT_TYPE is missing, not default to blank."""
+    # Question: What about Subject search? ENG-9069
+    _set_baseline_env(monkeypatch)
+    monkeypatch.delenv("SUBJECT_TYPE", raising=False)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_rejects_blank_subject_type(monkeypatch):
+    """A whitespace-only SUBJECT_TYPE must fail validation, not be treated as set."""
+    _set_baseline_env(monkeypatch)
+    monkeypatch.setenv("SUBJECT_TYPE", "   ")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)

@@ -1,3 +1,5 @@
+import json
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 from langchain_core.messages import AIMessage
@@ -7,6 +9,8 @@ from starlette.testclient import TestClient
 from indykite.intent_agent.agent import build_app
 from indykite.intent_agent.config import Settings
 
+_SCHEMA_FIXTURE_PATH = Path(__file__).parent.parent / "test" / "fixtures" / "mock_ikg_schema.json"
+
 
 def test_gemini_send_message_end_to_end(monkeypatch, mocker):
     """Drive a SendMessage JSON-RPC request through the ASGI app, LLM mocked."""
@@ -14,11 +18,16 @@ def test_gemini_send_message_end_to_end(monkeypatch, mocker):
     monkeypatch.setenv("INTROSPECT_URL", "https://idp.example.com/introspect")
     monkeypatch.setenv("INTROSPECT_CLIENT_ID", "client-id")
     monkeypatch.setenv("INTROSPECT_CLIENT_SECRET", "client-secret")
+    monkeypatch.setenv("SUBJECT_TYPE", "Customer")
     monkeypatch.delenv("INDYKITE_BASE_URL", raising=False)
     monkeypatch.delenv("IK_APP_AGENT_KEY", raising=False)
     mocker.patch(
         "indykite.intent_agent.agent.auth.validate_access_token",
         return_value={"active": True, "sub": "test-subject"},
+    )
+    fake_schema_client = mocker.Mock(
+        preload=mocker.Mock(),
+        get_cached=mocker.Mock(return_value=json.loads(_SCHEMA_FIXTURE_PATH.read_text())),
     )
 
     tool_call_response = AIMessage(
@@ -40,7 +49,7 @@ def test_gemini_send_message_end_to_end(monkeypatch, mocker):
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=fake_bound_llm))
 
     settings = Settings(_env_file=None)
-    app, _agent = build_app(settings, llm=fake_llm)
+    app, _agent = build_app(settings, llm=fake_llm, schema_client=fake_schema_client)
     client = TestClient(app)
 
     response = client.post(
@@ -65,3 +74,6 @@ def test_gemini_send_message_end_to_end(monkeypatch, mocker):
     result_text = body["result"]["task"]["artifacts"][0]["parts"][0]["text"]
     assert '"buy"' in result_text
     assert mock_ainvoke.await_count == 2  # noqa: PLR2004 - one tool-call round, one final answer
+
+    result_data = json.loads(result_text)
+    assert result_data["evaluations"][0]["subject"] == {"type": "Customer", "id": "test-subject"}
