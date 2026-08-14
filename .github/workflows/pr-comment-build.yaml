@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-slim
     steps:
       - name: actions/checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 - https://github.com/actions/checkout/releases
+        uses: indykite/ops-common/.github/actions/git-checkout@master # actions/checkout with dynamic fetch-depth resolution
 
       - name: Comment Artifact URL on PR
         uses: indykite/ops-common/.github/actions/artifact-to-comment@ae5cdc631e7e14ae44b4bb8b965204825c7c7d0d # master
