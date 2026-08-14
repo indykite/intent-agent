@@ -9,6 +9,7 @@ from starlette.routing import Route
 from starlette.testclient import TestClient
 
 from indykite.intent_agent.__main__ import MetricsMiddleware, _start_observability_server, build_observability_app
+from indykite.intent_agent.logging_config import build_logging_config
 
 
 def _client():
@@ -63,7 +64,7 @@ def _wait_until_started(server):
 
 
 def test_start_observability_server_binds_and_serves_health_in_background():
-    server = _start_observability_server("127.0.0.1", 0)
+    server = _start_observability_server("127.0.0.1", 0, build_logging_config("INFO"))
     try:
         _wait_until_started(server)
         port = server.servers[0].sockets[0].getsockname()[1]
@@ -79,7 +80,7 @@ def test_start_observability_server_binds_and_serves_health_in_background():
 def test_start_observability_server_runs_on_background_daemon_thread(mocker):
     thread_cls = mocker.patch("indykite.intent_agent.__main__.threading.Thread")
 
-    server = _start_observability_server("127.0.0.1", 0)
+    server = _start_observability_server("127.0.0.1", 0, build_logging_config("INFO"))
 
     thread_cls.assert_called_once_with(target=server.run, daemon=True)
     thread_cls.return_value.start.assert_called_once()
