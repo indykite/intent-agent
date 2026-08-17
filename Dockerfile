@@ -1,7 +1,7 @@
 # Inspired by
 # https://sourcery.ai/blog/python-docker/
 # https://fastapi.tiangolo.com/deployment/docker/#dockerfile
-FROM python:3.13-trixie@sha256:69719dbce933473eb3632ee1c3b25788e71752d615ddee02536475be4d9e310b AS python-deps
+FROM python:3.13-trixie@sha256:785ba3c54682e15fd75186dd1732d88389884e9b6f7311871674c18e5d32a1f1 AS python-deps
 
 # Setup env
 ENV LANG=C.UTF-8 \
@@ -24,7 +24,7 @@ COPY indykite ./indykite
 
 #
 ### Production image
-FROM gcr.io/distroless/python3-debian13@sha256:325c8639176419afb9c3b50b420fbbd65d608f85f1e3f38bc4b8ba80aeac2e8d AS runtime
+FROM gcr.io/distroless/python3-debian13@sha256:41dae75953c89d7755f5c81747b8e47260434be287f08dfcbf43844a7ace63ca AS runtime
 
 # Setup env
 ENV LANG=C.UTF-8 \
