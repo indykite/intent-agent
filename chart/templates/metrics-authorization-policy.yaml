@@ -1,0 +1,36 @@
+{{- if and .Values.istio.enabled .Values.monitoring.gcp }}
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: '{{ include "service.fullname" . }}-metrics'
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "service.labels" . | nindent 4 }}
+  {{- if .Values.annotations }}
+  annotations:
+    {{- include "service.annotations" $ | nindent 4 }}
+  {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "service.selectorLabels" . | nindent 6 }}
+  action: ALLOW
+  rules:
+    - {{- with .Values.istio.metricsAuthorizationPolicy }}{{- if or .namespaces .principals }}
+      from:
+        - source:
+            {{- with .namespaces }}
+            namespaces:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+            {{- with .principals }}
+            principals:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+      {{- end }}{{- end }}
+      to:
+        - operation:
+            ports:
+              - {{ .Values.app.healthPort | quote }}
+{{- end }}

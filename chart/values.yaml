@@ -1,0 +1,158 @@
+---
+replicaCount: 1
+
+image:
+  repository: europe-west1-docker.pkg.dev/placeholder
+  name: intent-agent
+  pullPolicy: Always
+  tag: "0.0.0"
+
+# app.* mirrors indykite/intent_agent/config.py's Settings fields 1:1 (env var names
+# in comments match .env.example). Keep the two in sync when Settings gains a field.
+app:
+  # advertisedHost left blank defaults to the in-cluster Service DNS name (service.fullname),
+  # which is what the A2A agent card needs callers to reach - see agent.py's `_rpc_url`.
+  advertisedHost: ""
+  intentPort: 6003 # INTENT_PORT
+  healthPort: 8001 # HEALTH_PORT
+  intentAgentName: "intent_agent" # INTENT_AGENT_NAME
+  logLevel: "INFO" # LOG_LEVEL
+
+  geminiModel: "gemini-2.5-flash" # GEMINI_MODEL
+  toolCallMaxIterations: 5 # TOOL_CALL_MAX_ITERATIONS
+  schemaPreviewChars: 12000 # SCHEMA_PREVIEW_CHARS
+
+  indykiteBaseUrl: "" # INDYKITE_BASE_URL
+  schemaFetchTimeoutSeconds: 30.0 # SCHEMA_FETCH_TIMEOUT_SECONDS
+
+  introspectUrl: "https://placeholder.example.com" # INTROSPECT_URL
+  introspectClientId: "placeholder" # INTROSPECT_CLIENT_ID
+  introspectTimeoutSeconds: 5.0 # INTROSPECT_TIMEOUT_SECONDS
+
+  subjectType: "placeholder" # SUBJECT_TYPE
+
+  # GEMINI_API_KEY - required, no default in Settings.
+  geminiApiKeySecretRef:
+    name: "intent-agent-secrets"
+    key: "GEMINI_API_KEY"
+
+  # INTROSPECT_CLIENT_SECRET - required, no default in Settings.
+  introspectClientSecretRef:
+    name: "intent-agent-secrets"
+    key: "INTROSPECT_CLIENT_SECRET"
+
+  # IK_APP_AGENT_KEY - optional (blank default in Settings just disables schema fetching).
+  # Leave name blank to omit the env var entirely.
+  ikAppAgentKeySecretRef:
+    name: ""
+    key: "IK_APP_AGENT_KEY"
+
+  tmpDiskSizeLimit: "64Mi"
+  terminationGracePeriodSeconds: 30
+
+  env: {}
+  envFromSecrets: []
+  #  envFromSecrets:
+  #    - envVarName: FOO
+  #      secretName: app-secret
+  #      secretKey: foo-key
+
+fullnameOverride: ""
+
+service:
+  type: ClusterIP
+  port: 80
+
+serviceAccount:
+  create: true
+  name: intent-agent-sa
+  annotations: {}
+
+podSecurityContext:
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
+  memoryUtilizationPercentage: 70
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+annotations: {}
+
+imagePullSecrets: []
+
+monitoring:
+  gcp: false
+  interval: "30s"
+
+networkPolicy:
+  enabled: true
+  # Permissive by design (no isolation) - only guarantees a NetworkPolicy object exists.
+  # Override with explicit peer/port selectors per-environment to actually restrict traffic.
+  ingress:
+    - {}
+  egress:
+    - {}
+
+istio:
+  enabled: false
+  # Automatically enabled if istio.enabled, monitoring.gcp and metricsPeerAuthentication.enabled are true
+  metricsPeerAuthentication:
+    enabled: true
+    mtlsMode: "STRICT"
+    portLevelMtlsMode: "PERMISSIVE"
+  # Restricts who may reach the health/metrics port when monitoring.gcp and istio.enabled are true.
+  # Left empty (no restriction) by default since the GKE Managed Prometheus collector's identity
+  # varies by cluster; populate with its namespace/principals to lock this down per-environment.
+  metricsAuthorizationPolicy:
+    namespaces: []
+    principals: []
+  destinationRule:
+    enabled: false
+  virtualService:
+    enabled: false
+    gateways:
+      - mesh
+    retries:
+      attempts: 5
+      perTryTimeout: 200s
+      retryOn: "connect-failure,refused-stream,unavailable,cancelled,retriable-status-codes,gateway-error"
+      retryRemoteLocalities: true
+  authorizationPolicy:
+    enabled: false
+    namespaces: []
+    principals: []
+    internalCallers:
+      sameNamespace:
+        enabled: false
+        serviceAccounts: []
+      crossNamespace: []
+    operations:
+      - methods:
+          - POST
+        paths:
+          - /
+
+labels:
+  environment: ""

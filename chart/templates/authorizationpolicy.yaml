@@ -1,0 +1,59 @@
+{{- if and ((.Values.istio).enabled) (((.Values.istio).authorizationPolicy).enabled) }}
+{{- if .Values.istio.authorizationPolicy.rules }}
+{{ include "service.authorizationPolicy" . }}
+  rules:
+    {{- toYaml .Values.istio.authorizationPolicy.rules | nindent 4 }}
+{{- else }}
+{{- $namespaces := list }}
+{{- $principals := list }}
+{{- if .Values.istio.authorizationPolicy.namespaces }}
+{{- $namespaces = concat $namespaces .Values.istio.authorizationPolicy.namespaces }}
+{{- end }}
+{{- if .Values.istio.authorizationPolicy.principals }}
+{{- $principals = concat $principals .Values.istio.authorizationPolicy.principals }}
+{{- end }}
+{{- with .Values.istio.authorizationPolicy.internalCallers }}
+{{- with .sameNamespace }}
+{{- if .enabled }}
+{{- $namespaces = append $namespaces $.Release.Namespace }}
+{{- range .serviceAccounts }}
+{{- $principals = append $principals (printf "cluster.local/ns/%s/sa/%s" $.Release.Namespace .) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- range .crossNamespace }}
+{{- $ns := .namespace }}
+{{- $namespaces = append $namespaces $ns }}
+{{- range .serviceAccounts }}
+{{- $principals = append $principals (printf "cluster.local/ns/%s/sa/%s" $ns .) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if or $namespaces $principals }}
+{{ include "service.authorizationPolicy" . }}
+  rules:
+    - from:
+        - source:
+            namespaces:
+              {{- toYaml ($namespaces | uniq) | nindent 14 }}
+            principals:
+              {{- toYaml ($principals | uniq) | nindent 14 }}
+      {{- if .Values.istio.authorizationPolicy.operations }}
+      to:
+        {{- range .Values.istio.authorizationPolicy.operations }}
+        - operation:
+            {{- if .methods }}
+            methods:
+              {{- toYaml .methods | nindent 14 }}
+            {{- end }}
+            {{- if .paths }}
+            paths:
+              {{- toYaml .paths | nindent 14 }}
+            {{- end }}
+            ports:
+              - {{ $.Values.app.intentPort | quote }}
+        {{- end }}
+      {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

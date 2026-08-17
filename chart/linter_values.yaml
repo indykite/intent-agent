@@ -1,0 +1,13 @@
+---
+# These values are used by pre-commit helmlint and helm-kubeconform hooks
+monitoring:
+  gcp: true
+
+autoscaling:
+  enabled: true
+
+podDisruptionBudget:
+  enabled: true
+
+istio:
+  enabled: true

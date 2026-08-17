@@ -1,0 +1,39 @@
+{{- if and ((.Values.istio).enabled) (((.Values.istio).virtualService).enabled) }}
+---
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: {{ include "service.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "service.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    {{- with .Values.annotations }}
+    {{- include "service.annotations" $ | nindent 4 }}
+    {{- end }}
+spec:
+  gateways:
+    {{- toYaml .Values.istio.virtualService.gateways | nindent 4 }}
+  hosts:
+    {{- $hosts := .Values.istio.virtualService.hosts | default (list .Release.Name) }}
+    {{- toYaml ($hosts | uniq) | nindent 4 }}
+  http:
+    - name: {{ .Chart.Name }}-routes
+      {{- with .Values.istio.virtualService.retries }}
+      retries:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.istio.virtualService.headers }}
+      headers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      route:
+        - destination:
+            host: {{ include "service.fullname" . }}
+            port:
+              number: {{ .Values.service.port }}
+            {{- if (((.Values.istio).destinationRule).enabled) }}
+            subset: default
+            {{- end }}
+{{- end }}

@@ -1,0 +1,162 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "service.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "service.labels" . | nindent 4 }}
+  {{- if .Values.annotations }}
+  annotations:
+    {{- include "service.annotations" $ | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "service.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checkov.io/skip: CKV_K8S_21=Helm static rendering uses namespace=default
+        {{- if .Values.istio.enabled }}
+        proxy.istio.io/config: '{ "holdApplicationUntilProxyStarts": true, "terminationDrainDuration": "30s" }'
+        {{- end }}
+        {{- if .Values.annotations }}
+        {{- include "service.annotations" $ | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "service.selectorLabels" . | nindent 8 }}
+        version: {{ .Values.image.tag | quote }}
+        {{- with .Values.labels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "service.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ .Values.app.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ .Values.podSecurityContext.runAsUser }}
+        runAsGroup: {{ .Values.podSecurityContext.runAsGroup }}
+        fsGroup: {{ .Values.podSecurityContext.fsGroup }}
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: {{ include "service.fullname" . }}
+          image: "{{ .Values.image.repository }}/{{ .Values.image.name | default .Chart.Name }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: INTENT_PORT
+              value: {{ .Values.app.intentPort | quote }}
+            - name: HEALTH_PORT
+              value: {{ .Values.app.healthPort | quote }}
+            - name: ADVERTISED_HOST
+              value: {{ .Values.app.advertisedHost | default (include "service.fullname" .) | quote }}
+            - name: INTENT_AGENT_NAME
+              value: {{ .Values.app.intentAgentName | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.app.logLevel | quote }}
+            - name: GEMINI_MODEL
+              value: {{ .Values.app.geminiModel | quote }}
+            - name: TOOL_CALL_MAX_ITERATIONS
+              value: {{ .Values.app.toolCallMaxIterations | quote }}
+            - name: SCHEMA_PREVIEW_CHARS
+              value: {{ .Values.app.schemaPreviewChars | quote }}
+            - name: INDYKITE_BASE_URL
+              value: {{ .Values.app.indykiteBaseUrl | quote }}
+            - name: SCHEMA_FETCH_TIMEOUT_SECONDS
+              value: {{ .Values.app.schemaFetchTimeoutSeconds | quote }}
+            - name: INTROSPECT_URL
+              value: {{ .Values.app.introspectUrl | quote }}
+            - name: INTROSPECT_CLIENT_ID
+              value: {{ .Values.app.introspectClientId | quote }}
+            - name: INTROSPECT_TIMEOUT_SECONDS
+              value: {{ .Values.app.introspectTimeoutSeconds | quote }}
+            - name: SUBJECT_TYPE
+              value: {{ .Values.app.subjectType | quote }}
+
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.app.geminiApiKeySecretRef.name }}
+                  key: {{ .Values.app.geminiApiKeySecretRef.key }}
+            - name: INTROSPECT_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.app.introspectClientSecretRef.name }}
+                  key: {{ .Values.app.introspectClientSecretRef.key }}
+            {{- if .Values.app.ikAppAgentKeySecretRef.name }}
+            - name: IK_APP_AGENT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.app.ikAppAgentKeySecretRef.name }}
+                  key: {{ .Values.app.ikAppAgentKeySecretRef.key }}
+            {{- end }}
+
+            {{- range $key, $value := .Values.app.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+
+            {{- range .Values.app.envFromSecrets }}
+            - name: {{ .envVarName }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName }}
+                  key: {{ .secretKey }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.app.intentPort }}
+            - name: health
+              containerPort: {{ .Values.app.healthPort }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 3
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            failureThreshold: 3
+            timeoutSeconds: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - mountPath: /tmp
+              name: tmp-volume
+
+      volumes:
+        - name: tmp-volume
+          emptyDir:
+            sizeLimit: {{ .Values.app.tmpDiskSizeLimit }}
+
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
