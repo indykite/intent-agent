@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     indykite_base_url: str = ""
     ik_app_agent_key: str = ""
     schema_fetch_timeout_seconds: float = 30.0
+    schema_refresh_ttl_hours: float = Field(default=24.0, gt=0)
+
+    redis_host: str = ""
+    redis_port: int = Field(default=6379, ge=1, le=65535)
 
     introspect_url: HttpUrl
     introspect_client_id: str = Field(min_length=1)

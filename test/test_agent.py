@@ -3,8 +3,10 @@ import json
 from pathlib import Path
 
 import pytest
+from dogpile.cache.backends.memory import MemoryBackend
+from dogpile.cache.backends.redis import RedisBackend
 
-from indykite.intent_agent.agent import IntentAgent, build_app
+from indykite.intent_agent.agent import IntentAgent, _build_schema_cache, build_app
 from indykite.intent_agent.config import Settings
 from indykite.intent_agent.errors import SchemaUnavailableError, SubjectTypeMismatchError
 from indykite.intent_agent.skills import discover_skills
@@ -175,6 +177,22 @@ def _settings_with_subject_type(monkeypatch, subject_type="Customer"):
     monkeypatch.setenv("INTROSPECT_CLIENT_SECRET", "client-secret")
     monkeypatch.setenv("SUBJECT_TYPE", subject_type)
     return Settings(_env_file=None)
+
+
+def test_build_schema_cache_uses_memory_backend_when_redis_host_blank(monkeypatch):
+    """Blank REDIS_HOST must fall back to the in-process Memory cache - no Redis required."""
+    settings = _settings_with_subject_type(monkeypatch)
+    assert isinstance(_build_schema_cache(settings).backend, MemoryBackend)
+
+
+def test_build_schema_cache_uses_redis_backend_when_redis_host_set(monkeypatch):
+    """A configured REDIS_HOST must select the Redis-backed cache."""
+    monkeypatch.setenv("REDIS_HOST", "redis.example.com")
+    settings = _settings_with_subject_type(monkeypatch)
+    cache = _build_schema_cache(settings)
+    assert isinstance(cache.backend, RedisBackend)
+    assert cache.backend.host == "redis.example.com"
+    assert cache.backend.port == settings.redis_port
 
 
 def test_get_data_schema_tool_returns_cached_schema(monkeypatch, mocker):

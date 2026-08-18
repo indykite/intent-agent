@@ -26,6 +26,7 @@ from a2a.types import (
     TaskStatusUpdateEvent,
 )
 from a2a.utils.constants import DEFAULT_RPC_URL
+from dogpile.cache.region import CacheRegion, make_region
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool, tool
@@ -42,6 +43,23 @@ from indykite.intent_agent.schema import SchemaClient
 from indykite.intent_agent.subject_binding import normalize_intent_response, validate_subject_type
 
 logger = logging.getLogger(__name__)
+
+_SECONDS_PER_HOUR = 3600
+
+
+def _build_schema_cache(settings: Settings) -> CacheRegion:
+    """Pick the schema cache backend: Redis if configured, in-process otherwise.
+
+    Blank REDIS_HOST disables Redis (matches indykite_base_url/ik_app_agent_key's
+    blank-means-disabled convention) - single-instance deployments never need
+    Redis running.
+    """
+    if not settings.redis_host:
+        return make_region().configure("dogpile.cache.memory")
+    return make_region().configure(
+        "dogpile.cache.redis",
+        arguments={"host": settings.redis_host, "port": settings.redis_port},
+    )
 
 
 class _ActivateSkillArgs(BaseModel):
@@ -71,6 +89,7 @@ class IntentAgent:
             settings.indykite_base_url,
             settings.ik_app_agent_key,
             timeout_seconds=settings.schema_fetch_timeout_seconds,
+            cache=_build_schema_cache(settings),
         )
         self.discovered_skills = skills.discover_skills()
         self.system_prompt = skills.build_skill_catalog_prompt(self.discovered_skills)
@@ -96,8 +115,13 @@ class IntentAgent:
             raise SchemaUnavailableError(message)
         validate_subject_type(schema, self.settings.subject_type)
 
+    def start_schema_refresh(self) -> None:
+        """Start the background schema refresh loop."""
+        ttl_seconds = self.settings.schema_refresh_ttl_hours * _SECONDS_PER_HOUR
+        self._schema_client.start_background_refresh(ttl_seconds)
+
     def get_cached_schema(self) -> dict[str, Any] | None:
-        """Return the cached schema, fetching it once if not already preloaded."""
+        """Return the cached schema, fetching it once if not already cached."""
         return self._schema_client.get_cached()
 
     def _make_get_data_schema_tool(self) -> StructuredTool:
@@ -403,6 +427,8 @@ def build_app(
     """Construct the Starlette app and its backing IntentAgent for these settings."""
     agent = IntentAgent(settings, llm=llm, schema_client=schema_client)
     agent.preload_schema()
+    agent.start_schema_refresh()
+
     agent_card = agent.build_agent_card()
     handler = DefaultRequestHandler(
         agent_executor=IntentExecutor(agent),

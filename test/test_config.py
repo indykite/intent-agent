@@ -5,6 +5,8 @@ from indykite.intent_agent.config import Settings
 
 _DEFAULT_INTENT_PORT = 6003
 _DEFAULT_HEALTH_PORT = 8001
+_DEFAULT_REDIS_PORT = 6379
+_DEFAULT_SCHEMA_REFRESH_TTL_HOURS = 24.0
 
 
 def _set_baseline_env(monkeypatch):
@@ -32,6 +34,9 @@ def test_defaults(monkeypatch):
     assert settings.health_port == _DEFAULT_HEALTH_PORT
     assert settings.intent_agent_name == "intent_agent"
     assert settings.gemini_model == "gemini-2.5-flash"
+    assert settings.redis_host == ""
+    assert settings.redis_port == _DEFAULT_REDIS_PORT
+    assert settings.schema_refresh_ttl_hours == _DEFAULT_SCHEMA_REFRESH_TTL_HOURS
 
 
 def test_rejects_blank_gemini_api_key(monkeypatch):
@@ -107,5 +112,23 @@ def test_rejects_blank_subject_type(monkeypatch):
     """A whitespace-only SUBJECT_TYPE must fail validation, not be treated as set."""
     _set_baseline_env(monkeypatch)
     monkeypatch.setenv("SUBJECT_TYPE", "   ")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+@pytest.mark.parametrize("port", [0, -1, 65536])
+def test_rejects_out_of_range_redis_port(monkeypatch, port):
+    """REDIS_PORT outside the valid TCP port range (1-65535) must fail validation."""
+    _set_baseline_env(monkeypatch)
+    monkeypatch.setenv("REDIS_PORT", str(port))
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+@pytest.mark.parametrize("ttl", [0, -1])
+def test_rejects_non_positive_schema_refresh_ttl(monkeypatch, ttl):
+    """A zero or negative SCHEMA_REFRESH_TTL_HOURS would busy-loop the refresh thread."""
+    _set_baseline_env(monkeypatch)
+    monkeypatch.setenv("SCHEMA_REFRESH_TTL_HOURS", str(ttl))
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
