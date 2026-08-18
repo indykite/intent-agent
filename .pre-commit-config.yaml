@@ -10,9 +10,8 @@
 #   brew install yamlfmt yamllint actionlint markdownlint-cli2 shellcheck shfmt checkov trivy hadolint uv helm kubeconform
 #
 # Update hooks and their dependencies regularly via:
-#   (remote) pre-commit autoupdate --jobs $(getconf _NPROCESSORS_ONLN)
+#   (remote) pre-commit autoupdate --freeze --jobs $(getconf _NPROCESSORS_ONLN)
 #   (local) brew update && brew upgrade -g
-# TODO: do NOT use '--freeze' until https://github.com/renovatebot/renovate/issues/22567 is completed
 #
 # using '[pre-commit, pre-push]' duplicates the checks
 # if any checks are missing, override their default stage explicitly below
