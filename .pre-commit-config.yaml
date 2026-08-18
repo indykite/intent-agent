@@ -33,7 +33,7 @@ repos:
         name: pre-commit/check-useless-excludes
 
   - repo: ssh://git@github.com/indykite/ops-common
-    rev: "d8b3d3da7eed0bb4aa987ddb938ce1d7a07f4189" # using a branch name (or HEAD) is not supported
+    rev: "e9c7030b9fcd363f165a6ad358b3bfd68c466495" # using a branch name (or HEAD) is not supported
     hooks:
       # NON-DEFAULT stage, install explicitly with: pre-commit install -t post-checkout
       - id: git-pull
@@ -64,7 +64,7 @@ repos:
   #
   # Renovate
   - repo: https://github.com/renovatebot/pre-commit-hooks
-    rev: "42.81.3"
+    rev: "42ce3a76122fe740d44470f11009250124fa3e05" # frozen: 44.33.2
     hooks:
       - id: renovate-config-validator
         args: [--strict]
@@ -72,7 +72,7 @@ repos:
   #
   # Commit Message linting
   - repo: https://github.com/alessandrojcm/commitlint-pre-commit-hook
-    rev: v9.24.0
+    rev: 25d0a52aa8bc0fc242613346792dc8d726c13347 # frozen: v9.26.0
     hooks:
       # NON-DEFAULT stage, install explicitly with: pre-commit install -t commit-msg
       - id: commitlint
@@ -87,13 +87,13 @@ repos:
   #
   # Detect hardcoded secrets
   - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.30.0
+    rev: 2ca41cc1372d1e939a6a879f18cdc19fc1cac1ce # frozen: v8.30.0
     hooks:
       - id: gitleaks
         name: gitleaks
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v6.0.0
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c # frozen: v6.0.0
     hooks:
       # Git style
       - id: check-added-large-files
@@ -155,14 +155,14 @@ repos:
   #
   # more Python
   - repo: https://github.com/abravalheri/validate-pyproject
-    rev: v0.24.1
+    rev: 4b2e70d08cb2ccd26d1fba73588de41c7a5d50b7 # frozen: v0.25
     hooks:
       - id: validate-pyproject
         name: python-validate-pyproject
 
   - repo: https://github.com/astral-sh/uv-pre-commit
     # uv version.
-    rev: 0.9.25
+    rev: b84c4a0a90bd58c7d82ae8f0d4d5e77b1ddd3ce6 # frozen: 0.12.5
     hooks:
       - id: uv-lock
         name: python-uv-lock
@@ -172,7 +172,7 @@ repos:
         args: [--dry-run, --upgrade] # TODO: consider removing '--dry-run' for automation
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.11
+    rev: 65dbdb59d2f2d9c3bdc343c566821ad3319ddaa3 # frozen: v0.16.3
     hooks:
       - id: ruff-format
         name: python-ruff-format
@@ -214,7 +214,7 @@ repos:
 
   # Dockerfile linting
   - repo: https://github.com/hadolint/hadolint # language: system
-    rev: v2.14.0
+    rev: 2eece55955ced00200be9729e9728cb7dacca505 # frozen: v2.15.1
     hooks:
       - id: hadolint
         name: hadolint/dockerfile
@@ -223,7 +223,7 @@ repos:
   # Markdown
   # keep it after 'terraform-docs' update, so newly generated/updated files can be verified
   - repo: https://github.com/DavidAnson/markdownlint-cli2
-    rev: v0.20.0
+    rev: b82a6c8896e491b9cb377a99ff3412131920681b # frozen: v0.23.2
     hooks:
       - id: markdownlint-cli2
         name: markdownlint
@@ -232,7 +232,7 @@ repos:
   #
   # Helm charts
   - repo: https://github.com/gruntwork-io/pre-commit
-    rev: v0.1.30
+    rev: 40f924cd642f5dc98d12bd97b07f3752223553da # frozen: v0.1.30
     hooks:
       - id: helmlint
         name: helmlint
@@ -240,7 +240,7 @@ repos:
   #
   # IaC in general
   - repo: https://github.com/bridgecrewio/checkov
-    rev: "e52a901a3829d818d20c9b75e544845c8b756968" # frozen: 3.2.526
+    rev: "5458c889320a19ccf2e2eed54beb4c661c70f67a" # frozen: 3.3.11
     hooks:
       - id: checkov_diff
         name: iac/checkov
