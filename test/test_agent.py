@@ -179,8 +179,10 @@ def _settings_with_subject_type(monkeypatch, subject_type="Customer"):
     return Settings(_env_file=None)
 
 
-def test_build_schema_cache_uses_memory_backend_when_redis_host_blank(monkeypatch):
-    """Blank REDIS_HOST must fall back to the in-process Memory cache - no Redis required."""
+@pytest.mark.parametrize("redis_host", ["", "   "], ids=["blank", "whitespace_only"])
+def test_build_schema_cache_uses_memory_backend_when_redis_host_blank(monkeypatch, redis_host):
+    """Blank (or whitespace-only) REDIS_HOST must fall back to the in-process Memory cache."""
+    monkeypatch.setenv("REDIS_HOST", redis_host)
     settings = _settings_with_subject_type(monkeypatch)
     assert isinstance(_build_schema_cache(settings).backend, MemoryBackend)
 
@@ -193,6 +195,22 @@ def test_build_schema_cache_uses_redis_backend_when_redis_host_set(monkeypatch):
     assert isinstance(cache.backend, RedisBackend)
     assert cache.backend.host == "redis.example.com"
     assert cache.backend.port == settings.redis_port
+
+
+def test_start_schema_refresh(monkeypatch, mocker):
+    """start_schema_refresh must start the client's background refresh with the TTL in seconds
+    when supported, and must no-op (not raise) for a schema_client predating background refresh
+    (e.g. a duck-typed stub implementing only preload()/get_cached()).
+    """
+    monkeypatch.setenv("SCHEMA_REFRESH_TTL_HOURS", "2.0")
+    settings = _settings_with_subject_type(monkeypatch)
+
+    fake_schema_client = mocker.Mock(start_background_refresh=mocker.Mock())
+    IntentAgent(settings, llm=mocker.Mock(), schema_client=fake_schema_client).start_schema_refresh()
+    fake_schema_client.start_background_refresh.assert_called_once_with(2.0 * 3600)
+
+    legacy_schema_client = mocker.Mock(spec=["preload", "get_cached"])
+    IntentAgent(settings, llm=mocker.Mock(), schema_client=legacy_schema_client).start_schema_refresh()
 
 
 def test_get_data_schema_tool_returns_cached_schema(monkeypatch, mocker):

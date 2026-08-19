@@ -50,15 +50,16 @@ _SECONDS_PER_HOUR = 3600
 def _build_schema_cache(settings: Settings) -> CacheRegion:
     """Pick the schema cache backend: Redis if configured, in-process otherwise.
 
-    Blank REDIS_HOST disables Redis (matches indykite_base_url/ik_app_agent_key's
-    blank-means-disabled convention) - single-instance deployments never need
-    Redis running.
+    Blank (or whitespace-only) REDIS_HOST disables Redis (matches
+    indykite_base_url/ik_app_agent_key's blank-means-disabled convention) -
+    single-instance deployments never need Redis running.
     """
-    if not settings.redis_host:
+    redis_host = settings.redis_host.strip()
+    if not redis_host:
         return make_region().configure("dogpile.cache.memory")
     return make_region().configure(
         "dogpile.cache.redis",
-        arguments={"host": settings.redis_host, "port": settings.redis_port},
+        arguments={"host": redis_host, "port": settings.redis_port},
     )
 
 
@@ -116,7 +117,14 @@ class IntentAgent:
         validate_subject_type(schema, self.settings.subject_type)
 
     def start_schema_refresh(self) -> None:
-        """Start the background schema refresh loop."""
+        """Start the background schema refresh loop, if the injected schema_client supports it.
+
+        A no-op for schema_client implementations predating background refresh (e.g. a
+        duck-typed stub implementing only preload()/get_cached()), so injecting one doesn't
+        break with an AttributeError.
+        """
+        if not hasattr(self._schema_client, "start_background_refresh"):
+            return
         ttl_seconds = self.settings.schema_refresh_ttl_hours * _SECONDS_PER_HOUR
         self._schema_client.start_background_refresh(ttl_seconds)
 
