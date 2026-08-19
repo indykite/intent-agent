@@ -41,10 +41,9 @@ app:
     name: "intent-agent-secrets"
     key: "INTROSPECT_CLIENT_SECRET"
 
-  # IK_APP_AGENT_KEY - optional (blank default in Settings just disables schema fetching).
-  # Leave name blank to omit the env var entirely.
+  # IK_APP_AGENT_KEY - - required, no default in Settings.
   ikAppAgentKeySecretRef:
-    name: ""
+    name: "intent-agent-secrets"
     key: "IK_APP_AGENT_KEY"
 
   tmpDiskSizeLimit: "64Mi"

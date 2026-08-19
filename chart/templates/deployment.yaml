@@ -87,13 +87,11 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.app.introspectClientSecretRef.name }}
                   key: {{ .Values.app.introspectClientSecretRef.key }}
-            {{- if .Values.app.ikAppAgentKeySecretRef.name }}
             - name: IK_APP_AGENT_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.app.ikAppAgentKeySecretRef.name }}
                   key: {{ .Values.app.ikAppAgentKeySecretRef.key }}
-            {{- end }}
 
             {{- range $key, $value := .Values.app.env }}
             - name: {{ $key }}
