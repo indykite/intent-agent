@@ -1,10 +1,11 @@
 """Tests for SchemaClient: fetching, caching, and TTL-driven on-demand refresh."""
 
 import httpx2
+import jwt
 import pytest
 from dogpile.cache.region import make_region
 
-from indykite.intent_agent.schema import SchemaClient
+from indykite.intent_agent.schema import SchemaClient, _cache_key
 
 _SCHEMA = {"graph": {"nodes": {}, "edges": []}}
 _EXPECTED_FETCH_COUNT_AFTER_REFRESH = 2
@@ -25,9 +26,9 @@ def _mock_sync_client(mocker, *, response=None, side_effect=None):
     return client
 
 
-def _mock_response(mocker):
-    """Build a fake httpx2 response returning _SCHEMA from .json(), never raising on .raise_for_status()."""
-    response = mocker.Mock(json=mocker.Mock(return_value=_SCHEMA))
+def _mock_response(mocker, schema=_SCHEMA):
+    """Build a fake httpx2 response returning schema from .json(), never raising on .raise_for_status()."""
+    response = mocker.Mock(json=mocker.Mock(return_value=schema))
     response.raise_for_status = mocker.Mock()
     return response
 
@@ -99,6 +100,43 @@ def test_preload_and_get_cached_round_trip(mocker, backend):
     client.preload()
 
     assert client.get_cached() == _SCHEMA
+
+
+def _fake_jwt(sub):
+    """Build a real (unsigned, alg=none) JWT with the given `sub` claim, via the same library
+    _jwt_claim decodes with - hand-rolling the encoding here instead would risk drifting from
+    what jwt.decode actually requires, the same class of bug this replaced.
+    """
+    return jwt.encode({"sub": sub}, key="", algorithm="none")
+
+
+def test_cache_key_prefers_jwt_sub_claim_over_hashing_the_raw_key():
+    """A well-formed app_agent_key JWT's sub claim (a stable, non-secret GID) must be used
+    directly, so the raw credential never needs to be embedded/hashed into the cache key.
+    A non-JWT key (e.g. blank, common in tests) must still fall back to a valid, distinct key.
+    """
+    assert _cache_key("https://ikg.example.com", _fake_jwt("gid:AAAA123")) == "ikg_schema:gid:AAAA123"
+    assert _cache_key("https://a.example.com", "not-a-jwt") != _cache_key("https://b.example.com", "not-a-jwt")
+
+
+def test_schema_does_not_collide_across_different_environments(mocker):
+    """Two SchemaClient instances for different base_url/app_agent_key pairs sharing the same
+    cache region must not read/write each other's schema - a single fixed cache key would let
+    one silently overwrite the other in a shared Redis backend.
+    """
+    shared_cache = _memory_cache()
+    other_schema = {"graph": {"nodes": {"Other": {}}, "edges": []}}
+
+    _mock_sync_client(mocker, response=_mock_response(mocker))
+    client_a = SchemaClient("https://a.example.com", "key-a", cache=shared_cache)
+    client_a.preload()
+
+    _mock_sync_client(mocker, response=_mock_response(mocker, schema=other_schema))
+    client_b = SchemaClient("https://b.example.com", "key-b", cache=shared_cache)
+    client_b.preload()
+
+    assert client_a.get_cached() == _SCHEMA
+    assert client_b.get_cached() == other_schema
 
 
 def test_get_cached_fetches_on_demand_when_not_already_cached(mocker):

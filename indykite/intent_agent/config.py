@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Startup config. Fails fast (pydantic ValidationError) if fields are missing."""
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", env_ignore_empty=True)
 
     intent_port: int = Field(default=6003, ge=1, le=65535)
     health_port: int = Field(default=8001, ge=1, le=65535)
@@ -52,15 +52,4 @@ class Settings(BaseSettings):
         if not value.strip():
             message = f"{info.field_name} must not be blank"
             raise ValueError(message)
-        return value
-
-    @field_validator("redis_url", mode="before")
-    @classmethod
-    def _blank_redis_url_disables_redis(cls, value: object) -> object:
-        """Treat a blank (or whitespace-only) REDIS_URL as unset - disables Redis, matching
-        indykite_base_url/ik_app_agent_key's blank-means-disabled convention. Without this,
-        pydantic's URL parser rejects an empty string outright instead of treating it as None.
-        """
-        if isinstance(value, str) and not value.strip():
-            return None
         return value

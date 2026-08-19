@@ -112,10 +112,13 @@ def test_rejects_blank_subject_type(monkeypatch):
         pytest.param("not-a-real-url", id="malformed_url"),
         pytest.param("redis://host:99999", id="port_too_large"),
         pytest.param("http://host:6379", id="wrong_scheme"),
+        pytest.param("   ", id="whitespace_only"),
     ],
 )
 def test_rejects_invalid_redis_url(monkeypatch, value):
-    """A malformed REDIS_URL, an out-of-range port, or a non-redis scheme must all fail validation."""
+    """A malformed/whitespace-only REDIS_URL, an out-of-range port, or a non-redis scheme must
+    all fail validation - only a truly blank REDIS_URL disables Redis (see test_defaults).
+    """
     _set_baseline_env(monkeypatch)
     monkeypatch.setenv("REDIS_URL", value)
     with pytest.raises(ValidationError):

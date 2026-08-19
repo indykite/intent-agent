@@ -1,15 +1,37 @@
 """Fetching and caching the IndyKite graph schema over HTTP."""
 
+import hashlib
 import logging
 from typing import Any
 
 import httpx2
+import jwt
 from dogpile.cache.api import NO_VALUE
 from dogpile.cache.region import CacheRegion
 
 logger = logging.getLogger(__name__)
 
-_CACHE_KEY = "ikg_schema"
+
+def _jwt_claim(token: str, claim: str) -> str | None:
+    """Read a claim from a JWT's payload without verifying its signature - only ever used to
+    read a stable, non-secret identifier (the app-agent's own `sub` GID), never anything that
+    would require the signing key. Returns None for anything that isn't a well-formed JWT.
+    """
+    try:
+        claims = jwt.decode(token, options={"verify_signature": False})
+    except jwt.exceptions.DecodeError:
+        return None
+    value = claims.get(claim)
+    return value if isinstance(value, str) else None
+
+
+def _cache_key(base_url: str, app_agent_key: str) -> str:
+    """Build a cache key scoped to this specific IndyKite environment."""
+    gid = _jwt_claim(app_agent_key, "sub")
+    if gid:
+        return f"ikg_schema:{gid}"
+    fingerprint = hashlib.sha256(f"{base_url}:{app_agent_key}".encode()).hexdigest()[:16]
+    return f"ikg_schema:{fingerprint}"
 
 
 class SchemaClient:
@@ -32,6 +54,7 @@ class SchemaClient:
         self._app_agent_key = app_agent_key
         self._timeout_seconds = timeout_seconds
         self._cache = cache
+        self._cache_key = _cache_key(base_url, app_agent_key)
 
     def load(self) -> dict[str, Any] | None:
         """Fetch the graph schema from the Indykite platform, or None on failure."""
@@ -54,7 +77,7 @@ class SchemaClient:
         """Fetch and cache the schema once, at startup."""
         schema = self.load()
         if schema is not None:
-            self._cache.set(_CACHE_KEY, schema)
+            self._cache.set(self._cache_key, schema)
 
     def get_cached(self) -> dict[str, Any] | None:
         """Return the cached schema. A cache miss - never fetched, or the cache
@@ -68,13 +91,13 @@ class SchemaClient:
         falls back to the expired-but-still-present value instead of returning None,
         so a transient platform outage doesn't take down an already-running agent.
         """
-        cached = self._cache.get(_CACHE_KEY)
+        cached = self._cache.get(self._cache_key)
         if cached is not NO_VALUE:
             return cached
         schema = self.load()
         if schema is not None:
-            self._cache.set(_CACHE_KEY, schema)
+            self._cache.set(self._cache_key, schema)
             return schema
         logger.error("schema_refresh_failed - keeping last known good schema")
-        stale = self._cache.get(_CACHE_KEY, ignore_expiration=True)
+        stale = self._cache.get(self._cache_key, ignore_expiration=True)
         return None if stale is NO_VALUE else stale

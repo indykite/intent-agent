@@ -180,10 +180,11 @@ def _settings_with_subject_type(monkeypatch, subject_type="Customer"):
     return Settings(_env_file=None)
 
 
-@pytest.mark.parametrize("redis_url", ["", "   "], ids=["blank", "whitespace_only"])
-def test_build_schema_cache_uses_memory_backend_when_redis_url_blank(monkeypatch, redis_url):
-    """Blank (or whitespace-only) REDIS_URL must fall back to the in-process Memory cache."""
-    monkeypatch.setenv("REDIS_URL", redis_url)
+def test_build_schema_cache_uses_memory_backend_when_redis_url_blank(monkeypatch):
+    """A blank REDIS_URL must fall back to the in-process Memory cache. (Whitespace-only is
+    rejected outright by Settings validation instead - see test_rejects_invalid_redis_url.)
+    """
+    monkeypatch.setenv("REDIS_URL", "")
     settings = _settings_with_subject_type(monkeypatch)
     assert isinstance(_build_schema_cache(settings).backend, MemoryBackend)
 
