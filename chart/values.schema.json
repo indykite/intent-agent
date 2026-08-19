@@ -347,18 +347,6 @@
         }
       }
     },
-    "monitoring": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "gcp": {
-          "type": "boolean"
-        },
-        "interval": {
-          "type": "string"
-        }
-      }
-    },
     "networkPolicy": {
       "type": "object",
       "additionalProperties": false,

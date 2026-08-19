@@ -102,10 +102,6 @@ annotations: {}
 
 imagePullSecrets: []
 
-monitoring:
-  gcp: false
-  interval: "30s"
-
 networkPolicy:
   enabled: true
   # Permissive by design (no isolation) - only guarantees a NetworkPolicy object exists.
@@ -117,12 +113,12 @@ networkPolicy:
 
 istio:
   enabled: false
-  # Automatically enabled if istio.enabled, monitoring.gcp and metricsPeerAuthentication.enabled are true
+  # Automatically enabled if istio.enabled and metricsPeerAuthentication.enabled are true
   metricsPeerAuthentication:
     enabled: true
     mtlsMode: "STRICT"
     portLevelMtlsMode: "PERMISSIVE"
-  # Restricts who may reach the health/metrics port when monitoring.gcp and istio.enabled are true.
+  # Restricts who may reach the health/metrics port when istio.enabled are true.
   # Left empty (no restriction) by default since the GKE Managed Prometheus collector's identity
   # varies by cluster; populate with its namespace/principals to lock this down per-environment.
   metricsAuthorizationPolicy:

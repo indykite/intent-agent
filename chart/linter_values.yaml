@@ -1,8 +1,5 @@
 ---
 # These values are used by pre-commit helmlint and helm-kubeconform hooks
-monitoring:
-  gcp: true
-
 autoscaling:
   enabled: true
 

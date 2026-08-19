@@ -1,4 +1,4 @@
-{{- if and .Values.istio.enabled .Values.monitoring.gcp }}
+{{- if and .Values.istio.enabled }}
 ---
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
