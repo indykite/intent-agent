@@ -55,6 +55,15 @@ def test_rejects_out_of_range_ports(monkeypatch, env_var, port):
         Settings(_env_file=None)
 
 
+def test_rejects_matching_intent_and_health_ports(monkeypatch):
+    """INTENT_PORT and HEALTH_PORT must differ, since both are bound in the same process."""
+    _set_baseline_env(monkeypatch)
+    monkeypatch.setenv("INTENT_PORT", "7000")
+    monkeypatch.setenv("HEALTH_PORT", "7000")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
 @pytest.mark.parametrize("env_var", ["INTROSPECT_URL", "INTROSPECT_CLIENT_ID", "INTROSPECT_CLIENT_SECRET"])
 @pytest.mark.parametrize(
     "make_invalid",

@@ -1,6 +1,6 @@
 """Runtime configuration for the Intent Agent, loaded from environment / .env."""
 
-from pydantic import Field, HttpUrl, RedisDsn, ValidationInfo, field_validator
+from pydantic import Field, HttpUrl, RedisDsn, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -53,3 +53,11 @@ class Settings(BaseSettings):
             message = f"{info.field_name} must not be blank"
             raise ValueError(message)
         return value
+
+    @model_validator(mode="after")
+    def _reject_matching_ports(self) -> "Settings":
+        """Reject intent_port and health_port being the same (would collide on bind)."""
+        if self.intent_port == self.health_port:
+            message = "INTENT_PORT and HEALTH_PORT must be different"
+            raise ValueError(message)
+        return self
