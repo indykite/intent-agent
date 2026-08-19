@@ -240,6 +240,11 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/dc/80/12235e5b75bb2c586733280854f131b86051e0bbdfb55349ff70d0f72cf9/dogpile_cache-1.5.0-py3-none-any.whl", hash = "sha256:dc7b47d37844db15e8fdc0243c1b58857a2ddc52a5118237a97127bac200e18d", size = 64447 },
 ]
 
+[package.optional-dependencies]
+redis = [
+    { name = "redis" },
+]
+
 [[package]]
 name = "fastjsonschema"
 version = "2.22.1"
@@ -413,7 +418,7 @@ name = "intent-agent"
 source = { virtual = "." }
 dependencies = [
     { name = "a2a-sdk", extra = ["http-server"] },
-    { name = "dogpile-cache" },
+    { name = "dogpile-cache", extra = ["redis"] },
     { name = "httpx2" },
     { name = "langchain-core" },
     { name = "langchain-google-genai" },
@@ -421,7 +426,6 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pyyaml" },
-    { name = "redis" },
     { name = "starlette" },
     { name = "uvicorn" },
 ]
@@ -439,7 +443,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "a2a-sdk", extras = ["http-server"], specifier = "==1.1.2" },
-    { name = "dogpile-cache", specifier = "==1.5.0" },
+    { name = "dogpile-cache", extras = ["redis"], specifier = "==1.5.0" },
     { name = "httpx2", specifier = "==2.9.1" },
     { name = "langchain-core", specifier = "==1.5.5" },
     { name = "langchain-google-genai", specifier = "==4.3.4" },
@@ -447,7 +451,6 @@ requires-dist = [
     { name = "pydantic", specifier = "==2.13.4" },
     { name = "pydantic-settings", specifier = "==2.14.2" },
     { name = "pyyaml", specifier = "==6.0.3" },
-    { name = "redis", specifier = "==8.1.0" },
     { name = "starlette", specifier = "==1.3.1" },
     { name = "uvicorn", specifier = "==0.52.3" },
 ]

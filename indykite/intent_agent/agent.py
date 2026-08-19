@@ -44,22 +44,26 @@ from indykite.intent_agent.subject_binding import normalize_intent_response, val
 
 logger = logging.getLogger(__name__)
 
-_SECONDS_PER_HOUR = 3600
+_SECONDS_PER_MINUTE = 60
 
 
 def _build_schema_cache(settings: Settings) -> CacheRegion:
     """Pick the schema cache backend: Redis if configured, in-process otherwise.
 
-    Blank (or whitespace-only) REDIS_HOST disables Redis (matches
-    indykite_base_url/ik_app_agent_key's blank-means-disabled convention) -
-    single-instance deployments never need Redis running.
+    A blank/unset REDIS_URL disables Redis (matches indykite_base_url/ik_app_agent_key's
+    blank-means-disabled convention) - single-instance deployments never need Redis running.
+
+    Sets expiration_time from SCHEMA_REFRESH_TTL_MINUTES so SchemaClient.get_cached()
+    refreshes on-demand once an entry ages past it, instead of a per-instance background
+    timer - see get_cached()'s docstring for why that matters with multiple instances.
     """
-    redis_host = settings.redis_host.strip()
-    if not redis_host:
-        return make_region().configure("dogpile.cache.memory")
+    ttl_seconds = settings.schema_refresh_ttl_minutes * _SECONDS_PER_MINUTE
+    if settings.redis_url is None:
+        return make_region().configure("dogpile.cache.memory", expiration_time=ttl_seconds)
     return make_region().configure(
         "dogpile.cache.redis",
-        arguments={"host": redis_host, "port": settings.redis_port},
+        expiration_time=ttl_seconds,
+        arguments={"host": settings.redis_url.host, "port": settings.redis_url.port},
     )
 
 
@@ -115,18 +119,6 @@ class IntentAgent:
             message = "Data schema unavailable at cold start, the process cannot proceed without it."
             raise SchemaUnavailableError(message)
         validate_subject_type(schema, self.settings.subject_type)
-
-    def start_schema_refresh(self) -> None:
-        """Start the background schema refresh loop, if the injected schema_client supports it.
-
-        A no-op for schema_client implementations predating background refresh (e.g. a
-        duck-typed stub implementing only preload()/get_cached()), so injecting one doesn't
-        break with an AttributeError.
-        """
-        if not hasattr(self._schema_client, "start_background_refresh"):
-            return
-        ttl_seconds = self.settings.schema_refresh_ttl_hours * _SECONDS_PER_HOUR
-        self._schema_client.start_background_refresh(ttl_seconds)
 
     def get_cached_schema(self) -> dict[str, Any] | None:
         """Return the cached schema, fetching it once if not already cached."""
@@ -435,7 +427,6 @@ def build_app(
     """Construct the Starlette app and its backing IntentAgent for these settings."""
     agent = IntentAgent(settings, llm=llm, schema_client=schema_client)
     agent.preload_schema()
-    agent.start_schema_refresh()
 
     agent_card = agent.build_agent_card()
     handler = DefaultRequestHandler(

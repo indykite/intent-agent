@@ -1,4 +1,4 @@
-"""Tests for SchemaClient: fetching, caching, and TTL-based background refresh."""
+"""Tests for SchemaClient: fetching, caching, and TTL-driven on-demand refresh."""
 
 import httpx2
 import pytest
@@ -7,6 +7,12 @@ from dogpile.cache.region import make_region
 from indykite.intent_agent.schema import SchemaClient
 
 _SCHEMA = {"graph": {"nodes": {}, "edges": []}}
+_EXPECTED_FETCH_COUNT_AFTER_REFRESH = 2
+
+
+def _memory_cache():
+    """Build a fresh in-process Memory-backed CacheRegion for a test's SchemaClient."""
+    return make_region().configure("dogpile.cache.memory")
 
 
 def _mock_sync_client(mocker, *, response=None, side_effect=None):
@@ -24,6 +30,15 @@ def _mock_response(mocker):
     response = mocker.Mock(json=mocker.Mock(return_value=_SCHEMA))
     response.raise_for_status = mocker.Mock()
     return response
+
+
+def _expire(cache):
+    """Force every entry in this Memory-backed CacheRegion to read as expired, deterministically -
+    backdates the stored CachedValue's creation time instead of sleeping past expiration_time,
+    which would make the test slow and racy against real wall-clock timing.
+    """
+    for key, cached in cache.backend._cache.items():
+        cache.backend._cache[key] = cached._replace(metadata={**cached.metadata, "ct": 0})
 
 
 def _mock_redis_client(mocker):
@@ -49,21 +64,21 @@ def _mock_redis_client(mocker):
 )
 def test_load_returns_none_when_config_incomplete(base_url, app_agent_key):
     """Missing base_url or app_agent_key means schema unavailable, no request attempted."""
-    client = SchemaClient(base_url, app_agent_key)
+    client = SchemaClient(base_url, app_agent_key, cache=_memory_cache())
     assert client.load() is None
 
 
 def test_load_returns_none_on_http_error(mocker):
     """An HTTP error from the platform must return None, not raise."""
     _mock_sync_client(mocker, side_effect=httpx2.HTTPError("boom"))
-    client = SchemaClient("https://ikg.example.com", "app-key")
+    client = SchemaClient("https://ikg.example.com", "app-key", cache=_memory_cache())
     assert client.load() is None
 
 
 def test_load_returns_schema_on_success(mocker):
     """A successful fetch returns the parsed JSON schema."""
     _mock_sync_client(mocker, response=_mock_response(mocker))
-    client = SchemaClient("https://ikg.example.com", "app-key")
+    client = SchemaClient("https://ikg.example.com", "app-key", cache=_memory_cache())
     assert client.load() == _SCHEMA
 
 
@@ -73,10 +88,11 @@ def test_preload_and_get_cached_round_trip(mocker, backend):
     Memory cache and a Redis-backed CacheRegion (the real dogpile Redis backend - only its
     network client is faked, so this exercises the actual serialize/deserialize path).
     """
-    cache = None
     if backend == "redis":
         _mock_redis_client(mocker)
         cache = make_region().configure("dogpile.cache.redis", arguments={"host": "localhost", "port": 6379})
+    else:
+        cache = _memory_cache()
     _mock_sync_client(mocker, response=_mock_response(mocker))
     client = SchemaClient("https://ikg.example.com", "app-key", cache=cache)
 
@@ -91,43 +107,40 @@ def test_get_cached_fetches_on_demand_when_not_already_cached(mocker):
     all (fetch fails, returns None instead of raising).
     """
     _mock_sync_client(mocker, response=_mock_response(mocker))
-    client = SchemaClient("https://ikg.example.com", "app-key")
+    client = SchemaClient("https://ikg.example.com", "app-key", cache=_memory_cache())
     assert client.get_cached() == _SCHEMA
 
-    unconfigured_client = SchemaClient("", "")
+    unconfigured_client = SchemaClient("", "", cache=_memory_cache())
     assert unconfigured_client.get_cached() is None
 
 
-def test_refresh_updates_cache_on_success(mocker):
-    """A successful refresh must update the cache."""
-    _mock_sync_client(mocker, response=_mock_response(mocker))
-    client = SchemaClient("https://ikg.example.com", "app-key")
+def test_get_cached_refreshes_on_demand_when_entry_expired(mocker):
+    """An expired cache entry must trigger a fresh load() and re-cache, not just sit stale."""
+    cache = make_region().configure("dogpile.cache.memory", expiration_time=100)
+    client_mock = _mock_sync_client(mocker, response=_mock_response(mocker))
+    client = SchemaClient("https://ikg.example.com", "app-key", cache=cache)
+    client.preload()
+    assert client_mock.get.call_count == 1
 
-    client.refresh()
+    _expire(cache)
 
     assert client.get_cached() == _SCHEMA
+    assert client_mock.get.call_count == _EXPECTED_FETCH_COUNT_AFTER_REFRESH
 
 
-def test_refresh_keeps_last_good_schema_on_failure(mocker, caplog):
-    """Per TDD 4.4: a failed refresh must not clear the cache, and must log schema_refresh_failed."""
+def test_get_cached_falls_back_to_stale_schema_when_refresh_fails(mocker, caplog):
+    """Per TDD 4.4: if the on-demand refresh fails, the expired-but-last-known-good schema
+    must still be served (not None) and schema_refresh_failed logged - a transient platform
+    outage must not take down an already-running agent.
+    """
     caplog.set_level("ERROR")
+    cache = make_region().configure("dogpile.cache.memory", expiration_time=100)
     client_mock = _mock_sync_client(mocker, response=_mock_response(mocker))
-    client = SchemaClient("https://ikg.example.com", "app-key")
+    client = SchemaClient("https://ikg.example.com", "app-key", cache=cache)
     client.preload()
+    _expire(cache)
 
     client_mock.get.side_effect = httpx2.HTTPError("platform unreachable")
-    client.refresh()
 
     assert client.get_cached() == _SCHEMA
     assert any("schema_refresh_failed" in record.getMessage() for record in caplog.records)
-
-
-def test_start_background_refresh_runs_on_daemon_thread(mocker):
-    """The refresh loop must run on a background daemon thread, not block the caller."""
-    thread_cls = mocker.patch("indykite.intent_agent.schema.threading.Thread")
-    client = SchemaClient("https://ikg.example.com", "app-key")
-
-    client.start_background_refresh(60.0)
-
-    assert thread_cls.call_args.kwargs["daemon"] is True
-    thread_cls.return_value.start.assert_called_once()

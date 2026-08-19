@@ -1,6 +1,6 @@
 """Runtime configuration for the Intent Agent, loaded from environment / .env."""
 
-from pydantic import Field, HttpUrl, ValidationInfo, field_validator
+from pydantic import Field, HttpUrl, RedisDsn, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -25,10 +25,9 @@ class Settings(BaseSettings):
     indykite_base_url: str = ""
     ik_app_agent_key: str = ""
     schema_fetch_timeout_seconds: float = 30.0
-    schema_refresh_ttl_hours: float = Field(default=24.0, gt=0)
+    schema_refresh_ttl_minutes: float = Field(default=1440.0, gt=0)
 
-    redis_host: str = ""
-    redis_port: int = Field(default=6379, ge=1, le=65535)
+    redis_url: RedisDsn | None = None
 
     introspect_url: HttpUrl
     introspect_client_id: str = Field(min_length=1)
@@ -53,4 +52,15 @@ class Settings(BaseSettings):
         if not value.strip():
             message = f"{info.field_name} must not be blank"
             raise ValueError(message)
+        return value
+
+    @field_validator("redis_url", mode="before")
+    @classmethod
+    def _blank_redis_url_disables_redis(cls, value: object) -> object:
+        """Treat a blank (or whitespace-only) REDIS_URL as unset - disables Redis, matching
+        indykite_base_url/ik_app_agent_key's blank-means-disabled convention. Without this,
+        pydantic's URL parser rejects an empty string outright instead of treating it as None.
+        """
+        if isinstance(value, str) and not value.strip():
+            return None
         return value
