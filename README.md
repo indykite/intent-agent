@@ -103,12 +103,15 @@ cache, and real Gemini calls:
 2. Bring up Redis only, then point at it via `localhost` - the `redis` hostname in
    `.env.example` only resolves inside the `docker-compose` network, not when running
    the agent directly via `uv run`:
+
    ```sh
    docker compose up redis -d
    # then in .env: REDIS_HOST=localhost
    ```
+
 3. `INTROSPECT_URL` needs a real IdP or a throwaway local stub - there's no
    "accept any token" mode. A minimal mock that always returns an active token:
+
    ```python
    # mock_introspect.py
    import json
@@ -129,6 +132,7 @@ cache, and real Gemini calls:
 
    HTTPServer(("127.0.0.1", 9001), Handler).serve_forever()
    ```
+
    Run it, then set `INTROSPECT_URL=http://127.0.0.1:9001/introspect` with any
    `INTROSPECT_CLIENT_ID`/`INTROSPECT_CLIENT_SECRET`.
 4. Send a prompt that actually matches your graph's schema. `intent-agent`'s subject
