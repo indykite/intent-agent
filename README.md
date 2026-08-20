@@ -100,9 +100,9 @@ cache, and real Gemini calls:
 1. Set `INDYKITE_BASE_URL=https://api.rc.indykite.xyz` and a valid `IK_APP_AGENT_KEY`
    for that environment in `.env` (ask a teammate/platform contact for a key - never
    commit one).
-2. Bring up Redis only, then point at it via `localhost` - the `redis` hostname in
-   `.env.example` only resolves inside the `docker-compose` network, not when running
-   the agent directly via `uv run`:
+2. Bring up Redis only, then point at it via `localhost` - the `redis` hostname used by the
+   `docker-compose` stack (see `.env.docker-compose.example`) only resolves inside that
+   network, not when running the agent directly via `uv run`:
 
    ```sh
    docker compose up redis -d
@@ -149,4 +149,32 @@ cache, and real Gemini calls:
 ```sh
 make build_docker_image
 make start_docker_app # runs the image reachable locally
+```
+
+### Multi-instance, with docker-compose
+
+`docker-compose.yml` runs two agent instances behind an nginx load balancer, backed by a
+shared Redis - the real deployment topology this service is designed for (shared schema
+cache, no per-instance refresh collisions). A single `uv run` process never exercises this.
+
+```sh
+cp .env.docker-compose.example .env   # different from the plain .env.example above -
+                                       # REDIS_URL/INTROSPECT_URL need container-network values
+docker compose up --build -d
+```
+
+Then verify it's actually working as multi-instance, not just that it started:
+
+```sh
+# both instances started clean (real schema fetch, no traceback):
+docker logs intent-agent-intent-agent-1-1
+docker logs intent-agent-intent-agent-2-1
+
+# they share one cache entry, not two - two keys means the cache-key-collision bug is back:
+docker exec intent-agent-redis-1 redis-cli KEYS "ikg_schema*"
+
+# the load balancer actually distributes traffic, not just accepts it:
+curl -X POST http://localhost:6003/ ...   # (see the curl example above), a few times
+docker logs intent-agent-intent-agent-1-1 | grep -c "POST /"
+docker logs intent-agent-intent-agent-2-1 | grep -c "POST /"   # both should be nonzero
 ```
