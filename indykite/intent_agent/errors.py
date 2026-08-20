@@ -13,6 +13,15 @@ class SchemaUnavailableError(Exception):
     """
 
 
+class InvalidAppAgentKeyError(Exception):
+    """Raised when IK_APP_AGENT_KEY isn't a well-formed JWT with a `sub` claim.
+
+    A malformed app-agent key is a real configuration error and must fail the process
+    loudly at startup, not silently degrade (e.g. to a hashed cache key) while continuing
+    to attempt a schema fetch with a broken credential.
+    """
+
+
 def error_response(prompt: str, reason: str, obligation: str) -> dict[str, str]:
     """Build the TDD's structured error shape (4.7): {"error", "reason", "obligation"}
     instead of "evaluations".

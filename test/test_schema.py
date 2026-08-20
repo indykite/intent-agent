@@ -5,10 +5,24 @@ import jwt
 import pytest
 from dogpile.cache.region import make_region
 
+from indykite.intent_agent.errors import InvalidAppAgentKeyError
 from indykite.intent_agent.schema import SchemaClient, _cache_key
 
 _SCHEMA = {"graph": {"nodes": {}, "edges": []}}
 _EXPECTED_FETCH_COUNT_AFTER_REFRESH = 2
+
+
+def _fake_jwt(sub):
+    """Build a real (unsigned, alg=none) JWT with the given `sub` claim, via the same library
+    _jwt_claim decodes with - hand-rolling the encoding here instead would risk drifting from
+    what jwt.decode actually requires, the same class of bug this replaced.
+    """
+    return jwt.encode({"sub": sub}, key="", algorithm="none")
+
+
+# A real JWT for tests that don't care about the specific sub claim, just that it's valid -
+# SchemaClient now requires a well-formed JWT for any non-blank app_agent_key.
+_APP_AGENT_KEY = _fake_jwt("test-app-agent")
 
 
 def _memory_cache():
@@ -59,7 +73,7 @@ def _mock_redis_client(mocker):
 @pytest.mark.parametrize(
     ("base_url", "app_agent_key"),
     [
-        pytest.param("", "app-key", id="blank_base_url"),
+        pytest.param("", _APP_AGENT_KEY, id="blank_base_url"),
         pytest.param("https://ikg.example.com", "", id="blank_app_agent_key"),
     ],
 )
@@ -72,51 +86,53 @@ def test_load_returns_none_when_config_incomplete(base_url, app_agent_key):
 def test_load_returns_none_on_http_error(mocker):
     """An HTTP error from the platform must return None, not raise."""
     _mock_sync_client(mocker, side_effect=httpx2.HTTPError("boom"))
-    client = SchemaClient("https://ikg.example.com", "app-key", cache=_memory_cache())
+    client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=_memory_cache())
     assert client.load() is None
 
 
 def test_load_returns_schema_on_success(mocker):
     """A successful fetch returns the parsed JSON schema."""
     _mock_sync_client(mocker, response=_mock_response(mocker))
-    client = SchemaClient("https://ikg.example.com", "app-key", cache=_memory_cache())
+    client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=_memory_cache())
     assert client.load() == _SCHEMA
 
 
 @pytest.mark.parametrize("backend", ["memory", "redis"])
-def test_preload_and_get_cached_round_trip(mocker, backend):
+def test_preload_and_get_cached_round_trip(mocker, caplog, backend):
     """preload() then get_cached() must return the same schema, on both the default in-process
     Memory cache and a Redis-backed CacheRegion (the real dogpile Redis backend - only its
-    network client is faked, so this exercises the actual serialize/deserialize path).
+    network client is faked, so this exercises the actual serialize/deserialize path). Must
+    also log the cache key and hit/miss flag at debug level for troubleshooting.
     """
+    caplog.set_level("DEBUG")
     if backend == "redis":
         _mock_redis_client(mocker)
         cache = make_region().configure("dogpile.cache.redis", arguments={"host": "localhost", "port": 6379})
     else:
         cache = _memory_cache()
     _mock_sync_client(mocker, response=_mock_response(mocker))
-    client = SchemaClient("https://ikg.example.com", "app-key", cache=cache)
+    client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
 
     client.preload()
 
     assert client.get_cached() == _SCHEMA
+    assert f"cache_key={client._cache_key} hit=True" in caplog.text
 
 
-def _fake_jwt(sub):
-    """Build a real (unsigned, alg=none) JWT with the given `sub` claim, via the same library
-    _jwt_claim decodes with - hand-rolling the encoding here instead would risk drifting from
-    what jwt.decode actually requires, the same class of bug this replaced.
-    """
-    return jwt.encode({"sub": sub}, key="", algorithm="none")
-
-
-def test_cache_key_prefers_jwt_sub_claim_over_hashing_the_raw_key():
+def test_cache_key_uses_jwt_sub_claim_blank_placeholder_or_raises():
     """A well-formed app_agent_key JWT's sub claim (a stable, non-secret GID) must be used
-    directly, so the raw credential never needs to be embedded/hashed into the cache key.
-    A non-JWT key (e.g. blank, common in tests) must still fall back to a valid, distinct key.
+    directly. A blank app_agent_key (the supported "IK not configured" state) must map to a
+    stable placeholder instead of attempting to decode. Anything else non-blank must be a
+    valid JWT with a sub claim - either failure (not a JWT at all, or missing the claim) is a
+    real config error and must raise a clear InvalidAppAgentKeyError, not a raw jwt/TypeError,
+    and must not degrade quietly to a hashed key.
     """
-    assert _cache_key("https://ikg.example.com", _fake_jwt("gid:AAAA123")) == "ikg_schema:gid:AAAA123"
-    assert _cache_key("https://a.example.com", "not-a-jwt") != _cache_key("https://b.example.com", "not-a-jwt")
+    assert _cache_key(_fake_jwt("gid:AAAA123")) == "ikg_schema:gid:AAAA123"
+    assert _cache_key("") == "ikg_schema:unconfigured"
+    with pytest.raises(InvalidAppAgentKeyError):
+        _cache_key("not-a-jwt")
+    with pytest.raises(InvalidAppAgentKeyError):
+        _cache_key(jwt.encode({"no_sub_here": "x"}, key="", algorithm="none"))
 
 
 def test_schema_does_not_collide_across_different_environments(mocker):
@@ -128,25 +144,28 @@ def test_schema_does_not_collide_across_different_environments(mocker):
     other_schema = {"graph": {"nodes": {"Other": {}}, "edges": []}}
 
     _mock_sync_client(mocker, response=_mock_response(mocker))
-    client_a = SchemaClient("https://a.example.com", "key-a", cache=shared_cache)
+    client_a = SchemaClient("https://a.example.com", _fake_jwt("gid-a"), cache=shared_cache)
     client_a.preload()
 
     _mock_sync_client(mocker, response=_mock_response(mocker, schema=other_schema))
-    client_b = SchemaClient("https://b.example.com", "key-b", cache=shared_cache)
+    client_b = SchemaClient("https://b.example.com", _fake_jwt("gid-b"), cache=shared_cache)
     client_b.preload()
 
     assert client_a.get_cached() == _SCHEMA
     assert client_b.get_cached() == other_schema
 
 
-def test_get_cached_fetches_on_demand_when_not_already_cached(mocker):
+def test_get_cached_fetches_on_demand_when_not_already_cached(mocker, caplog):
     """get_cached() must fetch-and-cache on its own when nothing is cached yet: either because
     preload() was never called (fetch succeeds) or because there's no config to fetch with at
-    all (fetch fails, returns None instead of raising).
+    all (fetch fails, returns None instead of raising). Must also log the cache key and hit/miss
+    flag at debug level for troubleshooting.
     """
+    caplog.set_level("DEBUG")
     _mock_sync_client(mocker, response=_mock_response(mocker))
-    client = SchemaClient("https://ikg.example.com", "app-key", cache=_memory_cache())
+    client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=_memory_cache())
     assert client.get_cached() == _SCHEMA
+    assert f"cache_key={client._cache_key} hit=False" in caplog.text
 
     unconfigured_client = SchemaClient("", "", cache=_memory_cache())
     assert unconfigured_client.get_cached() is None
@@ -156,7 +175,7 @@ def test_get_cached_refreshes_on_demand_when_entry_expired(mocker):
     """An expired cache entry must trigger a fresh load() and re-cache, not just sit stale."""
     cache = make_region().configure("dogpile.cache.memory", expiration_time=100)
     client_mock = _mock_sync_client(mocker, response=_mock_response(mocker))
-    client = SchemaClient("https://ikg.example.com", "app-key", cache=cache)
+    client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
     client.preload()
     assert client_mock.get.call_count == 1
 
@@ -174,7 +193,7 @@ def test_get_cached_falls_back_to_stale_schema_when_refresh_fails(mocker, caplog
     caplog.set_level("ERROR")
     cache = make_region().configure("dogpile.cache.memory", expiration_time=100)
     client_mock = _mock_sync_client(mocker, response=_mock_response(mocker))
-    client = SchemaClient("https://ikg.example.com", "app-key", cache=cache)
+    client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
     client.preload()
     _expire(cache)
 

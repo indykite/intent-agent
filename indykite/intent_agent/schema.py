@@ -1,6 +1,5 @@
 """Fetching and caching the IndyKite graph schema over HTTP."""
 
-import hashlib
 import logging
 from typing import Any
 
@@ -9,29 +8,38 @@ import jwt
 from dogpile.cache.api import NO_VALUE
 from dogpile.cache.region import CacheRegion
 
+from indykite.intent_agent.errors import InvalidAppAgentKeyError
+
 logger = logging.getLogger(__name__)
 
 
-def _jwt_claim(token: str, claim: str) -> str | None:
-    """Read a claim from a JWT's payload without verifying its signature - only ever used to
-    read a stable, non-secret identifier (the app-agent's own `sub` GID), never anything that
-    would require the signing key. Returns None for anything that isn't a well-formed JWT.
+def _cache_key(app_agent_key: str) -> str:
+    """Build a cache key scoped to this specific IndyKite environment.
+
+    A single shared key would let multiple SchemaClient instances - e.g. pointing at different
+    IndyKite environments - silently overwrite each other's schema if they happen to share a
+    Redis backend/region.
+
+    A blank app_agent_key is a supported "IK not configured" state (see SchemaClient.load()) -
+    hashes to a stable placeholder instead of decoding, since there's nothing to decode and
+    no schema will ever be fetched/cached under it anyway. Any non-blank app_agent_key must be
+    a valid JWT with a `sub` claim (a stable, non-secret GID, read without verifying the
+    signature - never anything that would require the signing key) - a malformed one is a
+    real configuration error and must fail the process loudly at startup with a clear
+    InvalidAppAgentKeyError, not silently fall back to a less specific cache key while
+    continuing to attempt a schema fetch with a broken credential.
     """
+    if not app_agent_key:
+        return "ikg_schema:unconfigured"
+    message = "IK_APP_AGENT_KEY is not a valid JWT with a 'sub' claim"
     try:
-        claims = jwt.decode(token, options={"verify_signature": False})
-    except jwt.exceptions.DecodeError:
-        return None
-    value = claims.get(claim)
-    return value if isinstance(value, str) else None
-
-
-def _cache_key(base_url: str, app_agent_key: str) -> str:
-    """Build a cache key scoped to this specific IndyKite environment."""
-    gid = _jwt_claim(app_agent_key, "sub")
-    if gid:
-        return f"ikg_schema:{gid}"
-    fingerprint = hashlib.sha256(f"{base_url}:{app_agent_key}".encode()).hexdigest()[:16]
-    return f"ikg_schema:{fingerprint}"
+        claims = jwt.decode(app_agent_key, options={"verify_signature": False})
+        gid = claims.get("sub")
+    except jwt.exceptions.DecodeError as exc:
+        raise InvalidAppAgentKeyError(message) from exc
+    if not isinstance(gid, str):
+        raise InvalidAppAgentKeyError(message)
+    return f"ikg_schema:{gid}"
 
 
 class SchemaClient:
@@ -54,7 +62,7 @@ class SchemaClient:
         self._app_agent_key = app_agent_key
         self._timeout_seconds = timeout_seconds
         self._cache = cache
-        self._cache_key = _cache_key(base_url, app_agent_key)
+        self._cache_key = _cache_key(app_agent_key)
 
     def load(self) -> dict[str, Any] | None:
         """Fetch the graph schema from the Indykite platform, or None on failure."""
@@ -92,6 +100,7 @@ class SchemaClient:
         so a transient platform outage doesn't take down an already-running agent.
         """
         cached = self._cache.get(self._cache_key)
+        logger.debug("cache_key=%s hit=%s", self._cache_key, cached is not NO_VALUE)
         if cached is not NO_VALUE:
             return cached
         schema = self.load()
