@@ -36,8 +36,10 @@ def _cache_key(app_agent_key: str) -> str:
         claims = jwt.decode(app_agent_key, options={"verify_signature": False})
         gid = claims.get("sub")
     except jwt.exceptions.DecodeError as exc:
+        logger.exception("IK_APP_AGENT_KEY is not a well-formed JWT")
         raise InvalidAppAgentKeyError(message) from exc
     if not isinstance(gid, str):
+        logger.error("IK_APP_AGENT_KEY decoded fine but is missing a string 'sub' claim: %r", gid)
         raise InvalidAppAgentKeyError(message)
     return f"ikg_schema:{gid}"
 
@@ -76,7 +78,7 @@ class SchemaClient:
                 resp = client.get(url, headers=headers)
                 resp.raise_for_status()
         except httpx2.HTTPError:
-            logger.warning("Failed to load data schema from %s", url)
+            logger.exception("Failed to load data schema from %s", url)
             return None
         logger.info("Loaded data schema from %s", url)
         return resp.json()

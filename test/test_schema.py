@@ -83,11 +83,23 @@ def test_load_returns_none_when_config_incomplete(base_url, app_agent_key):
     assert client.load() is None
 
 
-def test_load_returns_none_on_http_error(mocker):
-    """An HTTP error from the platform must return None, not raise."""
-    _mock_sync_client(mocker, side_effect=httpx2.HTTPError("boom"))
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(httpx2.ConnectTimeout("connect timed out"), id="connection_failure"),
+        pytest.param(httpx2.HTTPStatusError("401 Unauthorized", request=None, response=None), id="bad_credential"),
+    ],
+)
+def test_load_returns_none_on_http_error(mocker, caplog, error):
+    """An HTTP error from the platform must return None, not raise - and the two very
+    different underlying causes (network failure vs. a rejected credential) must be
+    distinguishable in the logs, not collapsed into one generic message.
+    """
+    caplog.set_level("ERROR")
+    _mock_sync_client(mocker, side_effect=error)
     client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=_memory_cache())
     assert client.load() is None
+    assert str(error) in caplog.text
 
 
 def test_load_returns_schema_on_success(mocker):
@@ -119,20 +131,26 @@ def test_preload_and_get_cached_round_trip(mocker, caplog, backend):
     assert f"cache_key={client._cache_key} hit=True" in caplog.text
 
 
-def test_cache_key_uses_jwt_sub_claim_blank_placeholder_or_raises():
+def test_cache_key_uses_jwt_sub_claim_blank_placeholder_or_raises(caplog):
     """A well-formed app_agent_key JWT's sub claim (a stable, non-secret GID) must be used
     directly. A blank app_agent_key (the supported "IK not configured" state) must map to a
     stable placeholder instead of attempting to decode. Anything else non-blank must be a
     valid JWT with a sub claim - either failure (not a JWT at all, or missing the claim) is a
     real config error and must raise a clear InvalidAppAgentKeyError, not a raw jwt/TypeError,
-    and must not degrade quietly to a hashed key.
+    and must not degrade quietly to a hashed key. The two failure modes must be distinguishable
+    in the logs, not just via the identical exception message.
     """
+    caplog.set_level("ERROR")
     assert _cache_key(_fake_jwt("gid:AAAA123")) == "ikg_schema:gid:AAAA123"
     assert _cache_key("") == "ikg_schema:unconfigured"
+
     with pytest.raises(InvalidAppAgentKeyError):
         _cache_key("not-a-jwt")
     with pytest.raises(InvalidAppAgentKeyError):
         _cache_key(jwt.encode({"no_sub_here": "x"}, key="", algorithm="none"))
+
+    assert "not a well-formed JWT" in caplog.text
+    assert "missing a string 'sub' claim" in caplog.text
 
 
 def test_schema_does_not_collide_across_different_environments(mocker):
