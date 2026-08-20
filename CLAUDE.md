@@ -174,3 +174,32 @@ under emulation):
 docker buildx build --platform linux/amd64 --load -t intent-agent:local .
 docker run --platform linux/amd64 -p 6003:6003 -p 8001:8001 --env-file .env intent-agent:local
 ```
+
+## Pre-merge validation: full multi-instance stack
+
+Before merging anything touching `schema.py`, cache/TTL behavior, or `agent.py`'s startup path,
+run the real `docker-compose` stack (`intent-agent-1` + `intent-agent-2` + `redis` +
+nginx `load-balancer`) - a single `uv run` process never exercises the actual multi-instance
+concerns this service is deployed under (shared schema cache, no per-instance refresh collisions,
+real load-balanced traffic). `make test`/`make build` alone don't cover this.
+
+```sh
+docker compose up --build -d
+```
+
+Then verify, don't just check it started:
+
+- **Both instances started clean**: `docker logs intent-agent-intent-agent-1-1` /
+  `...-2-1` - real schema fetch succeeded, no traceback, `Uvicorn running on ...:6003`.
+- **They share one cache entry, not two**: `docker exec intent-agent-redis-1 redis-cli KEYS
+  "ikg_schema*"` must show exactly one key (env-scoped, see `schema.py`'s `_cache_key`) - two
+  keys means the cache-key-collision bug is back.
+- **The load balancer actually distributes traffic**, not just accepts it: send a few requests
+  through `http://localhost:6003/`, then confirm both `docker logs intent-agent-intent-agent-1-1
+  | grep -c "POST /"` and the `-2-1` equivalent are nonzero.
+
+`.env` needs container-network values for this, different from the bare `uv run` case above -
+use `.env.docker-compose.example` (not the plain `.env.example`) as the starting point:
+`REDIS_URL=redis://redis:6379` (not `localhost`), and if using a local mock introspection
+endpoint on the host, `INTROSPECT_URL=http://host.docker.internal:9001/introspect` (macOS/Windows
+Docker Desktop only - containers can't reach the host via `127.0.0.1`).

@@ -1,13 +1,13 @@
 """Runtime configuration for the Intent Agent, loaded from environment / .env."""
 
-from pydantic import Field, HttpUrl, ValidationInfo, field_validator
+from pydantic import Field, HttpUrl, RedisDsn, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     """Startup config. Fails fast (pydantic ValidationError) if fields are missing."""
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", env_ignore_empty=True)
 
     intent_port: int = Field(default=6003, ge=1, le=65535)
     health_port: int = Field(default=8001, ge=1, le=65535)
@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     indykite_base_url: str = ""
     ik_app_agent_key: str = ""
     schema_fetch_timeout_seconds: float = 30.0
+    schema_refresh_ttl_minutes: float = Field(default=1440.0, gt=0)
+
+    redis_url: RedisDsn | None = None
 
     introspect_url: HttpUrl
     introspect_client_id: str = Field(min_length=1)

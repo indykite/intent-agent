@@ -3,8 +3,10 @@ import json
 from pathlib import Path
 
 import pytest
+from dogpile.cache.backends.memory import MemoryBackend
+from dogpile.cache.backends.redis import RedisBackend
 
-from indykite.intent_agent.agent import IntentAgent, build_app
+from indykite.intent_agent.agent import IntentAgent, _build_schema_cache, build_app
 from indykite.intent_agent.config import Settings
 from indykite.intent_agent.errors import SchemaUnavailableError, SubjectTypeMismatchError
 from indykite.intent_agent.skills import discover_skills
@@ -12,6 +14,7 @@ from indykite.intent_agent.subject_binding import _bind_subject, normalize_inten
 
 _MIN_EXPECTED_ROUTES = 2
 _EXPECTED_BARE_ARRAY_EVALUATION_COUNT = 2
+_REDIS_PORT = 6379
 _SCHEMA_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mock_ikg_schema.json"
 
 
@@ -175,6 +178,29 @@ def _settings_with_subject_type(monkeypatch, subject_type="Customer"):
     monkeypatch.setenv("INTROSPECT_CLIENT_SECRET", "client-secret")
     monkeypatch.setenv("SUBJECT_TYPE", subject_type)
     return Settings(_env_file=None)
+
+
+def test_build_schema_cache_uses_memory_backend_when_redis_url_blank(monkeypatch):
+    """A blank REDIS_URL must fall back to the in-process Memory cache. (Whitespace-only is
+    rejected outright by Settings validation instead - see test_rejects_invalid_redis_url.)
+    """
+    monkeypatch.setenv("REDIS_URL", "")
+    settings = _settings_with_subject_type(monkeypatch)
+    assert isinstance(_build_schema_cache(settings).backend, MemoryBackend)
+
+
+def test_build_schema_cache_uses_redis_backend_when_redis_url_set(monkeypatch):
+    """A configured REDIS_URL must select the Redis-backed cache, using its host/port, with
+    expiration_time set from SCHEMA_REFRESH_TTL_MINUTES so get_cached() refreshes on-demand.
+    """
+    monkeypatch.setenv("REDIS_URL", f"redis://redis.example.com:{_REDIS_PORT}")
+    monkeypatch.setenv("SCHEMA_REFRESH_TTL_MINUTES", "2.0")
+    settings = _settings_with_subject_type(monkeypatch)
+    cache = _build_schema_cache(settings)
+    assert isinstance(cache.backend, RedisBackend)
+    assert cache.backend.host == "redis.example.com"
+    assert cache.backend.port == _REDIS_PORT
+    assert cache.expiration_time == 2.0 * 60
 
 
 def test_get_data_schema_tool_returns_cached_schema(monkeypatch, mocker):

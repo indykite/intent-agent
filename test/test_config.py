@@ -5,6 +5,7 @@ from indykite.intent_agent.config import Settings
 
 _DEFAULT_INTENT_PORT = 6003
 _DEFAULT_HEALTH_PORT = 8001
+_DEFAULT_SCHEMA_REFRESH_TTL_MINUTES = 1440.0
 
 
 def _set_baseline_env(monkeypatch):
@@ -32,6 +33,8 @@ def test_defaults(monkeypatch):
     assert settings.health_port == _DEFAULT_HEALTH_PORT
     assert settings.intent_agent_name == "intent_agent"
     assert settings.gemini_model == "gemini-2.5-flash"
+    assert settings.redis_url is None
+    assert settings.schema_refresh_ttl_minutes == _DEFAULT_SCHEMA_REFRESH_TTL_MINUTES
 
 
 def test_rejects_blank_gemini_api_key(monkeypatch):
@@ -42,38 +45,30 @@ def test_rejects_blank_gemini_api_key(monkeypatch):
         Settings(_env_file=None)
 
 
+@pytest.mark.parametrize("env_var", ["INTENT_PORT", "HEALTH_PORT"])
 @pytest.mark.parametrize("port", [0, -1, 65536])
-def test_rejects_out_of_range_intent_port(monkeypatch, port):
-    """INTENT_PORT outside the valid TCP port range (1-65535) must fail validation."""
+def test_rejects_out_of_range_ports(monkeypatch, env_var, port):
+    """INTENT_PORT/HEALTH_PORT outside the valid TCP port range (1-65535) must fail validation."""
     _set_baseline_env(monkeypatch)
-    monkeypatch.setenv("INTENT_PORT", str(port))
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
-
-
-@pytest.mark.parametrize("port", [0, -1, 65536])
-def test_rejects_out_of_range_health_port(monkeypatch, port):
-    """HEALTH_PORT outside the valid TCP port range (1-65535) must fail validation."""
-    _set_baseline_env(monkeypatch)
-    monkeypatch.setenv("HEALTH_PORT", str(port))
+    monkeypatch.setenv(env_var, str(port))
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
 
 
 @pytest.mark.parametrize("env_var", ["INTROSPECT_URL", "INTROSPECT_CLIENT_ID", "INTROSPECT_CLIENT_SECRET"])
-def test_requires_introspect_config(monkeypatch, env_var):
-    """Settings must fail fast when introspection config is missing, not default to blank."""
+@pytest.mark.parametrize(
+    "make_invalid",
+    [
+        pytest.param(lambda monkeypatch, env_var: monkeypatch.delenv(env_var, raising=False), id="missing"),
+        pytest.param(lambda monkeypatch, env_var: monkeypatch.setenv(env_var, "   "), id="blank"),
+    ],
+)
+def test_rejects_missing_or_blank_introspect_config(monkeypatch, env_var, make_invalid):
+    """Settings must fail fast when introspection config is missing or whitespace-only,
+    not default to/treat it as blank.
+    """
     _set_baseline_env(monkeypatch)
-    monkeypatch.delenv(env_var, raising=False)
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
-
-
-@pytest.mark.parametrize("env_var", ["INTROSPECT_URL", "INTROSPECT_CLIENT_ID", "INTROSPECT_CLIENT_SECRET"])
-def test_rejects_blank_introspect_config(monkeypatch, env_var):
-    """A whitespace-only introspection config value must fail validation, not be treated as set."""
-    _set_baseline_env(monkeypatch)
-    monkeypatch.setenv(env_var, "   ")
+    make_invalid(monkeypatch, env_var)
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
 
@@ -107,5 +102,33 @@ def test_rejects_blank_subject_type(monkeypatch):
     """A whitespace-only SUBJECT_TYPE must fail validation, not be treated as set."""
     _set_baseline_env(monkeypatch)
     monkeypatch.setenv("SUBJECT_TYPE", "   ")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("not-a-real-url", id="malformed_url"),
+        pytest.param("redis://host:99999", id="port_too_large"),
+        pytest.param("http://host:6379", id="wrong_scheme"),
+        pytest.param("   ", id="whitespace_only"),
+    ],
+)
+def test_rejects_invalid_redis_url(monkeypatch, value):
+    """A malformed/whitespace-only REDIS_URL, an out-of-range port, or a non-redis scheme must
+    all fail validation - only a truly blank REDIS_URL disables Redis (see test_defaults).
+    """
+    _set_baseline_env(monkeypatch)
+    monkeypatch.setenv("REDIS_URL", value)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+@pytest.mark.parametrize("ttl", [0, -1])
+def test_rejects_non_positive_schema_refresh_ttl(monkeypatch, ttl):
+    """A zero or negative SCHEMA_REFRESH_TTL_MINUTES would busy-loop the refresh thread."""
+    _set_baseline_env(monkeypatch)
+    monkeypatch.setenv("SCHEMA_REFRESH_TTL_MINUTES", str(ttl))
     with pytest.raises(ValidationError):
         Settings(_env_file=None)

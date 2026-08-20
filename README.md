@@ -91,9 +91,90 @@ curl -X POST http://localhost:6003/ \
   }'
 ```
 
+### Testing end-to-end against real RC + Redis + Gemini
+
+The quickstart above works with a schema-shaped local setup, but doesn't exercise the
+real platform. To test against a real RC environment, a real Redis-backed schema
+cache, and real Gemini calls:
+
+1. Set `INDYKITE_BASE_URL=https://api.rc.indykite.xyz` and a valid `IK_APP_AGENT_KEY`
+   for that environment in `.env` (ask a teammate/platform contact for a key - never
+   commit one).
+2. Bring up Redis only, then point at it via `localhost` - the `redis` hostname used by the
+   `docker-compose` stack (see `.env.docker-compose.example`) only resolves inside that
+   network, not when running the agent directly via `uv run`:
+
+   ```sh
+   docker compose up redis -d
+   # then in .env: REDIS_URL=redis://localhost:6379
+   ```
+
+3. `INTROSPECT_URL` needs a real IdP or a throwaway local stub - there's no
+   "accept any token" mode. A minimal mock that always returns an active token:
+
+   ```python
+   # mock_introspect.py
+   import json
+   from http.server import BaseHTTPRequestHandler, HTTPServer
+
+   class Handler(BaseHTTPRequestHandler):
+       def do_POST(self):
+           body = json.dumps({
+               "active": True,
+               "sub": "<customer_external_id>",
+               "act": {"sub": "<customer_external_id>"},
+               "aud": "<customer_external_id>",
+           }).encode()
+           self.send_response(200)
+           self.send_header("Content-Type", "application/json")
+           self.send_header("Content-Length", str(len(body)))
+           self.end_headers()
+           self.wfile.write(body)
+
+   HTTPServer(("127.0.0.1", 9001), Handler).serve_forever()
+   ```
+
+   Run it, then set `INTROSPECT_URL=http://127.0.0.1:9001/introspect` with any
+   `INTROSPECT_CLIENT_ID`/`INTROSPECT_CLIENT_SECRET`.
+4. Send a prompt that actually matches your graph's schema. `intent-agent`'s subject
+   is always auto-bound to the caller (from the introspection `sub` claim, per
+   `SUBJECT_TYPE`), never from prompt text - a third-person prompt like "what can
+   user X buy" doesn't test what it looks like it tests. Prefer first-person prompts,
+   and check the platform schema for resource types that actually exist before
+   assuming an entity is graph-modeled (e.g. an individual stock ticker usually
+   isn't a node - that data tends to come from an external source instead).
+
 ### With Docker
 
 ```sh
 make build_docker_image
 make start_docker_app # runs the image reachable locally
+```
+
+### Multi-instance, with docker-compose
+
+`docker-compose.yml` runs two agent instances behind an nginx load balancer, backed by a
+shared Redis - the real deployment topology this service is designed for (shared schema
+cache, no per-instance refresh collisions). A single `uv run` process never exercises this.
+
+```sh
+cp .env.docker-compose.example .env   # different from the plain .env.example above -
+                                       # REDIS_URL/INTROSPECT_URL need container-network values
+docker compose up --build -d
+```
+
+Then verify it's actually working as multi-instance, not just that it started:
+
+```sh
+# both instances started clean (real schema fetch, no traceback):
+docker logs intent-agent-intent-agent-1-1
+docker logs intent-agent-intent-agent-2-1
+
+# they share one cache entry, not two - two keys means the cache-key-collision bug is back:
+docker exec intent-agent-redis-1 redis-cli KEYS "ikg_schema*"
+
+# the load balancer actually distributes traffic, not just accepts it:
+curl -X POST http://localhost:6003/ ...   # (see the curl example above), a few times
+docker logs intent-agent-intent-agent-1-1 | grep -c "POST /"
+docker logs intent-agent-intent-agent-2-1 | grep -c "POST /"   # both should be nonzero
 ```
