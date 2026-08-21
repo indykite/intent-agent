@@ -24,6 +24,11 @@ app:
 
   indykiteBaseUrl: "" # INDYKITE_BASE_URL
   schemaFetchTimeoutSeconds: 30.0 # SCHEMA_FETCH_TIMEOUT_SECONDS
+  schemaRefreshTtlMinutes: 1440.0 # SCHEMA_REFRESH_TTL_MINUTES
+
+  # Blank disables Redis - the schema cache falls back to an in-process cache.
+  # Example when enabled: "redis://redis:6379"
+  redisUrl: "" # REDIS_URL
 
   introspectUrl: "https://placeholder.example.com" # INTROSPECT_URL
   introspectClientId: "placeholder" # INTROSPECT_CLIENT_ID

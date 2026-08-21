@@ -93,6 +93,13 @@
           "type": "number",
           "exclusiveMinimum": 0
         },
+        "schemaRefreshTtlMinutes": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "redisUrl": {
+          "type": "string"
+        },
         "introspectUrl": {
           "type": "string",
           "format": "uri",

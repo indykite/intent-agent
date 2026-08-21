@@ -68,6 +68,12 @@ spec:
               value: {{ .Values.app.indykiteBaseUrl | quote }}
             - name: SCHEMA_FETCH_TIMEOUT_SECONDS
               value: {{ .Values.app.schemaFetchTimeoutSeconds | quote }}
+            - name: SCHEMA_REFRESH_TTL_MINUTES
+              value: {{ .Values.app.schemaRefreshTtlMinutes | quote }}
+            {{- if .Values.app.redisUrl }}
+            - name: REDIS_URL
+              value: {{ .Values.app.redisUrl | quote }}
+            {{- end }}
             - name: INTROSPECT_URL
               value: {{ .Values.app.introspectUrl | quote }}
             - name: INTROSPECT_CLIENT_ID
