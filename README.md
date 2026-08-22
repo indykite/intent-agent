@@ -150,10 +150,18 @@ cache, and real Gemini calls:
 
 ### Testing end-to-end against real RC + Redis + Gemini with scripts
 
+`make start_app` and `make start_mock_introspect_service` both run in the foreground, so start
+each in its own terminal and wait for both to report ready before running the script:
+
 ```sh
+# terminal 1
+make start_mock_introspect_service
+
+# terminal 2
 export INTROSPECT_URL=http://127.0.0.1:9001/introspect
 make start_app
-make start_mock_introspect_service
+
+# terminal 3, once both are up
 manual_testing/call_agent.sh
 ```
 

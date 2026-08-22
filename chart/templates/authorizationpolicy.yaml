@@ -54,6 +54,8 @@
               - {{ $.Values.app.intentPort | quote }}
         {{- end }}
       {{- end }}
+{{- else }}
+{{- fail "istio.authorizationPolicy.enabled is true but no namespaces/principals/internalCallers/rules are configured - this would silently skip creating the AuthorizationPolicy, leaving the workload unrestricted. Configure at least one of istio.authorizationPolicy.{namespaces,principals,internalCallers,rules}." }}
 {{- end }}
 {{- end }}
 {{- end }}

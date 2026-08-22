@@ -61,13 +61,31 @@ Service ports/probes and silently sharing one port hides misconfiguration.
 {{- end }}
 
 {{/*
-Fail fast if app.cacheBackend is "redis" but no redisUrlSecretRef is configured - mirrors
+Fail fast if app.cacheBackend is "redis" but redisUrlSecretRef isn't fully configured - mirrors
 config.py's Settings._require_redis_url_for_redis_backend, which rejects this at app startup.
+Also fails the reverse mismatch: redisUrlSecretRef set but cacheBackend left at "memory" would
+inject REDIS_URL while Settings.cache_backend stays "memory", silently defeating the shared cache.
 */}}
 {{- define "service.validateCacheBackend" -}}
-{{- if and (eq .Values.app.cacheBackend "redis") (not .Values.app.redisUrlSecretRef.name) }}
-{{- fail "app.redisUrlSecretRef.name is required when app.cacheBackend is \"redis\"" }}
+{{- if eq .Values.app.cacheBackend "redis" }}
+{{- if or (not .Values.app.redisUrlSecretRef.name) (not .Values.app.redisUrlSecretRef.key) }}
+{{- fail "app.redisUrlSecretRef.name and app.redisUrlSecretRef.key are both required when app.cacheBackend is \"redis\"" }}
 {{- end }}
+{{- else if .Values.app.redisUrlSecretRef.name }}
+{{- fail "app.redisUrlSecretRef.name is set but app.cacheBackend is not \"redis\" - set app.cacheBackend: \"redis\" too, or clear redisUrlSecretRef" }}
+{{- end }}
+{{- end }}
+
+{{/*
+Suffix service.fullname while staying within Kubernetes' 63-char DNS-label limit - truncating
+the base name AFTER appending the suffix (rather than the already-63-char fullname) would
+silently drop the suffix chars, so reserve their room on the base first.
+Usage: {{ include "service.suffixedName" (list . "-metrics") }}
+*/}}
+{{- define "service.suffixedName" -}}
+{{- $suffix := index . 1 }}
+{{- $base := include "service.fullname" (index . 0) | trunc (sub 63 (len $suffix) | int) | trimSuffix "-" }}
+{{- printf "%s%s" $base $suffix }}
 {{- end }}
 
 {{/*
@@ -97,7 +115,7 @@ Used by authorizationpolicy.yaml to avoid duplicating the resource envelope.
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:
-  name: {{ include "service.fullname" . }}-allow
+  name: {{ include "service.suffixedName" (list . "-allow") }}
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "service.labels" . | nindent 4 }}

@@ -3,7 +3,7 @@
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:
-  name: '{{ include "service.fullname" . }}-metrics'
+  name: {{ include "service.suffixedName" (list . "-metrics") | quote }}
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "service.labels" . | nindent 4 }}
@@ -33,4 +33,11 @@ spec:
         - operation:
             ports:
               - {{ .Values.app.healthPort | quote }}
+    # Istio denies any request that doesn't match at least one ALLOW policy once one exists for
+    # the workload - without this second, unrestricted rule, creating this policy alone (i.e.
+    # istio.authorizationPolicy.enabled: false) would cut off the main intentPort too.
+    - to:
+        - operation:
+            ports:
+              - {{ .Values.app.intentPort | quote }}
 {{- end }}
