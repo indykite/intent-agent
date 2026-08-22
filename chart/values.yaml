@@ -26,9 +26,11 @@ app:
   schemaFetchTimeoutSeconds: 30.0 # SCHEMA_FETCH_TIMEOUT_SECONDS
   schemaRefreshTtlMinutes: 1440.0 # SCHEMA_REFRESH_TTL_MINUTES
 
-  # Blank disables Redis - the schema cache falls back to an in-process cache.
-  # Example when enabled: "redis://redis:6379"
-  redisUrl: "" # REDIS_URL
+  # Blank name disables Redis - the schema cache falls back to an in-process cache.
+  # REDIS_URL - example secret value when enabled: "redis://redis:6379"
+  redisUrlSecretRef:
+    name: ""
+    key: ""
 
   introspectUrl: "https://placeholder.example.com" # INTROSPECT_URL
   introspectClientId: "placeholder" # INTROSPECT_CLIENT_ID

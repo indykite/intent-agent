@@ -97,9 +97,6 @@
           "type": "number",
           "exclusiveMinimum": 0
         },
-        "redisUrl": {
-          "type": "string"
-        },
         "introspectUrl": {
           "type": "string",
           "format": "uri",
@@ -154,6 +151,18 @@
           }
         },
         "ikAppAgentKeySecretRef": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            }
+          }
+        },
+        "redisUrlSecretRef": {
           "type": "object",
           "additionalProperties": false,
           "properties": {

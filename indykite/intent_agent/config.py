@@ -11,7 +11,6 @@ from pydantic import (
     PositiveInt,
     RedisDsn,
     SecretStr,
-    field_validator,
     model_validator,
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -52,12 +51,6 @@ class Settings(BaseSettings):
     introspect_timeout_seconds: PositiveFloat = 5.0
 
     subject_type: str = Field(min_length=1)
-
-    @field_validator("log_level", mode="before")
-    @classmethod
-    def _normalize_log_level(cls, value: object) -> object:
-        """Upper-case before checking against the fixed level set (``LOG_LEVEL=info`` must still work)."""
-        return value.upper() if isinstance(value, str) else value
 
     @model_validator(mode="after")
     def _reject_matching_ports(self) -> "Settings":

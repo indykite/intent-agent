@@ -70,9 +70,12 @@ spec:
               value: {{ .Values.app.schemaFetchTimeoutSeconds | quote }}
             - name: SCHEMA_REFRESH_TTL_MINUTES
               value: {{ .Values.app.schemaRefreshTtlMinutes | quote }}
-            {{- if .Values.app.redisUrl }}
+            {{- if .Values.app.redisUrlSecretRef.name }}
             - name: REDIS_URL
-              value: {{ .Values.app.redisUrl | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.app.redisUrlSecretRef.name }}
+                  key: {{ .Values.app.redisUrlSecretRef.key }}
             {{- end }}
             - name: INTROSPECT_URL
               value: {{ .Values.app.introspectUrl | quote }}

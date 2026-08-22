@@ -8,6 +8,15 @@ _DEFAULT_HEALTH_PORT = 8001
 _DEFAULT_SCHEMA_REFRESH_TTL_MINUTES = 1440.0
 
 
+@pytest.fixture(autouse=True)
+def _clean_settings_env(monkeypatch):
+    """Strip every Settings field's env var so ambient/shell env can't leak into a test -
+    each test opts back in explicitly via _set_baseline_env/monkeypatch.setenv.
+    """
+    for field_name in Settings.model_fields:
+        monkeypatch.delenv(field_name.upper(), raising=False)
+
+
 def _set_baseline_env(monkeypatch):
     """Set every currently-required Settings env var to a valid value."""
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
@@ -112,14 +121,6 @@ def test_rejects_malformed_bind_host(monkeypatch):
     monkeypatch.setenv("BIND_HOST", "not-an-ip")
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
-
-
-def test_log_level_normalizes_case(monkeypatch):
-    """LOG_LEVEL must be accepted case-insensitively - it's upper-cased before validation."""
-    _set_baseline_env(monkeypatch)
-    monkeypatch.setenv("LOG_LEVEL", "debug")
-    settings = Settings(_env_file=None)
-    assert settings.log_level == "DEBUG"
 
 
 def test_rejects_unknown_log_level(monkeypatch):
