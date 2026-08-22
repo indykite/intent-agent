@@ -85,14 +85,14 @@ def _start_observability_server(bind_host: str, port: int, logging_config: dict[
 def main() -> None:
     """Load settings, build the app, start the observability server, then serve the A2A app."""
     settings = Settings()
-    log_level = settings.log_level.upper()
+    log_level = settings.log_level
     logging_config = build_logging_config(log_level)
     logging.config.dictConfig(logging_config)
 
     app, agent = build_app(settings)
     app.add_middleware(MetricsMiddleware)
 
-    _start_observability_server(settings.bind_host, settings.health_port, logging_config)
+    _start_observability_server(str(settings.bind_host), settings.health_port, logging_config)
     logger.info(
         "Starting %s on port %d (observability on %d, LLM: Gemini %s)",
         settings.intent_agent_name,
@@ -104,7 +104,7 @@ def main() -> None:
 
     uvicorn.run(
         app,
-        host=settings.bind_host,
+        host=str(settings.bind_host),
         port=settings.intent_port,
         log_level=log_level.lower(),
         log_config=logging_config,

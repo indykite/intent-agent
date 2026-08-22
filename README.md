@@ -106,7 +106,7 @@ cache, and real Gemini calls:
 
    ```sh
    docker compose up redis -d
-   # then in .env: REDIS_URL=redis://localhost:6379
+   # then in .env: CACHE_BACKEND=redis / REDIS_URL=redis://localhost:6379
    ```
 
 3. `INTROSPECT_URL` needs a real IdP or a throwaway local stub - there's no
@@ -117,19 +117,23 @@ cache, and real Gemini calls:
    import json
    from http.server import BaseHTTPRequestHandler, HTTPServer
 
+
    class Handler(BaseHTTPRequestHandler):
        def do_POST(self):
-           body = json.dumps({
-               "active": True,
-               "sub": "<customer_external_id>",
-               "act": {"sub": "<customer_external_id>"},
-               "aud": "<customer_external_id>",
-           }).encode()
+           body = json.dumps(
+               {
+                   "active": True,
+                   "sub": "<customer_external_id>",
+                   "act": {"sub": "<customer_external_id>"},
+                   "aud": "<customer_external_id>",
+               }
+           ).encode()
            self.send_response(200)
            self.send_header("Content-Type", "application/json")
            self.send_header("Content-Length", str(len(body)))
            self.end_headers()
            self.wfile.write(body)
+
 
    HTTPServer(("127.0.0.1", 9001), Handler).serve_forever()
    ```

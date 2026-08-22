@@ -144,8 +144,16 @@ too — separate from `activate_skill`'s auto-injection.
 
 **Schema loading.** `SchemaClient.load()` fetches IndyKite graph schema (JGF) from
 `{INDYKITE_BASE_URL}/data-schema/v1` using `IK_APP_AGENT_KEY` (as `X-IK-ClientKey` header), cached
-once at startup via `IntentAgent.preload_schema()`. Either env var unset or fetch fails — agent
-still starts, runs — schema tool just reports unavailable, LLM falls back to generic types.
+once at startup via `IntentAgent.preload_schema()`. Both `INDYKITE_BASE_URL` and
+`IK_APP_AGENT_KEY` are required (`Settings` fails fast at startup if either is missing); only
+the fetch itself failing (network/HTTP error) still lets the agent start and run — schema tool
+just reports unavailable, LLM falls back to generic types.
+
+**Schema cache backend.** `CACHE_BACKEND` (`Settings`, default `"memory"`) picks the
+`dogpile.cache` backend `_build_schema_cache` (`agent.py`) configures: in-process `memory`, or
+`redis` using `REDIS_URL` — required whenever `CACHE_BACKEND=redis` (`Settings` fails fast at
+startup otherwise). Multi-instance deployments need `redis` so instances share one schema cache
+entry (see the pre-merge multi-instance validation below).
 
 **A2A transport quirks** (worth knowing before curling this service or writing integration
 test): JSON-RPC method name is `SendMessage`, not `message/send`; requests need
