@@ -57,6 +57,7 @@ def _build_schema_cache(settings: Settings) -> CacheRegion:
     timer - see get_cached()'s docstring for why that matters with multiple instances.
     """
     ttl_seconds = settings.schema_refresh_ttl_minutes * _SECONDS_PER_MINUTE
+    logger.info("Using cache backend %r with TTL %d seconds", settings.cache_backend, ttl_seconds)
     if settings.cache_backend == "redis":
         return make_region().configure(
             "dogpile.cache.redis",

@@ -148,6 +148,15 @@ cache, and real Gemini calls:
    assuming an entity is graph-modeled (e.g. an individual stock ticker usually
    isn't a node - that data tends to come from an external source instead).
 
+### Testing end-to-end against real RC + Redis + Gemini with scripts
+
+```sh
+export INTROSPECT_URL=http://127.0.0.1:9001/introspect
+make start_app
+make start_mock_introspect_service
+manual_testing/call_agent.sh
+```
+
 ### With Docker
 
 ```sh

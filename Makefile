@@ -4,7 +4,8 @@
 	fix codestyle_check test test_coverage test_coverage_report_text \
 	test_coverage_report_html test_coverage_report_xml start_pipeline integration \
 	build_integration build dry_run build_docker_image start_docker_app start_app \
-	start_docker_compose stop_docker_compose destroy_docker_compose
+	start_docker_compose stop_docker_compose destroy_docker_compose \
+	start_mock_introspect_service
 
 build_integration: build integration dry_run
 build: project_check codestyle_check test
@@ -87,3 +88,6 @@ stop_docker_compose:
 
 destroy_docker_compose:
 	docker compose down --remove-orphans
+
+start_mock_introspect_service:
+	uv run --locked python3 -m manual_testing.mock_introspect
