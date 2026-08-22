@@ -146,8 +146,8 @@ too — separate from `activate_skill`'s auto-injection.
 `{INDYKITE_BASE_URL}/data-schema/v1` using `IK_APP_AGENT_KEY` (as `X-IK-ClientKey` header), cached
 once at startup via `IntentAgent.preload_schema()`. Both `INDYKITE_BASE_URL` and
 `IK_APP_AGENT_KEY` are required (`Settings` fails fast at startup if either is missing); only
-the fetch itself failing (network/HTTP error) still lets the agent start and run — schema tool
-just reports unavailable, LLM falls back to generic types.
+ the fetch itself failing (network/HTTP error) prevents cold start (`build_app` raises
+ `SchemaUnavailableError`); only a failed refresh after a cached schema has expired keeps the stale schema.
 
 **Schema cache backend.** `CACHE_BACKEND` (`Settings`, default `"memory"`) picks the
 `dogpile.cache` backend `_build_schema_cache` (`agent.py`) configures: in-process `memory`, or

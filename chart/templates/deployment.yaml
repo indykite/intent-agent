@@ -1,3 +1,4 @@
+{{- include "service.validateCacheBackend" . }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -70,6 +71,8 @@ spec:
               value: {{ .Values.app.schemaFetchTimeoutSeconds | quote }}
             - name: SCHEMA_REFRESH_TTL_MINUTES
               value: {{ .Values.app.schemaRefreshTtlMinutes | quote }}
+            - name: CACHE_BACKEND
+              value: {{ .Values.app.cacheBackend | quote }}
             {{- if .Values.app.redisUrlSecretRef.name }}
             - name: REDIS_URL
               valueFrom:
@@ -142,14 +145,6 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: [ALL]
-          volumeMounts:
-            - mountPath: /tmp
-              name: tmp-volume
-
-      volumes:
-        - name: tmp-volume
-          emptyDir:
-            sizeLimit: {{ .Values.app.tmpDiskSizeLimit }}
 
       {{- with .Values.nodeSelector }}
       nodeSelector:

@@ -16,7 +16,7 @@ spec:
   gateways:
     {{- toYaml .Values.istio.virtualService.gateways | nindent 4 }}
   hosts:
-    {{- $hosts := .Values.istio.virtualService.hosts | default (list .Release.Name) }}
+    {{- $hosts := .Values.istio.virtualService.hosts | default (list (include "service.fullname" .)) }}
     {{- toYaml ($hosts | uniq) | nindent 4 }}
   http:
     - name: {{ .Chart.Name }}-routes
@@ -32,7 +32,7 @@ spec:
         - destination:
             host: {{ include "service.fullname" . }}
             port:
-              number: {{ .Values.service.port }}
+              number: {{ .Values.app.intentPort }}
             {{- if (((.Values.istio).destinationRule).enabled) }}
             subset: default
             {{- end }}

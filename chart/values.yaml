@@ -18,16 +18,18 @@ app:
   intentAgentName: "intent_agent" # INTENT_AGENT_NAME
   logLevel: "INFO" # LOG_LEVEL
 
-  geminiModel: "gemini-2.5-flash" # GEMINI_MODEL
+  geminiModel: "gemini-3.6-flash" # GEMINI_MODEL
   toolCallMaxIterations: 5 # TOOL_CALL_MAX_ITERATIONS
   schemaPreviewChars: 12000 # SCHEMA_PREVIEW_CHARS
 
-  indykiteBaseUrl: "" # INDYKITE_BASE_URL
+  indykiteBaseUrl: "https://placeholder.example.com" # INDYKITE_BASE_URL
   schemaFetchTimeoutSeconds: 30.0 # SCHEMA_FETCH_TIMEOUT_SECONDS
   schemaRefreshTtlMinutes: 1440.0 # SCHEMA_REFRESH_TTL_MINUTES
 
-  # Blank name disables Redis - the schema cache falls back to an in-process cache.
-  # REDIS_URL - example secret value when enabled: "redis://redis:6379"
+  cacheBackend: "memory" # CACHE_BACKEND - "memory" or "redis"
+
+  # Required (redisUrlSecretRef.name must be set) when cacheBackend is "redis" - Settings fails
+  # fast at startup otherwise. REDIS_URL - example secret value: "redis://redis:6379"
   redisUrlSecretRef:
     name: ""
     key: ""
@@ -48,12 +50,11 @@ app:
     name: "intent-agent-secrets"
     key: "INTROSPECT_CLIENT_SECRET"
 
-  # IK_APP_AGENT_KEY - - required, no default in Settings.
+  # IK_APP_AGENT_KEY - required, no default in Settings.
   ikAppAgentKeySecretRef:
     name: "intent-agent-secrets"
     key: "IK_APP_AGENT_KEY"
 
-  tmpDiskSizeLimit: "64Mi"
   terminationGracePeriodSeconds: 30
 
   env: {}
@@ -67,7 +68,6 @@ fullnameOverride: ""
 
 service:
   type: ClusterIP
-  port: 80
 
 serviceAccount:
   create: true
@@ -124,10 +124,12 @@ istio:
     enabled: true
     mtlsMode: "STRICT"
     portLevelMtlsMode: "PERMISSIVE"
-  # Restricts who may reach the health/metrics port when istio.enabled are true.
+  # Restricts who may reach the health/metrics port when istio.enabled and
+  # metricsAuthorizationPolicy.enabled are true.
   # Left empty (no restriction) by default since the GKE Managed Prometheus collector's identity
   # varies by cluster; populate with its namespace/principals to lock this down per-environment.
   metricsAuthorizationPolicy:
+    enabled: true
     namespaces: []
     principals: []
   destinationRule:

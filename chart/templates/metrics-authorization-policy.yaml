@@ -1,4 +1,4 @@
-{{- if and .Values.istio.enabled }}
+{{- if and ((.Values.istio).enabled) (((.Values.istio).metricsAuthorizationPolicy).enabled) }}
 ---
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy

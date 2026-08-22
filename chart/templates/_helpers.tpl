@@ -51,6 +51,26 @@ owner: ai-ml
 {{- end }}
 
 {{/*
+Fail fast if app.intentPort and app.healthPort collide - they back two distinct
+Service ports/probes and silently sharing one port hides misconfiguration.
+*/}}
+{{- define "service.validatePorts" -}}
+{{- if eq (.Values.app.intentPort | int) (.Values.app.healthPort | int) }}
+{{- fail (printf "app.intentPort and app.healthPort must differ (both set to %d)" (.Values.app.intentPort | int)) }}
+{{- end }}
+{{- end }}
+
+{{/*
+Fail fast if app.cacheBackend is "redis" but no redisUrlSecretRef is configured - mirrors
+config.py's Settings._require_redis_url_for_redis_backend, which rejects this at app startup.
+*/}}
+{{- define "service.validateCacheBackend" -}}
+{{- if and (eq .Values.app.cacheBackend "redis") (not .Values.app.redisUrlSecretRef.name) }}
+{{- fail "app.redisUrlSecretRef.name is required when app.cacheBackend is \"redis\"" }}
+{{- end }}
+{{- end }}
+
+{{/*
 Create the name of the service account to use
 */}}
 {{- define "service.serviceAccountName" -}}

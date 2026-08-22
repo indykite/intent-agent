@@ -40,6 +40,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "indykiteBaseUrl",
         "introspectUrl",
         "introspectClientId",
         "subjectType",
@@ -84,10 +85,12 @@
         },
         "schemaPreviewChars": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 1
         },
         "indykiteBaseUrl": {
-          "type": "string"
+          "type": "string",
+          "format": "uri",
+          "minLength": 1
         },
         "schemaFetchTimeoutSeconds": {
           "type": "number",
@@ -150,6 +153,13 @@
             }
           }
         },
+        "cacheBackend": {
+          "type": "string",
+          "enum": [
+            "memory",
+            "redis"
+          ]
+        },
         "ikAppAgentKeySecretRef": {
           "type": "object",
           "additionalProperties": false,
@@ -173,9 +183,6 @@
               "type": "string"
             }
           }
-        },
-        "tmpDiskSizeLimit": {
-          "type": "string"
         },
         "terminationGracePeriodSeconds": {
           "type": "integer",
@@ -227,14 +234,8 @@
           "enum": [
             "ClusterIP",
             "NodePort",
-            "LoadBalancer",
-            "ExternalName"
+            "LoadBalancer"
           ]
-        },
-        "port": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 65535
         },
         "annotations": {
           "type": "object"
@@ -536,6 +537,9 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
             "namespaces": {
               "type": "array",
               "items": {

@@ -1,3 +1,4 @@
+{{- include "service.validatePorts" . }}
 ---
 apiVersion: v1
 kind: Service
@@ -21,7 +22,7 @@ spec:
   type: {{ ((.Values.service).type) | default "ClusterIP" }}
   ports:
     - name: http
-      port: {{ .Values.service.port }}
+      port: {{ .Values.app.intentPort }}
       protocol: TCP
       targetPort: {{ .Values.app.intentPort }}
     - name: health
