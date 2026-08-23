@@ -54,8 +54,14 @@ cp .env.example .env
 
 ### Locally, with uv
 
+`.env.example` leaves several settings blank that `Settings` requires at startup - set at least
+`GEMINI_API_KEY`, `INDYKITE_BASE_URL`, `IK_APP_AGENT_KEY`, `INTROSPECT_URL`,
+`INTROSPECT_CLIENT_ID`, `INTROSPECT_CLIENT_SECRET`, and `SUBJECT_TYPE` before starting (see
+"Testing end-to-end against real RC + Redis + Gemini" below for where to get real values, or a
+local introspection stub, for the introspection/schema settings):
+
 ```sh
-cp .env.example .env   # then set GEMINI_API_KEY
+cp .env.example .env   # then fill in the required settings listed above
 uv run python -m indykite.intent_agent
 ```
 

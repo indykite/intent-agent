@@ -77,6 +77,16 @@ inject REDIS_URL while Settings.cache_backend stays "memory", silently defeating
 {{- end }}
 
 {{/*
+Fail fast if autoscaling.minReplicas exceeds maxReplicas - the schema validates each field
+independently, so this combination passes Helm validation but Kubernetes rejects the HPA.
+*/}}
+{{- define "service.validateAutoscaling" -}}
+{{- if gt (.Values.autoscaling.minReplicas | int) (.Values.autoscaling.maxReplicas | int) }}
+{{- fail (printf "autoscaling.minReplicas (%d) must not exceed autoscaling.maxReplicas (%d)" (.Values.autoscaling.minReplicas | int) (.Values.autoscaling.maxReplicas | int)) }}
+{{- end }}
+{{- end }}
+
+{{/*
 Suffix service.fullname while staying within Kubernetes' 63-char DNS-label limit - truncating
 the base name AFTER appending the suffix (rather than the already-63-char fullname) would
 silently drop the suffix chars, so reserve their room on the base first.
