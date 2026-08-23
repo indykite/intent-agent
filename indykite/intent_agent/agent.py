@@ -62,7 +62,9 @@ def _build_schema_cache(settings: Settings) -> CacheRegion:
         return make_region().configure(
             "dogpile.cache.redis",
             expiration_time=ttl_seconds,
-            arguments={"host": settings.redis_url.host, "port": settings.redis_url.port},
+            # `url` (not host/port) so dogpile hands the DSN as-is to redis.StrictRedis.from_url,
+            # preserving username/password/db/TLS scheme instead of dropping them.
+            arguments={"url": str(settings.redis_url)},
         )
     return make_region().configure("dogpile.cache.memory", expiration_time=ttl_seconds)
 

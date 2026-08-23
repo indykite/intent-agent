@@ -42,10 +42,10 @@ app.kubernetes.io/version: {{ .Values.image.tag | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 owner: ai-ml
 {{- with .Values.labels }}
-{{- range $k, $v := . }}
-{{- if ne $k "owner" }}
-{{ $k }}: {{ $v | quote }}
-{{- end }}
+{{- /* Drop keys already emitted above - a custom label reusing one (e.g. "app") would either
+     duplicate a YAML key or, worse, override the value pods are selected by. */ -}}
+{{- with (omit . "helm.sh/chart" "app.kubernetes.io/name" "app.kubernetes.io/instance" "app" "app.kubernetes.io/version" "app.kubernetes.io/managed-by" "owner") }}
+{{- toYaml . | nindent 0 }}
 {{- end }}
 {{- end }}
 {{- end }}
@@ -93,7 +93,7 @@ Create the name of the service account to use
 */}}
 {{- define "service.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create }}
-{{- default (printf "%s-sa" (include "service.fullname" .)) .Values.serviceAccount.name }}
+{{- default (include "service.suffixedName" (list . "-sa")) .Values.serviceAccount.name }}
 {{- else }}
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}

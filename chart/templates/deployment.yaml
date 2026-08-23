@@ -32,7 +32,11 @@ spec:
         {{- include "service.selectorLabels" . | nindent 8 }}
         version: {{ .Values.image.tag | quote }}
         {{- with .Values.labels }}
+        {{- /* Drop keys already emitted above - a custom label reusing one (e.g. "app") would
+             desync the pod's actual label from what the Deployment/Service selector expects. */ -}}
+        {{- with (omit . "app.kubernetes.io/name" "app.kubernetes.io/instance" "app" "version") }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
         {{- end }}
     spec:
       serviceAccountName: {{ include "service.serviceAccountName" . }}

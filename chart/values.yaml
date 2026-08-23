@@ -71,7 +71,9 @@ service:
 
 serviceAccount:
   create: true
-  name: intent-agent-sa
+  # Blank generates a release-scoped name (service.serviceAccountName) - a fixed name here
+  # would collide across multiple releases of this chart in the same namespace.
+  name: ""
   annotations: {}
 
 podSecurityContext:

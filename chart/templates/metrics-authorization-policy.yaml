@@ -33,11 +33,15 @@ spec:
         - operation:
             ports:
               - {{ .Values.app.healthPort | quote }}
+    {{- if not (((.Values.istio).authorizationPolicy).enabled) }}
     # Istio denies any request that doesn't match at least one ALLOW policy once one exists for
-    # the workload - without this second, unrestricted rule, creating this policy alone (i.e.
-    # istio.authorizationPolicy.enabled: false) would cut off the main intentPort too.
+    # the workload - without this second, unrestricted rule, creating this policy alone (with the
+    # main authorizationPolicy disabled) would cut off the main intentPort too. Only add it here
+    # when that's the only ALLOW policy - otherwise (main policy enabled) this unrestricted rule
+    # would additively bypass its restriction, since Istio ORs all ALLOW policies together.
     - to:
         - operation:
             ports:
               - {{ .Values.app.intentPort | quote }}
+    {{- end }}
 {{- end }}

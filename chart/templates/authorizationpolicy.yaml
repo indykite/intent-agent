@@ -29,15 +29,21 @@
 {{- end }}
 {{- end }}
 {{- end }}
-{{- if or $namespaces $principals }}
+{{- if or $namespaces $principals .Values.istio.authorizationPolicy.operations }}
 {{ include "service.authorizationPolicy" . }}
   rules:
-    - from:
+    - {{- if or $namespaces $principals }}
+      from:
         - source:
+            {{- with ($namespaces | uniq) }}
             namespaces:
-              {{- toYaml ($namespaces | uniq) | nindent 14 }}
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+            {{- with ($principals | uniq) }}
             principals:
-              {{- toYaml ($principals | uniq) | nindent 14 }}
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+      {{- end }}
       {{- if .Values.istio.authorizationPolicy.operations }}
       to:
         {{- range .Values.istio.authorizationPolicy.operations }}
@@ -55,7 +61,7 @@
         {{- end }}
       {{- end }}
 {{- else }}
-{{- fail "istio.authorizationPolicy.enabled is true but no namespaces/principals/internalCallers/rules are configured - this would silently skip creating the AuthorizationPolicy, leaving the workload unrestricted. Configure at least one of istio.authorizationPolicy.{namespaces,principals,internalCallers,rules}." }}
+{{- fail "istio.authorizationPolicy.enabled is true but no namespaces/principals/internalCallers/operations/rules are configured - this would silently skip creating the AuthorizationPolicy, leaving the workload unrestricted. Configure at least one of istio.authorizationPolicy.{namespaces,principals,internalCallers,operations,rules}." }}
 {{- end }}
 {{- end }}
 {{- end }}

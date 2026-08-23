@@ -204,17 +204,18 @@ def test_build_schema_cache_uses_memory_backend_by_default(monkeypatch):
 
 
 def test_build_schema_cache_uses_redis_backend_when_configured(monkeypatch):
-    """CACHE_BACKEND=redis must select the Redis-backed cache, using REDIS_URL's host/port,
-    with expiration_time set from SCHEMA_REFRESH_TTL_MINUTES so get_cached() refreshes on-demand.
+    """CACHE_BACKEND=redis must select the Redis-backed cache, passing REDIS_URL through as-is
+    (not decomposed into host/port) so username/password/db/TLS scheme survive, with
+    expiration_time set from SCHEMA_REFRESH_TTL_MINUTES so get_cached() refreshes on-demand.
     """
+    redis_url = f"rediss://user:pw@redis.example.com:{_REDIS_PORT}/2"
     monkeypatch.setenv("CACHE_BACKEND", "redis")
-    monkeypatch.setenv("REDIS_URL", f"redis://redis.example.com:{_REDIS_PORT}")
+    monkeypatch.setenv("REDIS_URL", redis_url)
     monkeypatch.setenv("SCHEMA_REFRESH_TTL_MINUTES", "2.0")
     settings = _settings_with_subject_type(monkeypatch)
     cache = _build_schema_cache(settings)
     assert isinstance(cache.backend, RedisBackend)
-    assert cache.backend.host == "redis.example.com"
-    assert cache.backend.port == _REDIS_PORT
+    assert cache.backend.url == redis_url
     assert cache.expiration_time == 2.0 * 60
 
 
