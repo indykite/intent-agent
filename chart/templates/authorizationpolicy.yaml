@@ -12,20 +12,33 @@
 {{- if .Values.istio.authorizationPolicy.principals }}
 {{- $principals = concat $principals .Values.istio.authorizationPolicy.principals }}
 {{- end }}
+{{/* A namespace and a principal within one `source` are ANDed by Istio, not ORed - so a
+     caller group meant to be "any principal in this namespace" (no serviceAccounts given)
+     must never share a `source` with a group meant to be "these specific principals"
+     (serviceAccounts given elsewhere), or neither grant matches its intended callers. Each
+     caller group therefore contributes to exactly one of $namespaces (open, unqualified) or
+     $principals (already namespace-qualified via its cluster.local/ns/.../sa/... form), and
+     the two are rendered as separate `from` source entries (OR'd) below - never combined. */}}
 {{- with .Values.istio.authorizationPolicy.internalCallers }}
 {{- with .sameNamespace }}
 {{- if .enabled }}
-{{- $namespaces = append $namespaces $.Release.Namespace }}
+{{- if .serviceAccounts }}
 {{- range .serviceAccounts }}
 {{- $principals = append $principals (printf "cluster.local/ns/%s/sa/%s" $.Release.Namespace .) }}
+{{- end }}
+{{- else }}
+{{- $namespaces = append $namespaces $.Release.Namespace }}
 {{- end }}
 {{- end }}
 {{- end }}
 {{- range .crossNamespace }}
 {{- $ns := .namespace }}
-{{- $namespaces = append $namespaces $ns }}
+{{- if .serviceAccounts }}
 {{- range .serviceAccounts }}
 {{- $principals = append $principals (printf "cluster.local/ns/%s/sa/%s" $ns .) }}
+{{- end }}
+{{- else }}
+{{- $namespaces = append $namespaces $ns }}
 {{- end }}
 {{- end }}
 {{- end }}
@@ -34,15 +47,16 @@
   rules:
     - {{- if or $namespaces $principals }}
       from:
+        {{- with ($namespaces | uniq) }}
         - source:
-            {{- with ($namespaces | uniq) }}
             namespaces:
               {{- toYaml . | nindent 14 }}
-            {{- end }}
-            {{- with ($principals | uniq) }}
+        {{- end }}
+        {{- with ($principals | uniq) }}
+        - source:
             principals:
               {{- toYaml . | nindent 14 }}
-            {{- end }}
+        {{- end }}
       {{- end }}
       {{- if .Values.istio.authorizationPolicy.operations }}
       to:

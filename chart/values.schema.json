@@ -45,7 +45,8 @@
         "introspectClientId",
         "subjectType",
         "geminiApiKeySecretRef",
-        "introspectClientSecretRef"
+        "introspectClientSecretRef",
+        "ikAppAgentKeySecretRef"
       ],
       "properties": {
         "advertisedHost": {
@@ -90,6 +91,7 @@
         "indykiteBaseUrl": {
           "type": "string",
           "format": "uri",
+          "pattern": "^https?://",
           "minLength": 1
         },
         "schemaFetchTimeoutSeconds": {
@@ -103,6 +105,7 @@
         "introspectUrl": {
           "type": "string",
           "format": "uri",
+          "pattern": "^https?://",
           "minLength": 1
         },
         "introspectClientId": {
@@ -163,12 +166,18 @@
         "ikAppAgentKeySecretRef": {
           "type": "object",
           "additionalProperties": false,
+          "required": [
+            "name",
+            "key"
+          ],
           "properties": {
             "name": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1
             },
             "key": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1
             }
           }
         },
