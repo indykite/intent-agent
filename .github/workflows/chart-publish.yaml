@@ -31,7 +31,7 @@ jobs:
         uses: indykite/ops-common/.github/actions/git-checkout@master # actions/checkout with dynamic fetch-depth resolution
 
       - name: Publish to Artifact Registry
-        uses: indykite/ops-common/.github/actions/chart-publish@8646606a74cc6b18c568a61cbacecd54973380be # master
+        uses: indykite/ops-common/.github/actions/chart-publish@6fe294a0d80ed178dfd2294ac70aaab06b3c64e8 # master
         with:
           workload-identity-provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER_MGMT }}
           gcp-service-account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
