@@ -55,7 +55,7 @@ jobs:
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2 - https://github.com/astral-sh/setup-uv/releases
 
       - name: Build Python project using composite action
-        uses: indykite/ops-common/.github/actions/python-build@8646606a74cc6b18c568a61cbacecd54973380be # master
+        uses: indykite/ops-common/.github/actions/python-build@6fe294a0d80ed178dfd2294ac70aaab06b3c64e8 # master
         id: build_python
         env:
           CUDA_VISIBLE_DEVICES: ""
