@@ -54,8 +54,14 @@ cp .env.example .env
 
 ### Locally, with uv
 
+`.env.example` leaves several settings blank that `Settings` requires at startup - set at least
+`GEMINI_API_KEY`, `INDYKITE_BASE_URL`, `IK_APP_AGENT_KEY`, `INTROSPECT_URL`,
+`INTROSPECT_CLIENT_ID`, `INTROSPECT_CLIENT_SECRET`, and `SUBJECT_TYPE` before starting (see
+"Testing end-to-end against real RC + Redis + Gemini" below for where to get real values, or a
+local introspection stub, for the introspection/schema settings):
+
 ```sh
-cp .env.example .env   # then set GEMINI_API_KEY
+cp .env.example .env   # then fill in the required settings listed above
 uv run python -m indykite.intent_agent
 ```
 
@@ -106,7 +112,7 @@ cache, and real Gemini calls:
 
    ```sh
    docker compose up redis -d
-   # then in .env: REDIS_URL=redis://localhost:6379
+   # then in .env: CACHE_BACKEND=redis / REDIS_URL=redis://localhost:6379
    ```
 
 3. `INTROSPECT_URL` needs a real IdP or a throwaway local stub - there's no
@@ -117,19 +123,23 @@ cache, and real Gemini calls:
    import json
    from http.server import BaseHTTPRequestHandler, HTTPServer
 
+
    class Handler(BaseHTTPRequestHandler):
        def do_POST(self):
-           body = json.dumps({
-               "active": True,
-               "sub": "<customer_external_id>",
-               "act": {"sub": "<customer_external_id>"},
-               "aud": "<customer_external_id>",
-           }).encode()
+           body = json.dumps(
+               {
+                   "active": True,
+                   "sub": "<customer_external_id>",
+                   "act": {"sub": "<customer_external_id>"},
+                   "aud": "<customer_external_id>",
+               }
+           ).encode()
            self.send_response(200)
            self.send_header("Content-Type", "application/json")
            self.send_header("Content-Length", str(len(body)))
            self.end_headers()
            self.wfile.write(body)
+
 
    HTTPServer(("127.0.0.1", 9001), Handler).serve_forever()
    ```
@@ -143,6 +153,23 @@ cache, and real Gemini calls:
    and check the platform schema for resource types that actually exist before
    assuming an entity is graph-modeled (e.g. an individual stock ticker usually
    isn't a node - that data tends to come from an external source instead).
+
+### Testing end-to-end against real RC + Redis + Gemini with scripts
+
+`make start_app` and `make start_mock_introspect_service` both run in the foreground, so start
+each in its own terminal and wait for both to report ready before running the script:
+
+```sh
+# terminal 1
+make start_mock_introspect_service
+
+# terminal 2
+export INTROSPECT_URL=http://127.0.0.1:9001/introspect
+make start_app
+
+# terminal 3, once both are up
+manual_testing/call_agent.sh
+```
 
 ### With Docker
 

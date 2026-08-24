@@ -48,23 +48,25 @@ _SECONDS_PER_MINUTE = 60
 
 
 def _build_schema_cache(settings: Settings) -> CacheRegion:
-    """Pick the schema cache backend: Redis if configured, in-process otherwise.
-
-    A blank/unset REDIS_URL disables Redis (matches indykite_base_url/ik_app_agent_key's
-    blank-means-disabled convention) - single-instance deployments never need Redis running.
+    """Pick the schema cache backend named by CACHE_BACKEND: Redis, or in-process memory
+    (the default) - single-instance deployments never need Redis running. Settings rejects
+    CACHE_BACKEND=redis with no REDIS_URL at startup, so redis_url is guaranteed set here.
 
     Sets expiration_time from SCHEMA_REFRESH_TTL_MINUTES so SchemaClient.get_cached()
     refreshes on-demand once an entry ages past it, instead of a per-instance background
     timer - see get_cached()'s docstring for why that matters with multiple instances.
     """
     ttl_seconds = settings.schema_refresh_ttl_minutes * _SECONDS_PER_MINUTE
-    if settings.redis_url is None:
-        return make_region().configure("dogpile.cache.memory", expiration_time=ttl_seconds)
-    return make_region().configure(
-        "dogpile.cache.redis",
-        expiration_time=ttl_seconds,
-        arguments={"host": settings.redis_url.host, "port": settings.redis_url.port},
-    )
+    logger.info("Using cache backend %r with TTL %d seconds", settings.cache_backend, ttl_seconds)
+    if settings.cache_backend == "redis":
+        return make_region().configure(
+            "dogpile.cache.redis",
+            expiration_time=ttl_seconds,
+            # `url` (not host/port) so dogpile hands the DSN as-is to redis.StrictRedis.from_url,
+            # preserving username/password/db/TLS scheme instead of dropping them.
+            arguments={"url": str(settings.redis_url)},
+        )
+    return make_region().configure("dogpile.cache.memory", expiration_time=ttl_seconds)
 
 
 class _ActivateSkillArgs(BaseModel):
@@ -91,8 +93,8 @@ class IntentAgent:
             temperature=0,
         )
         self._schema_client = schema_client or SchemaClient(
-            settings.indykite_base_url,
-            settings.ik_app_agent_key,
+            str(settings.indykite_base_url),
+            settings.ik_app_agent_key.get_secret_value(),
             timeout_seconds=settings.schema_fetch_timeout_seconds,
             cache=_build_schema_cache(settings),
         )
@@ -349,7 +351,7 @@ class IntentExecutor(AgentExecutor):
                 access_token,
                 introspect_url=str(settings.introspect_url),
                 client_id=settings.introspect_client_id,
-                client_secret=settings.introspect_client_secret,
+                client_secret=settings.introspect_client_secret.get_secret_value(),
                 timeout_seconds=settings.introspect_timeout_seconds,
             )
         except auth.TokenValidationError as exc:

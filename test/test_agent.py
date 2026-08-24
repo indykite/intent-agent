@@ -2,6 +2,8 @@ import asyncio
 import json
 from pathlib import Path
 
+import httpx2
+import jwt
 import pytest
 from dogpile.cache.backends.memory import MemoryBackend
 from dogpile.cache.backends.redis import RedisBackend
@@ -16,6 +18,10 @@ _MIN_EXPECTED_ROUTES = 2
 _EXPECTED_BARE_ARRAY_EVALUATION_COUNT = 2
 _REDIS_PORT = 6379
 _SCHEMA_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mock_ikg_schema.json"
+
+# A real (unsigned, alg=none) JWT - Settings requires IK_APP_AGENT_KEY to be set, and
+# SchemaClient requires any non-blank value to be a well-formed JWT (see test_schema.py).
+_APP_AGENT_KEY = jwt.encode({"sub": "test-app-agent"}, key="", algorithm="none")
 
 
 def _load_schema_fixture():
@@ -37,6 +43,8 @@ def test_build_app_registers_routes(monkeypatch, mocker):
     monkeypatch.setenv("INTROSPECT_CLIENT_ID", "client-id")
     monkeypatch.setenv("INTROSPECT_CLIENT_SECRET", "client-secret")
     monkeypatch.setenv("SUBJECT_TYPE", "Customer")
+    monkeypatch.setenv("IK_APP_AGENT_KEY", _APP_AGENT_KEY)
+    monkeypatch.setenv("INDYKITE_BASE_URL", "https://ikg.example.com")
     settings = Settings(_env_file=None)
     fake_schema_client = mocker.Mock(
         preload=mocker.Mock(),
@@ -45,21 +53,28 @@ def test_build_app_registers_routes(monkeypatch, mocker):
 
     app, agent = build_app(settings, schema_client=fake_schema_client)
 
-    assert agent.settings.gemini_api_key == "test-key"
+    assert agent.settings.gemini_api_key.get_secret_value() == "test-key"
     assert agent.get_cached_schema() is not None
     assert len(app.routes) >= _MIN_EXPECTED_ROUTES
 
 
-def test_build_app_exits_when_schema_unavailable_at_cold_start(monkeypatch):
+def test_build_app_exits_when_schema_unavailable_at_cold_start(monkeypatch, mocker):
     """Per TDD 4.4, the process must not start serving without a schema - no fallback types."""
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("INTROSPECT_URL", "https://idp.example.com/introspect")
     monkeypatch.setenv("INTROSPECT_CLIENT_ID", "client-id")
     monkeypatch.setenv("INTROSPECT_CLIENT_SECRET", "client-secret")
     monkeypatch.setenv("SUBJECT_TYPE", "Customer")
-    monkeypatch.delenv("INDYKITE_BASE_URL", raising=False)
-    monkeypatch.delenv("IK_APP_AGENT_KEY", raising=False)
+    monkeypatch.setenv("INDYKITE_BASE_URL", "https://ikg.example.com")
+    monkeypatch.setenv("IK_APP_AGENT_KEY", _APP_AGENT_KEY)
     settings = Settings(_env_file=None)
+    # INDYKITE_BASE_URL is now mandatory, so simulate "schema unavailable" via a failed fetch
+    # instead of an unset base URL - same client-patching approach as test_schema.py.
+    failing_client = mocker.MagicMock()
+    failing_client.__enter__ = mocker.Mock(return_value=failing_client)
+    failing_client.__exit__ = mocker.Mock(return_value=False)
+    failing_client.get = mocker.Mock(side_effect=httpx2.ConnectTimeout("connect timed out"))
+    mocker.patch("indykite.intent_agent.schema.httpx2.Client", return_value=failing_client)
 
     with pytest.raises(SchemaUnavailableError):
         build_app(settings)
@@ -177,29 +192,30 @@ def _settings_with_subject_type(monkeypatch, subject_type="Customer"):
     monkeypatch.setenv("INTROSPECT_CLIENT_ID", "client-id")
     monkeypatch.setenv("INTROSPECT_CLIENT_SECRET", "client-secret")
     monkeypatch.setenv("SUBJECT_TYPE", subject_type)
+    monkeypatch.setenv("IK_APP_AGENT_KEY", _APP_AGENT_KEY)
+    monkeypatch.setenv("INDYKITE_BASE_URL", "https://ikg.example.com")
     return Settings(_env_file=None)
 
 
-def test_build_schema_cache_uses_memory_backend_when_redis_url_blank(monkeypatch):
-    """A blank REDIS_URL must fall back to the in-process Memory cache. (Whitespace-only is
-    rejected outright by Settings validation instead - see test_rejects_invalid_redis_url.)
-    """
-    monkeypatch.setenv("REDIS_URL", "")
+def test_build_schema_cache_uses_memory_backend_by_default(monkeypatch):
+    """CACHE_BACKEND defaults to memory - the in-process Memory cache - with no REDIS_URL set."""
     settings = _settings_with_subject_type(monkeypatch)
     assert isinstance(_build_schema_cache(settings).backend, MemoryBackend)
 
 
-def test_build_schema_cache_uses_redis_backend_when_redis_url_set(monkeypatch):
-    """A configured REDIS_URL must select the Redis-backed cache, using its host/port, with
+def test_build_schema_cache_uses_redis_backend_when_configured(monkeypatch):
+    """CACHE_BACKEND=redis must select the Redis-backed cache, passing REDIS_URL through as-is
+    (not decomposed into host/port) so username/password/db/TLS scheme survive, with
     expiration_time set from SCHEMA_REFRESH_TTL_MINUTES so get_cached() refreshes on-demand.
     """
-    monkeypatch.setenv("REDIS_URL", f"redis://redis.example.com:{_REDIS_PORT}")
+    redis_url = f"rediss://user:pw@redis.example.com:{_REDIS_PORT}/2"
+    monkeypatch.setenv("CACHE_BACKEND", "redis")
+    monkeypatch.setenv("REDIS_URL", redis_url)
     monkeypatch.setenv("SCHEMA_REFRESH_TTL_MINUTES", "2.0")
     settings = _settings_with_subject_type(monkeypatch)
     cache = _build_schema_cache(settings)
     assert isinstance(cache.backend, RedisBackend)
-    assert cache.backend.host == "redis.example.com"
-    assert cache.backend.port == _REDIS_PORT
+    assert cache.backend.url == redis_url
     assert cache.expiration_time == 2.0 * 60
 
 
@@ -275,6 +291,8 @@ def test_build_app_fails_fast_when_subject_type_mismatches_schema(monkeypatch, m
     monkeypatch.setenv("INTROSPECT_CLIENT_ID", "client-id")
     monkeypatch.setenv("INTROSPECT_CLIENT_SECRET", "client-secret")
     monkeypatch.setenv("SUBJECT_TYPE", "NotARealType")
+    monkeypatch.setenv("IK_APP_AGENT_KEY", _APP_AGENT_KEY)
+    monkeypatch.setenv("INDYKITE_BASE_URL", "https://ikg.example.com")
     settings = Settings(_env_file=None)
     fake_schema_client = mocker.Mock(
         preload=mocker.Mock(),

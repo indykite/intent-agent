@@ -40,6 +40,7 @@ packages = ["indykite"]
 omit = [
     "test/*",
     "integration/*",
+    "manual_testing/*",
     "tmp/*",
 ]
 

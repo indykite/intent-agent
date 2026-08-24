@@ -1,0 +1,23 @@
+{{- if and .Values.istio.enabled .Values.istio.metricsPeerAuthentication.enabled }}
+---
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: {{ include "service.suffixedName" (list . "-metrics") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "service.labels" . | nindent 4 }}
+  {{- if .Values.annotations }}
+  annotations:
+    {{- include "service.annotations" $ | nindent 4 }}
+  {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "service.selectorLabels" . | nindent 6 }}
+  mtls:
+    mode: {{ .Values.istio.metricsPeerAuthentication.mtlsMode }}
+  portLevelMtls:
+    {{ .Values.app.healthPort }}:
+      mode: {{ .Values.istio.metricsPeerAuthentication.portLevelMtlsMode }}
+{{- end }}

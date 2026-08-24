@@ -1,0 +1,81 @@
+{{- if and ((.Values.istio).enabled) (((.Values.istio).authorizationPolicy).enabled) }}
+{{- if .Values.istio.authorizationPolicy.rules }}
+{{ include "service.authorizationPolicy" . }}
+  rules:
+    {{- toYaml .Values.istio.authorizationPolicy.rules | nindent 4 }}
+{{- else }}
+{{- $namespaces := list }}
+{{- $principals := list }}
+{{- if .Values.istio.authorizationPolicy.namespaces }}
+{{- $namespaces = concat $namespaces .Values.istio.authorizationPolicy.namespaces }}
+{{- end }}
+{{- if .Values.istio.authorizationPolicy.principals }}
+{{- $principals = concat $principals .Values.istio.authorizationPolicy.principals }}
+{{- end }}
+{{/* A namespace and a principal within one `source` are ANDed by Istio, not ORed - so a
+     caller group meant to be "any principal in this namespace" (no serviceAccounts given)
+     must never share a `source` with a group meant to be "these specific principals"
+     (serviceAccounts given elsewhere), or neither grant matches its intended callers. Each
+     caller group therefore contributes to exactly one of $namespaces (open, unqualified) or
+     $principals (already namespace-qualified via its cluster.local/ns/.../sa/... form), and
+     the two are rendered as separate `from` source entries (OR'd) below - never combined. */}}
+{{- with .Values.istio.authorizationPolicy.internalCallers }}
+{{- with .sameNamespace }}
+{{- if .enabled }}
+{{- if .serviceAccounts }}
+{{- range .serviceAccounts }}
+{{- $principals = append $principals (printf "cluster.local/ns/%s/sa/%s" $.Release.Namespace .) }}
+{{- end }}
+{{- else }}
+{{- $namespaces = append $namespaces $.Release.Namespace }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- range .crossNamespace }}
+{{- $ns := .namespace }}
+{{- if .serviceAccounts }}
+{{- range .serviceAccounts }}
+{{- $principals = append $principals (printf "cluster.local/ns/%s/sa/%s" $ns .) }}
+{{- end }}
+{{- else }}
+{{- $namespaces = append $namespaces $ns }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if or $namespaces $principals .Values.istio.authorizationPolicy.operations }}
+{{ include "service.authorizationPolicy" . }}
+  rules:
+    - {{- if or $namespaces $principals }}
+      from:
+        {{- with ($namespaces | uniq) }}
+        - source:
+            namespaces:
+              {{- toYaml . | nindent 14 }}
+        {{- end }}
+        {{- with ($principals | uniq) }}
+        - source:
+            principals:
+              {{- toYaml . | nindent 14 }}
+        {{- end }}
+      {{- end }}
+      {{- if .Values.istio.authorizationPolicy.operations }}
+      to:
+        {{- range .Values.istio.authorizationPolicy.operations }}
+        - operation:
+            {{- if .methods }}
+            methods:
+              {{- toYaml .methods | nindent 14 }}
+            {{- end }}
+            {{- if .paths }}
+            paths:
+              {{- toYaml .paths | nindent 14 }}
+            {{- end }}
+            ports:
+              - {{ $.Values.app.intentPort | quote }}
+        {{- end }}
+      {{- end }}
+{{- else }}
+{{- fail "istio.authorizationPolicy.enabled is true but no namespaces/principals/internalCallers/operations/rules are configured - this would silently skip creating the AuthorizationPolicy, leaving the workload unrestricted. Configure at least one of istio.authorizationPolicy.{namespaces,principals,internalCallers,operations,rules}." }}
+{{- end }}
+{{- end }}
+{{- end }}

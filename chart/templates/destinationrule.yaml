@@ -1,0 +1,32 @@
+{{- if and ((.Values.istio).enabled) (((.Values.istio).destinationRule).enabled) }}
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: {{ include "service.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "service.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    {{- with .Values.annotations }}
+    {{- include "service.annotations" $ | nindent 4 }}
+    {{- end }}
+spec:
+  host: {{ include "service.fullname" . }}
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    connectionPool:
+      http:
+        idleTimeout: 2m
+    outlierDetection:
+      consecutiveGatewayErrors: 3
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+  subsets:
+    - name: default
+      labels:
+        {{- include "service.selectorLabels" . | nindent 8 }}
+{{- end }}
