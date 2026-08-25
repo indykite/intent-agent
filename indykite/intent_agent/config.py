@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     log_level: _LogLevel = "INFO"
 
     gemini_api_key: SecretStr = Field(min_length=1)
-    gemini_model: str = Field(min_length=1, default="gemini-2.5-flash")
+    gemini_model: str = Field(min_length=1, default="gemini-3.5-flash-lite")
     tool_call_max_iterations: PositiveInt = 5
     schema_preview_chars: PositiveInt = 12000
 
