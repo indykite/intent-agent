@@ -18,7 +18,7 @@ app:
   intentAgentName: "intent_agent" # INTENT_AGENT_NAME
   logLevel: "INFO" # LOG_LEVEL
 
-  geminiModel: "gemini-3.6-flash" # GEMINI_MODEL
+  geminiModel: "gemini-3.5-flash-lite" # GEMINI_MODEL
   toolCallMaxIterations: 5 # TOOL_CALL_MAX_ITERATIONS
   schemaPreviewChars: 12000 # SCHEMA_PREVIEW_CHARS
 
