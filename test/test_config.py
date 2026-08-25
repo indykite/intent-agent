@@ -43,7 +43,7 @@ def test_defaults(monkeypatch):
     assert settings.intent_port == _DEFAULT_INTENT_PORT
     assert settings.health_port == _DEFAULT_HEALTH_PORT
     assert settings.intent_agent_name == "intent_agent"
-    assert settings.gemini_model == "gemini-2.5-flash"
+    assert settings.gemini_model == "gemini-3.5-flash-lite"
     assert settings.redis_url is None
     assert settings.schema_refresh_ttl_minutes == _DEFAULT_SCHEMA_REFRESH_TTL_MINUTES
     assert settings.cache_backend == "memory"
