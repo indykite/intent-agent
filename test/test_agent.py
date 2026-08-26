@@ -10,7 +10,7 @@ from dogpile.cache.backends.redis import RedisBackend
 
 from indykite.intent_agent.agent import IntentAgent, _build_schema_cache, build_app
 from indykite.intent_agent.config import Settings
-from indykite.intent_agent.errors import SchemaUnavailableError, SubjectTypeMismatchError
+from indykite.intent_agent.errors import SubjectTypeMismatchError
 from indykite.intent_agent.skills import discover_skills
 from indykite.intent_agent.subject_binding import _bind_subject, normalize_intent_response, validate_subject_type
 
@@ -58,8 +58,10 @@ def test_build_app_registers_routes(monkeypatch, mocker):
     assert len(app.routes) >= _MIN_EXPECTED_ROUTES
 
 
-def test_build_app_exits_when_schema_unavailable_at_cold_start(monkeypatch, mocker):
-    """Per TDD 4.4, the process must not start serving without a schema - no fallback types."""
+def test_build_app_starts_when_schema_unavailable_at_cold_start(monkeypatch, mocker):
+    """A schema fetch failure at cold start must not abort startup - the platform may still be
+    coming up, so the process keeps serving and retries the fetch on every request instead.
+    """
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("INTROSPECT_URL", "https://idp.example.com/introspect")
     monkeypatch.setenv("INTROSPECT_CLIENT_ID", "client-id")
@@ -76,8 +78,10 @@ def test_build_app_exits_when_schema_unavailable_at_cold_start(monkeypatch, mock
     failing_client.get = mocker.Mock(side_effect=httpx2.ConnectTimeout("connect timed out"))
     mocker.patch("indykite.intent_agent.schema.httpx2.Client", return_value=failing_client)
 
-    with pytest.raises(SchemaUnavailableError):
-        build_app(settings)
+    app, agent = build_app(settings)
+
+    assert agent.get_cached_schema() is None
+    assert len(app.routes) >= _MIN_EXPECTED_ROUTES
 
 
 def test_bind_subject():
@@ -252,6 +256,31 @@ def test_run_extraction_skips_llm_when_schema_unavailable(monkeypatch, mocker, c
     assert any(record.levelname == "ERROR" for record in caplog.records)
 
 
+def test_run_extraction_fails_with_message_when_subject_type_mismatches_schema(monkeypatch, mocker, caplog):
+    """A SUBJECT_TYPE that isn't a DigitalTwin type in the schema must fail the request with the
+    4.7 error shape - not crash the process and not reach the LLM. The response's "reason" must
+    stay generic (not leak the schema's actual DigitalTwin type names to the API caller) - the
+    specific detail belongs in the server-side log only.
+    """
+    caplog.set_level("ERROR")
+    settings = _settings_with_subject_type(monkeypatch, subject_type="NotARealType")
+    mock_ainvoke = mocker.AsyncMock()
+    fake_bound_llm = mocker.Mock(ainvoke=mock_ainvoke)
+    fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=fake_bound_llm))
+    fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=_load_schema_fixture()))
+    agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client)
+
+    result = asyncio.run(agent.run_extraction("buy AAPL", "user-1"))
+
+    data = json.loads(result)
+    assert "error" in data
+    assert "evaluations" not in data
+    assert "NotARealType" not in data["reason"]
+    mock_ainvoke.assert_not_called()
+    assert any(record.levelname == "ERROR" for record in caplog.records)
+    assert "NotARealType" in caplog.text
+
+
 @pytest.mark.parametrize("subject_type", ["Customer", "Company", "_Application"])
 def test_validate_subject_type_accepts_real_digital_twin_types(subject_type):
     """Each DigitalTwin-labelled node type in the real schema fixture must be accepted."""
@@ -284,8 +313,13 @@ def test_validate_subject_type_skips_when_schema_unavailable():
     validate_subject_type(None, "AnythingGoes")
 
 
-def test_build_app_fails_fast_when_subject_type_mismatches_schema(monkeypatch, mocker):
-    """build_app must raise at startup, not silently proceed, when SUBJECT_TYPE doesn't match the schema."""
+def test_build_app_starts_when_subject_type_mismatches_schema(monkeypatch, mocker, caplog):
+    """build_app must not raise/abort at startup when SUBJECT_TYPE doesn't match the schema -
+    the mismatch is instead surfaced per-request (see test_run_extraction_fails_with_message...
+    below), so a bad SUBJECT_TYPE doesn't take down an otherwise-healthy process. It must still
+    be logged at startup though - an early signal beats waiting for the first live request.
+    """
+    caplog.set_level("ERROR")
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("INTROSPECT_URL", "https://idp.example.com/introspect")
     monkeypatch.setenv("INTROSPECT_CLIENT_ID", "client-id")
@@ -299,5 +333,9 @@ def test_build_app_fails_fast_when_subject_type_mismatches_schema(monkeypatch, m
         get_cached=mocker.Mock(return_value=_load_schema_fixture()),
     )
 
-    with pytest.raises(SubjectTypeMismatchError):
-        build_app(settings, schema_client=fake_schema_client)
+    app, agent = build_app(settings, schema_client=fake_schema_client)
+
+    assert agent.get_cached_schema() is not None
+    assert any(record.levelname == "ERROR" for record in caplog.records)
+    assert "NotARealType" in caplog.text
+    assert len(app.routes) >= _MIN_EXPECTED_ROUTES
