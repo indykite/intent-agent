@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     indykite_base_url: HttpUrl
     ik_app_agent_key: SecretStr = Field(min_length=1)
     schema_fetch_timeout_seconds: PositiveFloat = 30.0
-    schema_refresh_ttl_minutes: PositiveFloat = 1440.0
+    schema_refresh_ttl_minutes: PositiveFloat = 5.0
 
     cache_backend: Literal["memory", "redis"] = "memory"
     redis_url: RedisDsn | None = None

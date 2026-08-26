@@ -5,7 +5,7 @@ from indykite.intent_agent.config import Settings
 
 _DEFAULT_INTENT_PORT = 6003
 _DEFAULT_HEALTH_PORT = 8001
-_DEFAULT_SCHEMA_REFRESH_TTL_MINUTES = 1440.0
+_DEFAULT_SCHEMA_REFRESH_TTL_MINUTES = 5.0
 
 
 @pytest.fixture(autouse=True)

@@ -24,7 +24,7 @@ app:
 
   indykiteBaseUrl: "https://placeholder.example.com" # INDYKITE_BASE_URL
   schemaFetchTimeoutSeconds: 30.0 # SCHEMA_FETCH_TIMEOUT_SECONDS
-  schemaRefreshTtlMinutes: 1440.0 # SCHEMA_REFRESH_TTL_MINUTES
+  schemaRefreshTtlMinutes: 5.0 # SCHEMA_REFRESH_TTL_MINUTES
 
   cacheBackend: "memory" # CACHE_BACKEND - "memory" or "redis"
 

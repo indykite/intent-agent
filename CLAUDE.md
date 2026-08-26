@@ -143,11 +143,18 @@ infrastructure (`SchemaClient`, wired through `IntentAgent.load_data_schema`/
 too — separate from `activate_skill`'s auto-injection.
 
 **Schema loading.** `SchemaClient.load()` fetches IndyKite graph schema (JGF) from
-`{INDYKITE_BASE_URL}/data-schema/v1` using `IK_APP_AGENT_KEY` (as `X-IK-ClientKey` header), cached
-once at startup via `IntentAgent.preload_schema()`. Both `INDYKITE_BASE_URL` and
-`IK_APP_AGENT_KEY` are required (`Settings` fails fast at startup if either is missing); only
- the fetch itself failing (network/HTTP error) prevents cold start (`build_app` raises
- `SchemaUnavailableError`); only a failed refresh after a cached schema has expired keeps the stale schema.
+`{INDYKITE_BASE_URL}/data-schema/v1` using `IK_APP_AGENT_KEY` (as `X-IK-ClientKey` header),
+best-effort-cached once at startup via `IntentAgent.preload_schema()`. Both `INDYKITE_BASE_URL`
+and `IK_APP_AGENT_KEY` are required (`Settings` fails fast at startup if either is missing); the
+fetch itself failing (network/HTTP error, or the platform not being up yet) does **not** prevent
+cold start - the process keeps serving, and `run_extraction()` retries the fetch (via
+`get_cached_schema()`) on every request until the schema is populated, returning
+`schema_unavailable_error` for requests in the meantime. Once a schema is available,
+`SUBJECT_TYPE` is validated against it on every request too (`validate_subject_type`) - a
+mismatch fails that request with `subject_type_mismatch_error` rather than crashing the process.
+`SCHEMA_REFRESH_TTL_MINUTES` controls how long a cached schema is served
+before the next request triggers a refresh; a failed refresh after a cached schema has expired
+keeps the stale schema instead of losing it.
 
 **Schema cache backend.** `CACHE_BACKEND` (`Settings`, default `"memory"`) picks the
 `dogpile.cache` backend `_build_schema_cache` (`agent.py`) configures: in-process `memory`, or

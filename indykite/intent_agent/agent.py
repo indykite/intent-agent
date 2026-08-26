@@ -38,7 +38,11 @@ from starlette.status import HTTP_401_UNAUTHORIZED
 
 from indykite.intent_agent import auth, skills
 from indykite.intent_agent.config import Settings
-from indykite.intent_agent.errors import SchemaUnavailableError, schema_unavailable_error
+from indykite.intent_agent.errors import (
+    SubjectTypeMismatchError,
+    schema_unavailable_error,
+    subject_type_mismatch_error,
+)
 from indykite.intent_agent.schema import SchemaClient
 from indykite.intent_agent.subject_binding import normalize_intent_response, validate_subject_type
 
@@ -114,13 +118,27 @@ class IntentAgent:
         self._llm_with_tools = self._llm.bind_tools(self.tools)
 
     def preload_schema(self) -> None:
-        """Fetch and cache the schema once, at startup."""
+        """Fetch and cache the schema once, at startup - best effort, does not block startup.
+
+        A missing schema at cold start (e.g. the platform is still coming up) no longer aborts
+        the process: it keeps serving requests, and run_extraction() retries the fetch via
+        get_cached_schema() on every request until the schema is populated. If the schema *is*
+        available at cold start, SUBJECT_TYPE is checked here too - purely for an early signal
+        in the startup logs, since otherwise a misconfigured SUBJECT_TYPE would go unnoticed
+        until the first real request hits it (run_extraction re-checks it per request regardless,
+        so this is a diagnostic convenience, not the enforcement point).
+        """
         self._schema_client.preload()
         schema = self.get_cached_schema()
         if schema is None:
-            message = "Data schema unavailable at cold start, the process cannot proceed without it."
-            raise SchemaUnavailableError(message)
-        validate_subject_type(schema, self.settings.subject_type)
+            logger.warning(
+                "Data schema unavailable at cold start - will keep retrying on every request until it's populated",
+            )
+            return
+        try:
+            validate_subject_type(schema, self.settings.subject_type)
+        except SubjectTypeMismatchError:
+            logger.exception("SUBJECT_TYPE %r invalid for the schema fetched at cold start", self.settings.subject_type)
 
     def get_cached_schema(self) -> dict[str, Any] | None:
         """Return the cached schema, fetching it once if not already cached."""
@@ -294,17 +312,32 @@ class IntentAgent:
     async def run_extraction(self, prompt: str, subject_id: str | None) -> str:
         """Run the LLM tool-call loop for one prompt, return the final response text.
 
-        Checks schema availability upfront, before any LLM call: subject.type can't be
-        verified without it, so there's no point spending an LLM call (or several, across
-        tool-call iterations) on a result that would just be discarded afterward.
+        Checks schema availability and SUBJECT_TYPE validity upfront, before any LLM call -
+        neither can be verified without the schema, so there's no point spending an LLM call
+        (or several, across tool-call iterations) on a result that would just be discarded
+        afterward. A schema-unavailable request never populates the cache as a side effect of
+        failing - get_cached_schema() retries the fetch itself on every call while the cache is
+        empty, so the next request tries again on its own.
         """
-        if self.get_cached_schema() is None:
+        schema = self.get_cached_schema()
+        if schema is None:
             logger.error(
                 "Schema unavailable - cannot verify subject_type %r; skipping extraction for prompt %r",
                 self.settings.subject_type,
                 prompt,
             )
             return json.dumps(schema_unavailable_error(prompt), indent=2, ensure_ascii=False)
+
+        try:
+            validate_subject_type(schema, self.settings.subject_type)
+        except SubjectTypeMismatchError as exc:
+            logger.error(  # noqa: TRY400
+                "SUBJECT_TYPE %r invalid for the current schema; skipping extraction for prompt %r: %s",
+                self.settings.subject_type,
+                prompt,
+                exc,
+            )
+            return json.dumps(subject_type_mismatch_error(prompt), indent=2, ensure_ascii=False)
 
         messages = self.build_initial_messages(prompt)
         final_text = ""
