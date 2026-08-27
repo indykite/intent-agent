@@ -109,24 +109,6 @@ def _validate_introspection_claims(payload: object) -> dict[str, Any]:
         message = "Token is missing required sub claim"
         raise TokenValidationError(message)
 
-    act_claim = payload.get("act")
-    if not isinstance(act_claim, dict) or not act_claim.get("sub"):
-        logger.info("Token introspection: missing act claim")
-        message = "Token is missing required act claim"
-        raise TokenValidationError(message)
-
-    latest_actor = act_claim["sub"]
-    token_aud = payload.get("aud")
-
-    if token_aud != latest_actor:
-        logger.info(
-            "Token introspection: aud (%s) does not match latest actor (%s)",
-            token_aud,
-            latest_actor,
-        )
-        message = "Token audience does not match latest actor"
-        raise TokenValidationError(message)
-
     return payload
 
 

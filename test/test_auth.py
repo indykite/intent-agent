@@ -39,7 +39,20 @@ def test_rejects_blank_token(token):
 
 def test_returns_claims_for_active_token(mocker):
     """An active token's introspection response must be returned as-is."""
-    claims = {"active": True, "sub": "user-1", "aud": "actor-1", "act": {"sub": "actor-1"}}
+    claims = {"active": True, "sub": "user-1"}
+    _mock_async_client(mocker, response=httpx2.Response(200, json=claims))
+
+    result = asyncio.run(auth.validate_access_token("token", **_INTROSPECT_KWARGS))
+
+    assert result == claims
+
+
+def test_accepts_active_token_regardless_of_act_claim(mocker):
+    """The act claim is irrelevant to the Intent Agent - delegation is already validated
+    upstream by IAG before the request ever reaches it (per team discussion on PR #9). A token
+    with an act claim (or without one) must be accepted the same way, based only on active/sub.
+    """
+    claims = {"active": True, "sub": "user-1", "aud": "someone-else", "act": {"sub": "unrelated-actor"}}
     _mock_async_client(mocker, response=httpx2.Response(200, json=claims))
 
     result = asyncio.run(auth.validate_access_token("token", **_INTROSPECT_KWARGS))
@@ -61,57 +74,6 @@ def test_rejects_active_token_missing_sub(mocker):
 
     with pytest.raises(auth.TokenValidationError):
         asyncio.run(auth.validate_access_token("token", **_INTROSPECT_KWARGS))
-
-
-def test_rejects_active_token_missing_act_claim(mocker):
-    """An active token with sub but no act claim must be rejected (no ITS -> act lives on the access_token)."""
-    _mock_async_client(mocker, response=httpx2.Response(200, json={"active": True, "sub": "user-1"}))
-
-    with pytest.raises(auth.TokenValidationError, match="act claim"):
-        asyncio.run(auth.validate_access_token("token", **_INTROSPECT_KWARGS))
-
-
-def test_rejects_active_token_aud_mismatch(mocker):
-    """aud must equal the topmost act.sub - a mismatch must be rejected."""
-    claims = {"active": True, "sub": "user-1", "aud": "someone-else", "act": {"sub": "actor-1"}}
-    _mock_async_client(mocker, response=httpx2.Response(200, json=claims))
-
-    with pytest.raises(auth.TokenValidationError, match="audience"):
-        asyncio.run(auth.validate_access_token("token", **_INTROSPECT_KWARGS))
-
-
-@pytest.mark.parametrize("bad_act", ["not-a-dict-with-sub-inside", ["sub", "other"]])
-def test_rejects_non_dict_act_claim(mocker, bad_act):
-    """A non-dict act claim must raise TokenValidationError, not crash with TypeError on `act_claim["sub"]`."""
-    claims = {"active": True, "sub": "user-1", "act": bad_act}
-    _mock_async_client(mocker, response=httpx2.Response(200, json=claims))
-
-    with pytest.raises(auth.TokenValidationError, match="act claim"):
-        asyncio.run(auth.validate_access_token("token", **_INTROSPECT_KWARGS))
-
-
-def test_rejects_null_act_sub_even_with_matching_missing_aud(mocker):
-    """A null act.sub must not coincidentally 'match' a missing aud and pass validation."""
-    claims = {"active": True, "sub": "user-1", "act": {"sub": None}}
-    _mock_async_client(mocker, response=httpx2.Response(200, json=claims))
-
-    with pytest.raises(auth.TokenValidationError, match="act claim"):
-        asyncio.run(auth.validate_access_token("token", **_INTROSPECT_KWARGS))
-
-
-def test_accepts_matching_outermost_act_ignoring_nested_chain(mocker):
-    """For multi-hop delegation, only the outermost act.sub is compared against aud - nested act is ignored."""
-    claims = {
-        "active": True,
-        "sub": "user-1",
-        "aud": "actor-1",
-        "act": {"sub": "actor-1", "act": {"sub": "actor-0"}},
-    }
-    _mock_async_client(mocker, response=httpx2.Response(200, json=claims))
-
-    result = asyncio.run(auth.validate_access_token("token", **_INTROSPECT_KWARGS))
-
-    assert result == claims
 
 
 def test_rejects_non_200_status(mocker):
