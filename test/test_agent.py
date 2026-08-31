@@ -257,9 +257,9 @@ def test_run_extraction_skips_llm_when_schema_unavailable(monkeypatch, mocker, c
 
 
 def test_run_extraction_fails_with_message_when_subject_type_mismatches_schema(monkeypatch, mocker, caplog):
-    """A SUBJECT_TYPE that isn't a DigitalTwin type in the schema must fail the request with the
+    """A SUBJECT_TYPE that isn't any node type in the schema must fail the request with the
     4.7 error shape - not crash the process and not reach the LLM. The response's "reason" must
-    stay generic (not leak the schema's actual DigitalTwin type names to the API caller) - the
+    stay generic (not leak the schema's actual node type names to the API caller) - the
     specific detail belongs in the server-side log only.
     """
     caplog.set_level("ERROR")
@@ -281,18 +281,11 @@ def test_run_extraction_fails_with_message_when_subject_type_mismatches_schema(m
     assert "NotARealType" in caplog.text
 
 
-@pytest.mark.parametrize("subject_type", ["Customer", "Company", "_Application"])
-def test_validate_subject_type_accepts_real_digital_twin_types(subject_type):
-    """Each DigitalTwin-labelled node type in the real schema fixture must be accepted."""
+@pytest.mark.parametrize("subject_type", ["Customer", "Company", "_Application", "Car"])
+def test_validate_subject_type_accepts_any_real_node_type(subject_type):
+    """Every node type in the real schema fixture must be accepted"""
     schema = _load_schema_fixture()
     validate_subject_type(schema, subject_type)
-
-
-def test_validate_subject_type_rejects_non_digital_twin_type():
-    """Car is a real node type in the fixture, but not DigitalTwin-labelled - must be rejected."""
-    schema = _load_schema_fixture()
-    with pytest.raises(SubjectTypeMismatchError):
-        validate_subject_type(schema, "Car")
 
 
 def test_validate_subject_type_rejects_unknown_type():
