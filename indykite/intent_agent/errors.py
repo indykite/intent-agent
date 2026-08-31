@@ -2,7 +2,7 @@
 
 
 class SubjectTypeMismatchError(Exception):
-    """Raised when the configured SUBJECT_TYPE isn't a DigitalTwin-labelled node type in the schema.
+    """Raised when the configured SUBJECT_TYPE isn't a node type in the schema.
 
     Caught per-request in run_extraction() and turned into subject_type_mismatch_error() -
     a misconfigured SUBJECT_TYPE doesn't get fixed by retrying, but it must not take down an
@@ -41,11 +41,11 @@ def schema_unavailable_error(prompt: str) -> dict[str, str]:
 
 
 def subject_type_mismatch_error(prompt: str) -> dict[str, str]:
-    """Build the 4.7 error shape for when SUBJECT_TYPE isn't a valid DigitalTwin type in the schema.
+    """Build the 4.7 error shape for when SUBJECT_TYPE isn't a valid type in the schema.
 
     Deliberately generic, unlike the log line for the same failure (which does include the
-    schema's actual DigitalTwin type names): the caller of the intent-agent's API shouldn't
-    learn the shape of the underlying data schema just by tripping a config error.
+    schema's actual node type names): the caller of the intent-agent's API shouldn't learn
+    the shape of the underlying data schema just by tripping a config error.
     """
     return error_response(
         prompt,

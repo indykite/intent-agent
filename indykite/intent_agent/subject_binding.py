@@ -10,29 +10,21 @@ from indykite.intent_agent.errors import SubjectTypeMismatchError, malformed_res
 logger = logging.getLogger(__name__)
 
 
-def _digital_twin_types(schema: dict[str, Any]) -> set[str]:
-    """Return the node type names labelled DigitalTwin in the given schema."""
+def _node_types(schema: dict[str, Any]) -> set[str]:
+    """Return every node type label defined in the given schema."""
     nodes = schema.get("graph", {}).get("nodes", {})
     if not isinstance(nodes, dict):
         return set()
-    types = set()
-    for type_name, node_def in nodes.items():
-        system_labels = node_def.get("metadata", {}).get("system_labels", [])
-        if any(isinstance(label, dict) and label.get("name") == "DigitalTwin" for label in system_labels):
-            types.add(type_name)
-    return types
+    return set(nodes.keys())
 
 
 def validate_subject_type(schema: dict[str, Any] | None, subject_type: str) -> None:
-    """Raise if subject_type isn't one of the schema's DigitalTwin-labelled node types."""
+    """Raise if subject_type isn't one of the schema's node types."""
     if schema is None:
         return
-    types = _digital_twin_types(schema)
+    types = _node_types(schema)
     if subject_type not in types:
-        message = (
-            f"SUBJECT_TYPE {subject_type!r} is not a DigitalTwin-labelled node type "
-            f"in the schema (found: {sorted(types)})"
-        )
+        message = f"SUBJECT_TYPE {subject_type!r} is not a node type in the schema."
         raise SubjectTypeMismatchError(message)
 
 
