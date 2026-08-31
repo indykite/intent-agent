@@ -32,6 +32,20 @@ repos:
       - id: check-useless-excludes
         name: pre-commit/check-useless-excludes
 
+  # Must run before the 'ops-common' Helm hooks below (helm-kubeconform, and helmlint further
+  # down) - chart/charts/ isn't committed (see chart/Chart.lock's comment / .gitignore), so
+  # `helm template`/`helm lint` would otherwise hard-fail with "found in Chart.yaml, but missing
+  # in charts/ directory". `helm dependency build` (not `update`) resolves strictly from
+  # chart/Chart.lock - no re-resolution, so this can't silently drift to a newer chart version.
+  - repo: local
+    hooks:
+      - id: helm-dependency-build
+        name: helm-dependency-build
+        language: system
+        entry: helm dependency build chart/
+        files: ^chart/
+        pass_filenames: false
+
   - repo: ssh://git@github.com/indykite/ops-common
     rev: "e9c7030b9fcd363f165a6ad358b3bfd68c466495" # using a branch name (or HEAD) is not supported
     hooks:

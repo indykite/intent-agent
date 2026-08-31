@@ -231,6 +231,15 @@
         }
       }
     },
+    "redis": {
+      "type": "object",
+      "description": "Chart-managed Redis (Bitnami subchart) config. Deliberately not additionalProperties:false and not otherwise schematized here, unlike the rest of this file - keys beyond \"enabled\" belong to the vendored bitnami/redis subchart's own values contract, which ships and enforces its own values.schema.json. Duplicating/pinning that contract here would drift on every subchart version bump.",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    },
     "fullnameOverride": {
       "type": "string"
     },

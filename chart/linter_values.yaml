@@ -8,3 +8,9 @@ podDisruptionBudget:
 
 istio:
   enabled: true
+
+redis:
+  enabled: true
+
+app:
+  cacheBackend: "redis"
