@@ -24,7 +24,7 @@ def validate_subject_type(schema: dict[str, Any] | None, subject_type: str) -> N
         return
     types = _node_types(schema)
     if subject_type not in types:
-        message = f"SUBJECT_TYPE {subject_type!r} is not a node type in the schema (found: {sorted(types)})"
+        message = f"SUBJECT_TYPE {subject_type!r} is not a node type in the schema."
         raise SubjectTypeMismatchError(message)
 
 
