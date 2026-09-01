@@ -319,14 +319,14 @@ class IntentAgent:
         failing - get_cached_schema() retries the fetch itself on every call while the cache is
         empty, so the next request tries again on its own.
 
-        Binds response_mime_type/response_schema here, per request, rather than once on
-        self._llm at __init__ (as tool binding alone still is) - build_input_schema(schema)
-        constrains the LLM's final answer to the schema's actual node/edge vocabulary, but
-        that schema can change between requests (TTL refresh, or cold-start recovery once the
-        platform starts serving it), so binding it once at construction time would freeze the
-        response shape to whatever schema existed at startup - possibly none at all. Rebuilding
-        it fresh here (once per request, before the tool-call loop, not once per iteration)
-        satisfies "derived ... each time it reloads" without a second cache to keep in sync.
+        Binds tools/response_mime_type/response_schema here, per request, rather than once on
+        self._llm at __init__ - build_input_schema(schema) constrains the LLM's final answer to
+        the schema's actual node/edge vocabulary, but that schema can change between requests
+        (TTL refresh, or cold-start recovery once the platform starts serving it), so binding it
+        once at construction time would freeze the response shape to whatever schema existed at
+        startup - possibly none at all. Rebuilding it fresh here (once per request, before the
+        tool-call loop, not once per iteration) satisfies "derived ... each time it reloads"
+        without a second cache to keep in sync.
         """
         schema = self.get_cached_schema()
         if schema is None:

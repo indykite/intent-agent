@@ -28,6 +28,11 @@ def validate_subject_type(schema: dict[str, Any] | None, subject_type: str) -> N
         raise SubjectTypeMismatchError(message)
 
 
+def _blank(value: object) -> bool:
+    """True unless value is a string with non-whitespace content."""
+    return not isinstance(value, str) or not value.strip()
+
+
 def _evaluation_unresolved(evaluation: object) -> bool:
     """True if the LLM attempted subject.type/action.name/resource.type but couldn't
     correlate it to the schema's enum vocabulary (input_schema.build_input_schema).
@@ -35,19 +40,21 @@ def _evaluation_unresolved(evaluation: object) -> bool:
     Must run before _bind_subject, which unconditionally overwrites subject.type/id
     regardless of what the LLM produced. A key entirely absent (e.g. no `subject` for
     Access Evaluation, no `action` for Action Search - see SKILL.md) is a legitimate
-    per-evaluation-kind omission, not a failure; a key present with an empty type/name
-    inside it means the LLM tried and failed to correlate it.
+    per-evaluation-kind omission, not a failure; a key present but malformed (wrong
+    type, or a blank/whitespace-only type/name inside it) means the LLM tried and
+    failed to correlate it. subject is exempt from the malformed-shape check (though
+    not the blank-string one) since _bind_subject replaces it outright either way.
     """
     if not isinstance(evaluation, dict):
         return True
     resource = evaluation.get("resource")
-    if not isinstance(resource, dict) or not resource.get("type"):
+    if not isinstance(resource, dict) or _blank(resource.get("type")):
         return True
     action = evaluation.get("action")
-    if isinstance(action, dict) and not action.get("name"):
+    if action is not None and (not isinstance(action, dict) or _blank(action.get("name"))):
         return True
     subject = evaluation.get("subject")
-    return isinstance(subject, dict) and not subject.get("type")
+    return isinstance(subject, dict) and _blank(subject.get("type"))
 
 
 def normalize_intent_response(

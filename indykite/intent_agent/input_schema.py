@@ -1,3 +1,7 @@
+"""Builds the schema-derived response_json_schema that constrains Gemini's structured output
+to the live IndyKite graph schema's actual node/edge vocabulary (TDD 4.6).
+"""
+
 from typing import Any
 
 from pydantic import BaseModel, Field, JsonValue
@@ -75,8 +79,12 @@ class _IntentInput(BaseModel):
 def _constrain_to_enum(field_schema: dict[str, Any], values: list[str]) -> None:
     """Restrict a (possibly nullable) string field's schema to `values`, in place.
 
-    No-op if `values` is empty - see the OPEN QUESTION in the module docstring on whether that
-    should instead delete the field from `properties`.
+    No-op if `values` is empty. Only reachable for the action-name enum (_edge_relations) -
+    edges can't be ingested before their endpoint nodes, and build_input_schema's caller
+    (agent.run_extraction) already validates SUBJECT_TYPE against the schema's node types
+    before calling this, so _node_types(schema) can never be empty here. A schema with nodes
+    but no edges yet is a legitimate state, not a failure - there's no vocabulary to constrain
+    the action name to, so leaving it as a plain string is correct.
     """
     if not values:
         return

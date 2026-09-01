@@ -142,5 +142,5 @@ If the prompt doesn't match the data schema, or is too unclear to map to a Subje
 ## Edge cases
 
 - **Ambiguous entity types**: Use the schema to pick the most likely type; prefer DigitalTwin for people/users
-- **Unknown actions**: Map to the closest edge label from the schema, or use a generic action name (e.g., "read")
+- **Unknown actions**: Map to the closest edge label from the schema - action.name is constrained to the schema's edge labels, so an invented name (e.g. "read") isn't a valid fallback; if nothing in the schema is a reasonable match, treat it as no coherent intent and return an empty `evaluations` array instead
 - **Multi-part requests**: Produce multiple AuthZEN objects in the evaluations array
