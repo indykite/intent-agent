@@ -48,9 +48,7 @@ class _Context(BaseModel):
         default=None,
         description="Extra prompt-derived data that doesn't fit subject/action/resource.",
     )
-    filters: str | None = Field(
-        default=None, description="Search criteria, e.g. \"resource.name contains 'refund'\"."
-    )
+    filters: str | None = Field(default=None, description="Search criteria, e.g. \"resource.name contains 'refund'\".")
     qualifiers: dict[str, Any] | None = Field(default=None, description="Environmental info, e.g. time or location.")
 
 
@@ -88,8 +86,7 @@ def _constrain_to_enum(field_schema: dict[str, Any], values: list[str]) -> None:
 
 
 def _drop_pydantic_only_keys(node: JsonValue) -> JsonValue:
-    """Strip pydantic's auto-generated `title`/`default` keys recursively.
-    """
+    """Strip pydantic's auto-generated `title`/`default` keys recursively."""
     if isinstance(node, dict):
         return {key: _drop_pydantic_only_keys(value) for key, value in node.items() if key not in {"title", "default"}}
     if isinstance(node, list):
