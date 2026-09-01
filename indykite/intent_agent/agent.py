@@ -40,12 +40,17 @@ from indykite.intent_agent import auth, skills
 from indykite.intent_agent.config import Settings
 from indykite.intent_agent.errors import (
     SubjectTypeMismatchError,
+    schema_not_populated_error,
     schema_unavailable_error,
     subject_type_mismatch_error,
 )
 from indykite.intent_agent.input_schema import build_input_schema
 from indykite.intent_agent.schema import SchemaClient
-from indykite.intent_agent.subject_binding import normalize_intent_response, validate_subject_type
+from indykite.intent_agent.subject_binding import (
+    normalize_intent_response,
+    schema_has_no_node_types,
+    validate_subject_type,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -122,17 +127,27 @@ class IntentAgent:
 
         A missing schema at cold start (e.g. the platform is still coming up) no longer aborts
         the process: it keeps serving requests, and run_extraction() retries the fetch via
-        get_cached_schema() on every request until the schema is populated. If the schema *is*
-        available at cold start, SUBJECT_TYPE is checked here too - purely for an early signal
-        in the startup logs, since otherwise a misconfigured SUBJECT_TYPE would go unnoticed
-        until the first real request hits it (run_extraction re-checks it per request regardless,
-        so this is a diagnostic convenience, not the enforcement point).
+        get_cached_schema() on every request until the schema is populated. A schema that
+        fetches successfully but has no node types beyond the platform's own bootstrap node
+        (data model not populated - see schema_has_no_node_types) gets the same "keep
+        retrying" treatment, logged distinctly from an actual fetch failure. If the schema
+        *is* available and populated at cold start, SUBJECT_TYPE is checked here too - purely
+        for an early signal in the startup logs, since otherwise a misconfigured SUBJECT_TYPE
+        would go unnoticed until the first real request hits it (run_extraction re-checks it
+        per request regardless, so this is a diagnostic convenience, not the enforcement
+        point).
         """
         self._schema_client.preload()
         schema = self.get_cached_schema()
         if schema is None:
             logger.warning(
                 "Data schema unavailable at cold start - will keep retrying on every request until it's populated",
+            )
+            return
+        if schema_has_no_node_types(schema):
+            logger.warning(
+                "Data schema fetched but the data model isn't populated yet at cold start - "
+                "will keep retrying on every request until it's populated",
             )
             return
         try:
@@ -317,7 +332,14 @@ class IntentAgent:
         (or several, across tool-call iterations) on a result that would just be discarded
         afterward. A schema-unavailable request never populates the cache as a side effect of
         failing - get_cached_schema() retries the fetch itself on every call while the cache is
-        empty, so the next request tries again on its own.
+        empty, so the next request tries again on its own. A schema that fetches successfully
+        but has no node types beyond the platform's own _Application node (data model not
+        populated - see schema_has_no_node_types) is a distinct third state from both that and
+        an actual SUBJECT_TYPE mismatch: there's nothing yet to validate SUBJECT_TYPE against,
+        so it isn't a misconfiguration, but the schema itself isn't unreachable either. Both
+        the unavailable and not-populated states self-heal without a restart, the same way any
+        cached schema does, once a refresh (per-request retry, or the next request after
+        SCHEMA_REFRESH_TTL_MINUTES elapses) picks up a real response.
 
         Binds tools/response_mime_type/response_schema here, per request, rather than once on
         self._llm at __init__ - build_input_schema(schema) constrains the LLM's final answer to
@@ -336,6 +358,14 @@ class IntentAgent:
                 prompt,
             )
             return json.dumps(schema_unavailable_error(prompt), indent=2, ensure_ascii=False)
+        if schema_has_no_node_types(schema):
+            logger.error(
+                "Schema fetched but the data model isn't populated yet - cannot verify "
+                "subject_type %r; skipping extraction for prompt %r",
+                self.settings.subject_type,
+                prompt,
+            )
+            return json.dumps(schema_not_populated_error(prompt), indent=2, ensure_ascii=False)
 
         try:
             validate_subject_type(schema, self.settings.subject_type)
