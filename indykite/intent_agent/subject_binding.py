@@ -28,6 +28,28 @@ def validate_subject_type(schema: dict[str, Any] | None, subject_type: str) -> N
         raise SubjectTypeMismatchError(message)
 
 
+def _evaluation_unresolved(evaluation: object) -> bool:
+    """True if the LLM attempted subject.type/action.name/resource.type but couldn't
+    correlate it to the schema's enum vocabulary (input_schema.build_input_schema).
+
+    Must run before _bind_subject, which unconditionally overwrites subject.type/id
+    regardless of what the LLM produced. A key entirely absent (e.g. no `subject` for
+    Access Evaluation, no `action` for Action Search - see SKILL.md) is a legitimate
+    per-evaluation-kind omission, not a failure; a key present with an empty type/name
+    inside it means the LLM tried and failed to correlate it.
+    """
+    if not isinstance(evaluation, dict):
+        return True
+    resource = evaluation.get("resource")
+    if not isinstance(resource, dict) or not resource.get("type"):
+        return True
+    action = evaluation.get("action")
+    if isinstance(action, dict) and not action.get("name"):
+        return True
+    subject = evaluation.get("subject")
+    return isinstance(subject, dict) and not subject.get("type")
+
+
 def normalize_intent_response(
     llm_text: str,
     original_prompt: str,
@@ -38,7 +60,9 @@ def normalize_intent_response(
     """Ensure the response is valid JSON with prompt/evaluations, wrap it if needed.
 
     Assumes the schema is available - run_extraction checks that upfront and never
-    reaches this far (or the LLM) otherwise.
+    reaches this far (or the LLM) otherwise. The LLM's output is constrained to
+    {prompt, evaluations} an empty evaluations list is the only "couldn't extract"
+    signal to handle here; Errors will not be LLM-supplied.
     """
     text = llm_text.strip()
     json_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
@@ -55,9 +79,8 @@ def normalize_intent_response(
         # array as a single non-dict "evaluation" that _bind_subject would then skip.
         data = {"prompt": original_prompt, "evaluations": data if isinstance(data, list) else []}
     data.setdefault("prompt", original_prompt)
-    if "error" in data:
-        return json.dumps(data, indent=2, ensure_ascii=False)
-    if not data.get("evaluations"):
+    evaluations = data.get("evaluations")
+    if not evaluations or any(_evaluation_unresolved(evaluation) for evaluation in evaluations):
         return json.dumps(no_intent_error(original_prompt), indent=2, ensure_ascii=False)
 
     _bind_subject(data, subject_id=subject_id, subject_type=subject_type)

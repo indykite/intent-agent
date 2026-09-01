@@ -137,38 +137,7 @@ Return a JSON object with exactly two keys:
 
 ## When no coherent intent can be extracted
 
-Do **not** return an empty `evaluations` array on its own. If the prompt doesn't match the data schema, or is too unclear to map to a Subject/Action/Resource, return this shape instead - with `reason` specific to *why this particular prompt* failed:
-
-```json
-{
-  "prompt": "<the original input prompt>",
-  "error": "Unable to extract intent from prompt.",
-  "reason": "<specific reason, e.g. \"The prompt doesn't match the Knowledge Graph Schema\" or \"The prompt is unclear.\">",
-  "obligation": "<what the prompter should do next, e.g. \"Ask the prompter to clarify their request.\">"
-}
-```
-
-Example 1:
-
-```json
-{
-  "prompt": "What's the distance between the earth and the Sun?",
-  "error": "Unable to extract intent from prompt.",
-  "reason": "The prompt doesn't match the Knowledge Graph Schema",
-  "obligation": "Ask the prompter to ensure their intent is relevant to the system."
-}
-```
-
-Example 2:
-
-```json
-{
-  "prompt": "Can Joe do stuff in the folder?",
-  "error": "Unable to extract intent from prompt.",
-  "reason": "The prompt is unclear.",
-  "obligation": "Ask the prompter to clarify their request."
-}
-```
+If the prompt doesn't match the data schema, or is too unclear to map to a Subject/Action/Resource, return an empty `evaluations` array - do not force a match. The system builds the error response itself; you don't need to (and can't - your output shape is constrained to `prompt`/`evaluations` only).
 
 ## Edge cases
 

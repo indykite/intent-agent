@@ -141,7 +141,10 @@ def test_recovers_on_next_request_once_platform_publishes_schema(monkeypatch, mo
         tool_calls=[{"name": "activate_skill", "args": {"name": "extract-intent"}, "id": "call-1"}],
     )
     final_response = AIMessage(
-        content=('{"prompt": "Can I buy 50 shares of AAPL?", "evaluations": [{"action": {"name": "buy"}}]}'),
+        content=(
+            '{"prompt": "Can I buy 50 shares of AAPL?", "evaluations": '
+            '[{"action": {"name": "buy"}, "resource": {"type": "Stock", "id": "AAPL"}}]}'
+        ),
         tool_calls=[],
     )
     mock_ainvoke = AsyncMock(side_effect=[tool_call_response, final_response])
