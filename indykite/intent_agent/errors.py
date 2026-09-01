@@ -40,6 +40,21 @@ def schema_unavailable_error(prompt: str) -> dict[str, str]:
     )
 
 
+def schema_not_populated_error(prompt: str) -> dict[str, str]:
+    """Build the 4.7 error shape for when the schema is fetched but the data model has no
+    node types beyond the platform's own bootstrap node (_Application) - i.e. nothing has
+    been modeled yet. Distinct from schema_unavailable_error (the fetch itself failed) and
+    from subject_type_mismatch_error (real types exist, SUBJECT_TYPE just isn't one of them) -
+    there's nothing yet to validate SUBJECT_TYPE against, so this is neither a fetch failure
+    nor a misconfiguration.
+    """
+    return error_response(
+        prompt,
+        "Data schema is available but the data model hasn't been populated with any entity types yet.",
+        "Retry once the data model has been populated, or contact the administrator.",
+    )
+
+
 def subject_type_mismatch_error(prompt: str) -> dict[str, str]:
     """Build the 4.7 error shape for when SUBJECT_TYPE isn't a valid type in the schema.
 

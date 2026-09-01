@@ -18,6 +18,22 @@ def _node_types(schema: dict[str, Any]) -> set[str]:
     return set(nodes.keys())
 
 
+_BOOTSTRAP_NODE_TYPE = "_Application"
+
+
+def schema_has_no_node_types(schema: dict[str, Any]) -> bool:
+    """True if the schema has no node types beyond the platform's own bootstrap node.
+
+    _Application (the calling app itself) is always present in the graph, even before any
+    real data model is configured - so its presence alone doesn't mean the data model has
+    been populated. Ignoring it, an empty remainder means nothing has been modeled yet, not
+    that SUBJECT_TYPE itself is misconfigured (SubjectTypeMismatchError, raised when at least
+    one *other* node type exists and SUBJECT_TYPE just isn't one of them) - callers should
+    treat this as a distinct "not yet populated" state, not a fetch failure or a mismatch.
+    """
+    return not (_node_types(schema) - {_BOOTSTRAP_NODE_TYPE})
+
+
 def validate_subject_type(schema: dict[str, Any] | None, subject_type: str) -> None:
     """Raise if subject_type isn't one of the schema's node types."""
     if schema is None:

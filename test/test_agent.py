@@ -10,13 +10,19 @@ from dogpile.cache.backends.redis import RedisBackend
 
 from indykite.intent_agent.agent import IntentAgent, _build_schema_cache, build_app
 from indykite.intent_agent.config import Settings
-from indykite.intent_agent.errors import SubjectTypeMismatchError
+from indykite.intent_agent.errors import (
+    SubjectTypeMismatchError,
+    schema_not_populated_error,
+    schema_unavailable_error,
+    subject_type_mismatch_error,
+)
 from indykite.intent_agent.input_schema import build_input_schema
 from indykite.intent_agent.skills import discover_skills
 from indykite.intent_agent.subject_binding import (
     _bind_subject,
     _evaluation_unresolved,
     normalize_intent_response,
+    schema_has_no_node_types,
     validate_subject_type,
 )
 
@@ -24,6 +30,7 @@ _MIN_EXPECTED_ROUTES = 2
 _EXPECTED_BARE_ARRAY_EVALUATION_COUNT = 2
 _REDIS_PORT = 6379
 _SCHEMA_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mock_ikg_schema.json"
+_EMPTY_SCHEMA_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mock_ikg_schema_empty.json"
 
 # A real (unsigned, alg=none) JWT - Settings requires IK_APP_AGENT_KEY to be set, and
 # SchemaClient requires any non-blank value to be a well-formed JWT (see test_schema.py).
@@ -35,6 +42,15 @@ def _load_schema_fixture():
     return json.loads(_SCHEMA_FIXTURE_PATH.read_text())
 
 
+def _load_empty_schema_fixture():
+    """Load a real response captured from GET /data-schema/v1 against a genuinely empty
+    IndyKite environment (RC, no data model configured yet) - graph.nodes contains only the
+    platform's own _Application bootstrap node, not an actually-empty {} (see
+    schema_has_no_node_types).
+    """
+    return json.loads(_EMPTY_SCHEMA_FIXTURE_PATH.read_text())
+
+
 def test_discovers_extract_intent_skill():
     """The extract-intent SKILL.md must be discovered from the skills/ directory."""
     skills = discover_skills()
@@ -44,14 +60,7 @@ def test_discovers_extract_intent_skill():
 
 def test_build_app_registers_routes(monkeypatch, mocker):
     """build_app must wire up the agent-card and JSON-RPC routes on the app."""
-    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-    monkeypatch.setenv("INTROSPECT_URL", "https://idp.example.com/introspect")
-    monkeypatch.setenv("INTROSPECT_CLIENT_ID", "client-id")
-    monkeypatch.setenv("INTROSPECT_CLIENT_SECRET", "client-secret")
-    monkeypatch.setenv("SUBJECT_TYPE", "Customer")
-    monkeypatch.setenv("IK_APP_AGENT_KEY", _APP_AGENT_KEY)
-    monkeypatch.setenv("INDYKITE_BASE_URL", "https://ikg.example.com")
-    settings = Settings(_env_file=None)
+    settings = _settings_with_subject_type(monkeypatch)
     fake_schema_client = mocker.Mock(
         preload=mocker.Mock(),
         get_cached=mocker.Mock(return_value=_load_schema_fixture()),
@@ -68,14 +77,7 @@ def test_build_app_starts_when_schema_unavailable_at_cold_start(monkeypatch, moc
     """A schema fetch failure at cold start must not abort startup - the platform may still be
     coming up, so the process keeps serving and retries the fetch on every request instead.
     """
-    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-    monkeypatch.setenv("INTROSPECT_URL", "https://idp.example.com/introspect")
-    monkeypatch.setenv("INTROSPECT_CLIENT_ID", "client-id")
-    monkeypatch.setenv("INTROSPECT_CLIENT_SECRET", "client-secret")
-    monkeypatch.setenv("SUBJECT_TYPE", "Customer")
-    monkeypatch.setenv("INDYKITE_BASE_URL", "https://ikg.example.com")
-    monkeypatch.setenv("IK_APP_AGENT_KEY", _APP_AGENT_KEY)
-    settings = Settings(_env_file=None)
+    settings = _settings_with_subject_type(monkeypatch)
     # INDYKITE_BASE_URL is now mandatory, so simulate "schema unavailable" via a failed fetch
     # instead of an unset base URL - same client-patching approach as test_schema.py.
     failing_client = mocker.MagicMock()
@@ -335,48 +337,45 @@ def test_run_extraction_rebuilds_schema_when_cached_schema_changes_between_reque
     assert first_call_schema != second_call_schema
 
 
-def test_run_extraction_skips_llm_when_schema_unavailable(monkeypatch, mocker, caplog):
-    """Schema unavailability must be checked before any LLM call, not after wasting one."""
-    caplog.set_level("ERROR")
-    settings = _settings_with_subject_type(monkeypatch)
-    mock_ainvoke = mocker.AsyncMock()
-    fake_bound_llm = mocker.Mock(ainvoke=mock_ainvoke)
-    fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=fake_bound_llm))
-    fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=None))
-    agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client)
-
-    result = asyncio.run(agent.run_extraction("buy AAPL", "user-1"))
-
-    data = json.loads(result)
-    assert "error" in data
-    assert "evaluations" not in data
-    mock_ainvoke.assert_not_called()
-    assert any(record.levelname == "ERROR" for record in caplog.records)
-
-
-def test_run_extraction_fails_with_message_when_subject_type_mismatches_schema(monkeypatch, mocker, caplog):
-    """A SUBJECT_TYPE that isn't any node type in the schema must fail the request with the
-    4.7 error shape - not crash the process and not reach the LLM. The response's "reason" must
-    stay generic (not leak the schema's actual node type names to the API caller) - the
-    specific detail belongs in the server-side log only.
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param((lambda: None, "Customer", schema_unavailable_error, None), id="schema_unavailable"),
+        pytest.param(
+            (_load_empty_schema_fixture, "Customer", schema_not_populated_error, None),
+            id="schema_not_populated",
+        ),
+        pytest.param(
+            (_load_schema_fixture, "NotARealType", subject_type_mismatch_error, "NotARealType"),
+            id="subject_type_mismatch",
+        ),
+    ],
+)
+def test_run_extraction_fails_before_any_llm_call(monkeypatch, mocker, caplog, case):
+    """Schema unavailability, an unpopulated data model, and a real SUBJECT_TYPE mismatch are
+    three distinct 4.7 error shapes, each checked and returned before any LLM call - not
+    conflated with each other (see schema_has_no_node_types), and not wasting an LLM call on a
+    result that would just be discarded. A mismatch's specific detail (log_detail) must reach
+    the server-side log but never the caller-facing response - the other two have no such
+    detail to leak in the first place.
     """
+    build_schema, subject_type, expected_error, log_detail = case
     caplog.set_level("ERROR")
-    settings = _settings_with_subject_type(monkeypatch, subject_type="NotARealType")
+    settings = _settings_with_subject_type(monkeypatch, subject_type=subject_type)
     mock_ainvoke = mocker.AsyncMock()
     fake_bound_llm = mocker.Mock(ainvoke=mock_ainvoke)
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=fake_bound_llm))
-    fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=_load_schema_fixture()))
+    fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=build_schema()))
     agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client)
 
     result = asyncio.run(agent.run_extraction("buy AAPL", "user-1"))
 
-    data = json.loads(result)
-    assert "error" in data
-    assert "evaluations" not in data
-    assert "NotARealType" not in data["reason"]
+    assert json.loads(result) == expected_error("buy AAPL")
     mock_ainvoke.assert_not_called()
     assert any(record.levelname == "ERROR" for record in caplog.records)
-    assert "NotARealType" in caplog.text
+    if log_detail:
+        assert log_detail in caplog.text
+        assert log_detail not in result
 
 
 @pytest.mark.parametrize("subject_type", ["Customer", "Company", "_Application", "Car"])
@@ -404,21 +403,56 @@ def test_validate_subject_type_skips_when_schema_unavailable():
     validate_subject_type(None, "AnythingGoes")
 
 
+@pytest.mark.parametrize(
+    ("schema", "expected"),
+    [
+        pytest.param({"graph": {"nodes": {}, "edges": []}}, True, id="literally_empty"),
+        pytest.param(_load_empty_schema_fixture(), True, id="real_empty_graph_response_bootstrap_node_only"),
+        pytest.param(
+            {"graph": {"nodes": {"_Application": {}, "Customer": {}}, "edges": []}},
+            False,
+            id="real_type_alongside_bootstrap_node",
+        ),
+        pytest.param(_load_schema_fixture(), False, id="real_populated_schema"),
+    ],
+)
+def test_schema_has_no_node_types(schema, expected):
+    """Only _Application - the calling app's own node, always present even before any real
+    data model is configured - doesn't count as populated; any other node type does, even if
+    SUBJECT_TYPE itself doesn't match it (that's a SubjectTypeMismatchError, not this).
+    """
+    assert schema_has_no_node_types(schema) is expected
+
+
+def test_build_app_starts_when_schema_not_yet_populated_at_cold_start(monkeypatch, mocker, caplog):
+    """A schema that fetches successfully but is empty at cold start must not log a
+    SubjectTypeMismatchError - that would misleadingly suggest SUBJECT_TYPE is misconfigured
+    when the real cause is just an unpopulated data model.
+    """
+    caplog.set_level("WARNING")
+    settings = _settings_with_subject_type(monkeypatch)
+    empty_schema = _load_empty_schema_fixture()
+    fake_schema_client = mocker.Mock(
+        preload=mocker.Mock(),
+        get_cached=mocker.Mock(return_value=empty_schema),
+    )
+
+    app, agent = build_app(settings, schema_client=fake_schema_client)
+
+    assert agent.get_cached_schema() == empty_schema
+    assert not any(record.levelname == "ERROR" for record in caplog.records)
+    assert any("isn't populated yet" in record.message for record in caplog.records)
+    assert len(app.routes) >= _MIN_EXPECTED_ROUTES
+
+
 def test_build_app_starts_when_subject_type_mismatches_schema(monkeypatch, mocker, caplog):
     """build_app must not raise/abort at startup when SUBJECT_TYPE doesn't match the schema -
-    the mismatch is instead surfaced per-request (see test_run_extraction_fails_with_message...
+    the mismatch is instead surfaced per-request (see test_run_extraction_fails_before_any_llm_call
     below), so a bad SUBJECT_TYPE doesn't take down an otherwise-healthy process. It must still
     be logged at startup though - an early signal beats waiting for the first live request.
     """
     caplog.set_level("ERROR")
-    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-    monkeypatch.setenv("INTROSPECT_URL", "https://idp.example.com/introspect")
-    monkeypatch.setenv("INTROSPECT_CLIENT_ID", "client-id")
-    monkeypatch.setenv("INTROSPECT_CLIENT_SECRET", "client-secret")
-    monkeypatch.setenv("SUBJECT_TYPE", "NotARealType")
-    monkeypatch.setenv("IK_APP_AGENT_KEY", _APP_AGENT_KEY)
-    monkeypatch.setenv("INDYKITE_BASE_URL", "https://ikg.example.com")
-    settings = Settings(_env_file=None)
+    settings = _settings_with_subject_type(monkeypatch, subject_type="NotARealType")
     fake_schema_client = mocker.Mock(
         preload=mocker.Mock(),
         get_cached=mocker.Mock(return_value=_load_schema_fixture()),
