@@ -43,6 +43,7 @@ from indykite.intent_agent.errors import (
     schema_unavailable_error,
     subject_type_mismatch_error,
 )
+from indykite.intent_agent.input_schema import build_input_schema
 from indykite.intent_agent.schema import SchemaClient
 from indykite.intent_agent.subject_binding import normalize_intent_response, validate_subject_type
 
@@ -115,7 +116,6 @@ class IntentAgent:
             )
             if t
         ]
-        self._llm_with_tools = self._llm.bind_tools(self.tools)
 
     def preload_schema(self) -> None:
         """Fetch and cache the schema once, at startup - best effort, does not block startup.
@@ -318,6 +318,15 @@ class IntentAgent:
         afterward. A schema-unavailable request never populates the cache as a side effect of
         failing - get_cached_schema() retries the fetch itself on every call while the cache is
         empty, so the next request tries again on its own.
+
+        Binds tools/response_mime_type/response_schema here, per request, rather than once on
+        self._llm at __init__ - build_input_schema(schema) constrains the LLM's final answer to
+        the schema's actual node/edge vocabulary, but that schema can change between requests
+        (TTL refresh, or cold-start recovery once the platform starts serving it), so binding it
+        once at construction time would freeze the response shape to whatever schema existed at
+        startup - possibly none at all. Rebuilding it fresh here (once per request, before the
+        tool-call loop, not once per iteration) satisfies "derived ... each time it reloads"
+        without a second cache to keep in sync.
         """
         schema = self.get_cached_schema()
         if schema is None:
@@ -339,12 +348,18 @@ class IntentAgent:
             )
             return json.dumps(subject_type_mismatch_error(prompt), indent=2, ensure_ascii=False)
 
+        llm_with_tools = self._llm.bind_tools(
+            self.tools,
+            response_mime_type="application/json",
+            response_schema=build_input_schema(schema),
+        )
+
         messages = self.build_initial_messages(prompt)
         final_text = ""
         activated_extract_intent = False
 
         for _ in range(self.settings.tool_call_max_iterations):
-            response = await self._llm_with_tools.ainvoke(messages)
+            response = await llm_with_tools.ainvoke(messages)
             tool_calls = getattr(response, "tool_calls", None) or []
 
             if not tool_calls:

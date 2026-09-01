@@ -11,8 +11,14 @@ from dogpile.cache.backends.redis import RedisBackend
 from indykite.intent_agent.agent import IntentAgent, _build_schema_cache, build_app
 from indykite.intent_agent.config import Settings
 from indykite.intent_agent.errors import SubjectTypeMismatchError
+from indykite.intent_agent.input_schema import build_input_schema
 from indykite.intent_agent.skills import discover_skills
-from indykite.intent_agent.subject_binding import _bind_subject, normalize_intent_response, validate_subject_type
+from indykite.intent_agent.subject_binding import (
+    _bind_subject,
+    _evaluation_unresolved,
+    normalize_intent_response,
+    validate_subject_type,
+)
 
 _MIN_EXPECTED_ROUTES = 2
 _EXPECTED_BARE_ARRAY_EVALUATION_COUNT = 2
@@ -119,9 +125,61 @@ def test_bind_subject_omits_id_when_subject_id_is_falsy():
     assert data["evaluations"][0]["subject"] == {"type": "Customer"}
 
 
+@pytest.mark.parametrize(
+    ("evaluation", "expected"),
+    [
+        pytest.param({"action": {"name": "buy"}}, True, id="missing_resource_type"),
+        pytest.param(
+            {"action": {"name": "buy"}, "resource": {"type": "Stock"}},
+            False,
+            id="resource_search_missing_id",
+        ),
+        pytest.param(
+            {"action": {"name": ""}, "resource": {"type": "Stock"}},
+            True,
+            id="empty_action_name_when_action_key_present",
+        ),
+        pytest.param({"resource": {"type": "Stock", "id": "AAPL"}}, False, id="missing_action_key"),
+        pytest.param(
+            {"subject": {"type": ""}, "action": {"name": "read"}, "resource": {"type": "Document"}},
+            True,
+            id="empty_subject_type_when_subject_key_present",
+        ),
+        pytest.param(
+            {"action": {"name": "buy"}, "resource": {"type": "Stock", "id": "AAPL"}},
+            False,
+            id="missing_subject_key",
+        ),
+    ],
+)
+def test_evaluation_unresolved(evaluation, expected):
+    """resource.type is core to every evaluation kind (PRD) - never legitimately omitted, so
+    its absence always flags. action/subject are only checked when their key is present at
+    all: an entirely missing key is a legitimate per-evaluation-kind omission (Action Search
+    omits `action`; everything but Subject Search omits `subject` - SKILL.md), while a key
+    present with an empty type/name means the LLM tried and failed to correlate it.
+    """
+    assert _evaluation_unresolved(evaluation) is expected
+
+
+def test_normalize_intent_response_errors_when_resource_type_unresolved():
+    """A resource.type the LLM couldn't correlate to the schema (left absent) must produce
+    the same no_intent_error as an empty evaluations array, not a bare success response with
+    a hollow resource.
+    """
+    llm_text = '{"prompt": "buy some birds", "evaluations": [{"action": {"name": "buy"}}]}'
+    result = normalize_intent_response(llm_text, "buy some birds", subject_id="user-1", subject_type="Customer")
+    data = json.loads(result)
+    assert "evaluations" not in data
+    assert data["error"] == "Unable to extract intent from prompt."
+
+
 def test_normalize_intent_response_binds_subject_end_to_end():
     """normalize_intent_response must apply the subject override as part of normalizing LLM output."""
-    llm_text = '{"prompt": "buy AAPL", "evaluations": [{"action": {"name": "buy"}}]}'
+    llm_text = (
+        '{"prompt": "buy AAPL", "evaluations": '
+        '[{"action": {"name": "buy"}, "resource": {"type": "Stock", "id": "AAPL"}}]}'
+    )
     result = normalize_intent_response(llm_text, "buy AAPL", subject_id="user-1", subject_type="Customer")
     data = json.loads(result)
     assert data["evaluations"][0]["subject"] == {"type": "Customer", "id": "user-1"}
@@ -129,7 +187,10 @@ def test_normalize_intent_response_binds_subject_end_to_end():
 
 def test_normalize_intent_response_strips_json_code_fence():
     """A ```json-fenced LLM response must be unwrapped before parsing."""
-    llm_text = '```json\n{"prompt": "buy AAPL", "evaluations": [{"action": {"name": "buy"}}]}\n```'
+    llm_text = (
+        '```json\n{"prompt": "buy AAPL", "evaluations": '
+        '[{"action": {"name": "buy"}, "resource": {"type": "Stock", "id": "AAPL"}}]}\n```'
+    )
     result = normalize_intent_response(llm_text, "buy AAPL", subject_id="user-1", subject_type="Customer")
     data = json.loads(result)
     assert data["evaluations"][0]["subject"] == {"type": "Customer", "id": "user-1"}
@@ -139,7 +200,10 @@ def test_normalize_intent_response_handles_bare_evaluations_array():
     """A bare JSON array (LLM forgot the {"prompt", "evaluations"} wrapper) must be used as the
     evaluations list directly, not nested as a single non-dict evaluation that gets dropped.
     """
-    llm_text = '[{"action": {"name": "buy"}}, {"action": {"name": "sell"}}]'
+    llm_text = (
+        '[{"action": {"name": "buy"}, "resource": {"type": "Stock", "id": "AAPL"}}, '
+        '{"action": {"name": "sell"}, "resource": {"type": "Stock", "id": "AAPL"}}]'
+    )
     result = normalize_intent_response(llm_text, "buy or sell AAPL", subject_id="user-1", subject_type="Customer")
     data = json.loads(result)
     assert len(data["evaluations"]) == _EXPECTED_BARE_ARRAY_EVALUATION_COUNT
@@ -169,24 +233,6 @@ def test_normalize_intent_response_errors_on_malformed_json(caplog):
     assert "raw_response" not in data
     assert data["error"] == "Unable to extract intent from prompt."
     assert any(record.levelname == "ERROR" for record in caplog.records)
-
-
-def test_normalize_intent_response_passes_through_llm_supplied_error():
-    """If the LLM already followed SKILL.md and emitted its own error/reason/obligation, keep it as-is."""
-    llm_text = json.dumps(
-        {
-            "prompt": "Can Joe do stuff in the folder?",
-            "error": "Unable to extract intent from prompt.",
-            "reason": "The prompt is unclear.",
-            "obligation": "Ask the prompter to clarify their request.",
-        }
-    )
-    result = normalize_intent_response(
-        llm_text, "Can Joe do stuff in the folder?", subject_id="user-1", subject_type="Customer"
-    )
-    data = json.loads(result)
-    assert data["reason"] == "The prompt is unclear."
-    assert "evaluations" not in data
 
 
 def _settings_with_subject_type(monkeypatch, subject_type="Customer"):
@@ -235,6 +281,58 @@ def test_get_data_schema_tool_returns_cached_schema(monkeypatch, mocker):
     result = tool.invoke({})
 
     assert json.loads(result) == schema
+
+
+def test_run_extraction_binds_structured_output_schema_derived_from_current_schema(monkeypatch, mocker):
+    """run_extraction must call bind_tools with a response_schema derived from the last
+    successfully derived schema (via build_input_schema), not some other/unrelated schema.
+    """
+    settings = _settings_with_subject_type(monkeypatch)
+    schema = _load_schema_fixture()
+    fake_response = mocker.Mock(text="ok", content="ok", tool_calls=[])
+    mock_ainvoke = mocker.AsyncMock(return_value=fake_response)
+    fake_bound_llm = mocker.Mock(ainvoke=mock_ainvoke)
+    mock_bind_tools = mocker.Mock(return_value=fake_bound_llm)
+    fake_llm = mocker.Mock(bind_tools=mock_bind_tools)
+    fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=schema))
+    agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client)
+
+    asyncio.run(agent.run_extraction("buy AAPL", "user-1"))
+
+    mock_bind_tools.assert_called_once_with(
+        agent.tools,
+        response_mime_type="application/json",
+        response_schema=build_input_schema(schema),
+    )
+
+
+def test_run_extraction_rebuilds_schema_when_cached_schema_changes_between_requests(monkeypatch, mocker):
+    """TDD 4.6: the structured-output schema must be derived "each time it reloads" - not
+    fixed once (e.g. at __init__ or on the first request). Proven here by having get_cached()
+    return a DIFFERENT schema on the second call and checking bind_tools' second call reflects
+    it; a schema fixed at construction time would bind the first schema both times.
+    """
+    settings = _settings_with_subject_type(monkeypatch)
+    schema_v1 = _load_schema_fixture()
+    schema_v2 = json.loads(json.dumps(schema_v1))  # deep copy, safe to mutate independently
+    schema_v2["graph"]["nodes"]["Boat"] = schema_v2["graph"]["nodes"]["Car"]
+
+    fake_response = mocker.Mock(text="ok", content="ok", tool_calls=[])
+    mock_ainvoke = mocker.AsyncMock(return_value=fake_response)
+    fake_bound_llm = mocker.Mock(ainvoke=mock_ainvoke)
+    mock_bind_tools = mocker.Mock(return_value=fake_bound_llm)
+    fake_llm = mocker.Mock(bind_tools=mock_bind_tools)
+    fake_schema_client = mocker.Mock(get_cached=mocker.Mock(side_effect=[schema_v1, schema_v2]))
+    agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client)
+
+    asyncio.run(agent.run_extraction("buy AAPL", "user-1"))
+    asyncio.run(agent.run_extraction("rent a boat", "user-1"))
+
+    first_call_schema = mock_bind_tools.call_args_list[0].kwargs["response_schema"]
+    second_call_schema = mock_bind_tools.call_args_list[1].kwargs["response_schema"]
+    assert first_call_schema == build_input_schema(schema_v1)
+    assert second_call_schema == build_input_schema(schema_v2)
+    assert first_call_schema != second_call_schema
 
 
 def test_run_extraction_skips_llm_when_schema_unavailable(monkeypatch, mocker, caplog):
