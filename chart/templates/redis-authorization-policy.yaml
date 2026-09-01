@@ -1,0 +1,41 @@
+{{- if and ((.Values.redis).enabled) ((.Values.istio).enabled) }}
+---
+# Not gated by its own istio.*.enabled toggle like the other Istio templates in this chart -
+# unlike those (opt-in hardening the deployer chooses per-environment), this one is required
+# plumbing whenever redis.enabled and istio.enabled are both true, not an optional extra: any
+# namespace enforcing a zero-trust default-deny AuthorizationPolicy baseline (ALLOW action, no
+# selector, no rules - matches every workload, permits nothing not explicitly listed) blocks the
+# app from ever reaching the chart-managed Redis without an explicit ALLOW policy scoped to the
+# redis pod, exactly like every other legitimate workload in such a namespace needs one. Without
+# this, redis.enabled's REDIS_URL would point at a Redis the app can never actually reach - a
+# confusing runtime-only failure (see service.validateRedisConfig's docstring for the class of
+# thing this file's validators try to catch before it gets this far; this one can't be caught at
+# template-render time since it depends on cluster-side policy, not this chart's own Values).
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ include "service.suffixedName" (list . "-redis-allow") | quote }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "service.labels" . | nindent 4 }}
+  {{- if .Values.annotations }}
+  annotations:
+    {{- include "service.annotations" $ | nindent 4 }}
+  {{- end }}
+spec:
+  action: ALLOW
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name | trunc 63 | trimSuffix "-" }}
+      app.kubernetes.io/name: redis
+      app.kubernetes.io/component: master
+  rules:
+    - from:
+        - source:
+            principals:
+              - {{ printf "cluster.local/ns/%s/sa/%s" .Release.Namespace (include "service.serviceAccountName" .) }}
+      to:
+        - operation:
+            ports:
+              - "6379"
+{{- end }}

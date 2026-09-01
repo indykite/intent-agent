@@ -30,7 +30,7 @@ jobs:
       - name: actions/checkout
         uses: indykite/ops-common/.github/actions/git-checkout@master # actions/checkout with dynamic fetch-depth resolution
 
-      # chart/charts/ isn't committed (see chart/Chart.lock's comment / .gitignore) - the
+      # chart/charts/ isn't committed (see chart/Chart.lock and .gitignore) - the
       # chart-publish composite action's own "Package chart" step (helm package) needs
       # dependencies already resolved, and it has no dependency-build step of its own. Resolve
       # strictly from chart/Chart.lock here (helm dependency build, not update) so the published

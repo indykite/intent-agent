@@ -33,7 +33,7 @@ repos:
         name: pre-commit/check-useless-excludes
 
   # Must run before the 'ops-common' Helm hooks below (helm-kubeconform, and helmlint further
-  # down) - chart/charts/ isn't committed (see chart/Chart.lock's comment / .gitignore), so
+  # down) - chart/charts/ isn't committed (see chart/Chart.lock and .gitignore), so
   # `helm template`/`helm lint` would otherwise hard-fail with "found in Chart.yaml, but missing
   # in charts/ directory". `helm dependency build` (not `update`) resolves strictly from
   # chart/Chart.lock - no re-resolution, so this can't silently drift to a newer chart version.

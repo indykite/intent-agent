@@ -66,9 +66,10 @@ app:
 
 # Chart-managed Redis (Bitnami subchart, oci://registry-1.docker.io/bitnamicharts/redis) - opt-in,
 # for self-contained/dev/ephemeral deployments only. Production/shared environments should keep
-# using an externally managed Redis via app.redisUrlSecretRef instead - it takes precedence over
-# this block when both are set (see service.validateCacheBackend / the REDIS_URL env logic in
-# deployment.yaml). Only architecture: standalone is supported - see service.validateRedisConfig.
+# using an externally managed Redis via app.redisUrlSecretRef instead - the two are mutually
+# exclusive, not layered: app.redisUrlSecretRef.name/key must be empty whenever redis.enabled is
+# true, or service.validateRedisConfig fails fast (see deployment.yaml's REDIS_URL env logic).
+# Only architecture: standalone is supported - see service.validateRedisConfig.
 #
 # auth.enabled: false because the derived REDIS_URL (service.redisHost) can't safely embed a
 # generated password at template time (would require `lookup`, which breaks `helm
@@ -95,6 +96,7 @@ redis:
   architecture: standalone
   auth:
     enabled: false
+  # renovate: datasource=docker depName=bitnami/redis
   image:
     tag: latest
     digest: "sha256:d75bda00b778ad5e03a639ec36e00f6665a5d7e0f35a6250be5b103fb2117275"

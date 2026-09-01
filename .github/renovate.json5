@@ -7,12 +7,28 @@
   "enabledManagers": [
     "github-actions",
     "dockerfile",
-    "pep621"
+    "pep621",
+    "helmv3",
+    "custom.regex"
   ],
   "ignorePaths": [],
   "ignorePresets": [
     "group:monorepos",
     "group:recommended"
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Track the pinned bitnami/redis image digest for the chart-managed Redis subchart",
+      "managerFilePatterns": [
+        "/(?:^|\\/)chart\\/values\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s*\\n\\s*image:\\s*\\n\\s*tag:\\s*(?<currentValue>\\S+)\\s*\\n\\s*digest:\\s*[\"']?(?<currentDigest>sha256:[a-f0-9]+)[\"']?"
+      ],
+      "datasourceTemplate": "{{{datasource}}}",
+      "depNameTemplate": "{{{depName}}}"
+    }
   ],
   // "All rules are applied, so this effectively means it’s the last matching group that takes effect"
   "packageRules": [
