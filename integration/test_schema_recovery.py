@@ -1,7 +1,6 @@
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
 from unittest.mock import AsyncMock
 
 import jwt
@@ -12,9 +11,9 @@ from starlette.testclient import TestClient
 
 from indykite.intent_agent.agent import build_app
 from indykite.intent_agent.config import Settings
+from integration.schema_fixtures import schema_with_stocks
 
-_SCHEMA_FIXTURE_PATH = Path(__file__).parent.parent / "test" / "fixtures" / "mock_ikg_schema.json"
-_SCHEMA_FIXTURE = json.loads(_SCHEMA_FIXTURE_PATH.read_text())
+_SCHEMA_FIXTURE = schema_with_stocks()
 _TOOL_CALL_ROUND_TRIPS = 2  # one activate_skill tool call, one final answer
 
 # A real (unsigned, alg=none) JWT - SchemaClient requires any non-blank app-agent key to be a

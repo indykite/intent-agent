@@ -88,6 +88,18 @@
           "type": "integer",
           "minimum": 1
         },
+        "llmTimeoutSeconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "requestTimeoutSeconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "validationMaxRetries": {
+          "type": "integer",
+          "minimum": 0
+        },
         "indykiteBaseUrl": {
           "type": "string",
           "format": "uri",

@@ -1,13 +1,10 @@
-"""Schema-derived subject-type validation and deterministic subject binding (TDD 4.7)."""
+"""Schema-derived validation of the LLM's output (TDD 4.8) and deterministic subject binding (TDD 4.7)."""
 
 import json
-import logging
 import re
 from typing import Any
 
-from indykite.intent_agent.errors import SubjectTypeMismatchError, malformed_response_error, no_intent_error
-
-logger = logging.getLogger(__name__)
+from indykite.intent_agent.errors import IntentValidationError, SubjectTypeMismatchError, no_intent_error
 
 
 def _node_types(schema: dict[str, Any]) -> set[str]:
@@ -16,6 +13,22 @@ def _node_types(schema: dict[str, Any]) -> set[str]:
     if not isinstance(nodes, dict):
         return set()
     return set(nodes.keys())
+
+
+def _edge_relations(schema: dict[str, Any]) -> set[str]:
+    """Return every distinct edge relation (action name) defined in the given schema.
+
+    Only non-empty strings count - a malformed relation (e.g. a number) is skipped, the same
+    rule as input_schema._edge_relations so the enum and this check agree on the vocabulary.
+    """
+    edges = schema.get("graph", {}).get("edges", [])
+    if not isinstance(edges, list):
+        return set()
+    return {
+        relation
+        for edge in edges
+        if isinstance(edge, dict) and isinstance(relation := edge.get("relation"), str) and relation
+    }
 
 
 _BOOTSTRAP_NODE_TYPE = "_Application"
@@ -49,34 +62,88 @@ def _blank(value: object) -> bool:
     return not isinstance(value, str) or not value.strip()
 
 
-def _evaluation_unresolved(evaluation: object) -> bool:
-    """True if the LLM attempted subject.type/action.name/resource.type but couldn't
-    correlate it to the schema's enum vocabulary (input_schema.build_input_schema).
+def _vocabulary_reason(field: str, value: object, allowed: set[str]) -> str | None:
+    """Describe why `value` isn't acceptable for `field`, or None if it is. One line of the
+    `reason` in errors.validation_feedback_error - not an error response itself.
+
+    A blank value means the LLM tried and failed to correlate the field to the schema; a
+    non-blank value outside `allowed` is the post-assembly schema-membership check itself
+    (TDD 4.8). An empty `allowed` set skips the membership check - the same no-op rule as
+    input_schema._constrain_to_enum, since a schema with nodes but no edges yet leaves
+    action.name legitimately unconstrained.
+    """
+    if _blank(value):
+        return f"{field} is missing or blank"
+    if allowed and value not in allowed:
+        return f"{field} {value!r} is not defined in the data schema"
+    return None
+
+
+def _evaluation_errors(evaluation: object, node_types: set[str], edge_relations: set[str]) -> list[str]:
+    """Return every reason this evaluation can't be accepted, empty if it can.
 
     Must run before _bind_subject, which unconditionally overwrites subject.type/id
     regardless of what the LLM produced. A key entirely absent (e.g. no `subject` for
     Access Evaluation, no `action` for Action Search - see SKILL.md) is a legitimate
     per-evaluation-kind omission, not a failure; a key present but malformed (wrong
-    type, or a blank/whitespace-only type/name inside it) means the LLM tried and
-    failed to correlate it. subject is exempt from the malformed-shape check (though
-    not the blank-string one) since _bind_subject replaces it outright either way.
+    type, or a blank/off-schema type/name inside it) means the LLM tried and failed to
+    correlate it. subject is exempt from the malformed-shape check (though not the
+    blank/off-schema one) since _bind_subject replaces it outright either way.
     """
     if not isinstance(evaluation, dict):
-        return True
+        return ["evaluation is not an object"]
+    errors: list[str] = []
     resource = evaluation.get("resource")
-    if not isinstance(resource, dict) or _blank(resource.get("type")):
-        return True
+    if not isinstance(resource, dict):
+        errors.append("resource is missing or not an object")
+    else:
+        errors.append(_vocabulary_reason("resource.type", resource.get("type"), node_types))
     action = evaluation.get("action")
-    if action is not None and (not isinstance(action, dict) or _blank(action.get("name"))):
-        return True
+    if action is not None:
+        if not isinstance(action, dict):
+            errors.append("action is not an object")
+        else:
+            errors.append(_vocabulary_reason("action.name", action.get("name"), edge_relations))
     subject = evaluation.get("subject")
-    return isinstance(subject, dict) and _blank(subject.get("type"))
+    if isinstance(subject, dict):
+        errors.append(_vocabulary_reason("subject.type", subject.get("type"), node_types))
+    return [error for error in errors if error]
+
+
+def validate_evaluations(schema: dict[str, Any], evaluations: list[object]) -> list[str]:
+    """Check every evaluation's subject.type / action.name / resource.type against the
+    schema's node types and edge relations (TDD 4.8 post-assembly check). Returns one
+    message per problem, prefixed with the evaluation's index so the LLM can tell which
+    entry to fix (they become the `reason` lines of errors.validation_feedback_error);
+    empty means the list is acceptable.
+    """
+    node_types = _node_types(schema)
+    edge_relations = _edge_relations(schema)
+    return [
+        f"evaluations[{index}]: {error}"
+        for index, evaluation in enumerate(evaluations)
+        for error in _evaluation_errors(evaluation, node_types, edge_relations)
+    ]
+
+
+def _parse_llm_json(llm_text: str) -> object:
+    """Parse the LLM's text as JSON (any JSON value), unwrapping a ```json fence first if present."""
+    text = llm_text.strip()
+    json_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+    if json_match:
+        text = json_match.group(1).strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        message = f"the response is not valid JSON ({exc.msg} at position {exc.pos})"
+        raise IntentValidationError([message]) from exc
 
 
 def normalize_intent_response(
     llm_text: str,
     original_prompt: str,
     *,
+    schema: dict[str, Any],
     subject_id: str | None,
     subject_type: str,
 ) -> str:
@@ -84,27 +151,31 @@ def normalize_intent_response(
 
     Assumes the schema is available - run_extraction checks that upfront and never
     reaches this far (or the LLM) otherwise. The LLM's output is constrained to
-    {prompt, evaluations} an empty evaluations list is the only "couldn't extract"
-    signal to handle here; Errors will not be LLM-supplied.
+    {prompt, evaluations}; an empty evaluations list is the LLM's legitimate "nothing
+    coherent" signal (SKILL.md) and becomes no_intent_error without a retry. Anything
+    else that can't be accepted - not JSON, or an off-schema/blank subject.type /
+    action.name / resource.type - raises IntentValidationError so run_extraction can
+    feed the errors back to the LLM and retry (TDD 4.8, 4.9).
     """
-    text = llm_text.strip()
-    json_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
-    if json_match:
-        text = json_match.group(1).strip()
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        logger.exception("LLM produced non-JSON output for prompt %r: %.500s", original_prompt, text)
-        return json.dumps(malformed_response_error(original_prompt), indent=2, ensure_ascii=False)
-    if not isinstance(data, dict):
+    data = _parse_llm_json(llm_text)
+    if isinstance(data, list):
         # A bare JSON array is a plausible LLM mistake (forgetting the {"prompt", "evaluations"}
         # wrapper) - use its items as the evaluations directly instead of nesting the whole
         # array as a single non-dict "evaluation" that _bind_subject would then skip.
-        data = {"prompt": original_prompt, "evaluations": data if isinstance(data, list) else []}
+        data = {"prompt": original_prompt, "evaluations": data}
+    if not isinstance(data, dict):
+        raise IntentValidationError(["the response is not a JSON object"])
     data.setdefault("prompt", original_prompt)
     evaluations = data.get("evaluations")
-    if not evaluations or any(_evaluation_unresolved(evaluation) for evaluation in evaluations):
+    # Only an actual empty array is the "nothing coherent" signal - any other falsy or
+    # non-list value ({}, 0, "", null, missing) is malformed output to retry, not a no-intent.
+    if not isinstance(evaluations, list):
+        raise IntentValidationError(["evaluations is missing or not an array"])
+    if not evaluations:
         return json.dumps(no_intent_error(original_prompt), indent=2, ensure_ascii=False)
+    errors = validate_evaluations(schema, evaluations)
+    if errors:
+        raise IntentValidationError(errors)
 
     _bind_subject(data, subject_id=subject_id, subject_type=subject_type)
     return json.dumps(data, indent=2, ensure_ascii=False)

@@ -70,6 +70,12 @@ spec:
               value: {{ .Values.app.toolCallMaxIterations | quote }}
             - name: SCHEMA_PREVIEW_CHARS
               value: {{ .Values.app.schemaPreviewChars | quote }}
+            - name: LLM_TIMEOUT_SECONDS
+              value: {{ .Values.app.llmTimeoutSeconds | quote }}
+            - name: REQUEST_TIMEOUT_SECONDS
+              value: {{ .Values.app.requestTimeoutSeconds | quote }}
+            - name: VALIDATION_MAX_RETRIES
+              value: {{ .Values.app.validationMaxRetries | quote }}
             - name: INDYKITE_BASE_URL
               value: {{ .Values.app.indykiteBaseUrl | quote }}
             - name: SCHEMA_FETCH_TIMEOUT_SECONDS
