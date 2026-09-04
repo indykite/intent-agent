@@ -72,10 +72,10 @@ app:
 # Only architecture: standalone is supported - see service.validateRedisConfig.
 #
 # auth.enabled: false because the derived REDIS_URL (service.redisHost) can't safely embed a
-# generated password at template time (would require `lookup`, which breaks `helm
-# template`/CI rendering with no live cluster). If you need auth, point app.redisUrlSecretRef at a
-# secret holding a full authenticated DSN instead of relying on derivation -
-# service.validateRedisConfig fails fast if auth.enabled is true without that secret set.
+# generated password at template time (would require `lookup`, which breaks `helm template`/CI
+# rendering with no live cluster). This chart does not support using the chart-managed Redis with
+# auth enabled; if you need an authenticated Redis, keep redis.enabled: false and set
+# app.redisUrlSecretRef to a Secret containing a full authenticated REDIS_URL (DSN).
 #
 # master.persistence.enabled: false because this Redis only backs the app's schema cache
 # (dogpile.cache, see agent.py) - losing cache contents on pod restart is harmless, and skipping
