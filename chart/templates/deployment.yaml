@@ -1,4 +1,5 @@
 {{- include "service.validateCacheBackend" . }}
+{{- include "service.validateRedisConfig" . }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -83,6 +84,9 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.app.redisUrlSecretRef.name }}
                   key: {{ .Values.app.redisUrlSecretRef.key }}
+            {{- else if ((.Values.redis).enabled) }}
+            - name: REDIS_URL
+              value: {{ printf "redis://%s:6379" (include "service.redisHost" .) | quote }}
             {{- end }}
             - name: INTROSPECT_URL
               value: {{ .Values.app.introspectUrl | quote }}

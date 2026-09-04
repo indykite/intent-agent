@@ -43,3 +43,8 @@ gha-creds-*.json
 
 # Agent Development Kit
 .adk/
+
+# Vendored Helm chart dependencies - fetched fresh from chart/Chart.lock by the
+# helm-dependency-build pre-commit hook / CI (see .pre-commit-config.yaml,
+# .github/workflows/chart-publish.yaml) rather than committed. chart/Chart.lock IS committed.
+chart/charts/

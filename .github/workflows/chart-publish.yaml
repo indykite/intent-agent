@@ -30,6 +30,19 @@ jobs:
       - name: actions/checkout
         uses: indykite/ops-common/.github/actions/git-checkout@master # actions/checkout with dynamic fetch-depth resolution
 
+      # chart/charts/ isn't committed (see chart/Chart.lock and .gitignore) - the
+      # chart-publish composite action's own "Package chart" step (helm package) needs
+      # dependencies already resolved, and it has no dependency-build step of its own. Resolve
+      # strictly from chart/Chart.lock here (helm dependency build, not update) so the published
+      # package embeds the redis subchart without silently drifting to a newer version.
+      - name: Install Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.2.4 # renovate: datasource=github-releases,depName=helm/helm
+
+      - name: Resolve chart dependencies
+        run: helm dependency build chart/
+
       - name: Publish to Artifact Registry
         uses: indykite/ops-common/.github/actions/chart-publish@2bad817f6a49b2c70bff876916615a7f6d5c2125 # master
         with:

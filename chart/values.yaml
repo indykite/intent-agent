@@ -64,6 +64,46 @@ app:
   #      secretName: app-secret
   #      secretKey: foo-key
 
+# Chart-managed Redis (Bitnami subchart, oci://registry-1.docker.io/bitnamicharts/redis) - opt-in,
+# for self-contained/dev/ephemeral deployments only. Production/shared environments should keep
+# using an externally managed Redis via app.redisUrlSecretRef instead - the two are mutually
+# exclusive, not layered: app.redisUrlSecretRef.name/key must be empty whenever redis.enabled is
+# true, or service.validateRedisConfig fails fast (see deployment.yaml's REDIS_URL env logic).
+# Only architecture: standalone is supported - see service.validateRedisConfig.
+#
+# auth.enabled: false because the derived REDIS_URL (service.redisHost) can't safely embed a
+# generated password at template time (would require `lookup`, which breaks `helm template`/CI
+# rendering with no live cluster). This chart does not support using the chart-managed Redis with
+# auth enabled; if you need an authenticated Redis, keep redis.enabled: false and set
+# app.redisUrlSecretRef to a Secret containing a full authenticated REDIS_URL (DSN).
+#
+# master.persistence.enabled: false because this Redis only backs the app's schema cache
+# (dogpile.cache, see agent.py) - losing cache contents on pod restart is harmless, and skipping
+# the PVC avoids depending on a StorageClass being available in ephemeral/dev clusters (e.g. plain
+# kind). Flip to true if you want the cache to survive pod restarts.
+#
+# The app pod can already reach this Redis pod under the default (permissive) networkPolicy.egress
+# - if you lock networkPolicy.egress down per-environment, add a rule for the Redis pod too.
+#
+# image.digest pins docker.io/bitnami/redis to a specific build, same as this repo pins every
+# other image (see docker-compose.yml's redis service, and Dockerfile's base images). Required
+# here, not just convention: Bitnami's free-tier registry for this image no longer publishes
+# dated/versioned tags at all (confirmed - only "latest" remains), so the chart's own upstream
+# default (image.tag: latest) would otherwise float to whatever Bitnami pushes next with no
+# warning. Re-pin by re-resolving `crane digest docker.io/bitnami/redis:latest` when bumping.
+redis:
+  enabled: false
+  architecture: standalone
+  auth:
+    enabled: false
+  # renovate: datasource=docker depName=bitnami/redis
+  image:
+    tag: latest
+    digest: "sha256:d75bda00b778ad5e03a639ec36e00f6665a5d7e0f35a6250be5b103fb2117275"
+  master:
+    persistence:
+      enabled: false
+
 fullnameOverride: ""
 
 service:
