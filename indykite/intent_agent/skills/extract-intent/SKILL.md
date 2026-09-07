@@ -1,6 +1,6 @@
 ---
 name: extract-intent
-description: Extract intent from a prompt as AuthZEN-compliant evaluation or search requests. Uses the data schema to map entities, thus DigitalTwin nodes may be Subjects, edges can be Actions or context, all entities can be Resources. Subject id comes from the access token's sub claim (except Subject Search). Context carries filters, parameters, and extra info. Returns a JSON array of AuthZEN statements plus the original prompt.
+description: Extract intent from a prompt as AuthZEN-compliant evaluation or search requests. Uses the data schema to map entities, thus any node type may be a Subject or a Resource, and edges can be Actions or context. Subject type is inferred from the schema and prompt; subject id comes from the access token's sub claim (except Subject Search). Context carries filters, parameters, and extra info. Returns a JSON array of AuthZEN statements plus the original prompt.
 tags:
   - intent
   - authzen
@@ -25,9 +25,13 @@ Intent is expressed as a **Subject** desiring to perform an **Action** (or set o
 
 ## Subject binding
 
-Omit the `subject` key entirely for Access Evaluation, Resource Search, and Action Search - the system fills it in automatically after extraction, from the validated access token and the deployment's configured subject type. Any value you provide is ignored.
+Every AuthZEN request includes a `subject` object. You determine `subject.type` yourself from the data schema - any node type is a valid subject type.
 
-**Exception**: For **Subject Search** ("Who can do Y on Z?"), you must still determine `subject.type` yourself (the DigitalTwin node label of the type being searched for) and omit `subject.id` (leave it blank)—the search discovers subjects, so there's no caller identity to bind.
+For **Access Evaluation, Resource Search, and Action Search**, `subject.type` represents the *caller's own identity*: infer it from the prompt's phrasing (first-person framing, a mentioned role or department) and the schema's node types, picking the most likely type - the same way you'd resolve an ambiguous resource type.
+
+Always omit `subject.id` - the system binds it deterministically from the validated access token after extraction; any value you provide is ignored.
+
+**Exception**: For **Subject Search** ("Who can do Y on Z?"), `subject.type` instead represents the type being searched for, not the caller's identity. Still omit `subject.id` (leave it blank)—the search discovers subjects, so there's no caller identity to bind.
 
 ## Context field
 
@@ -41,9 +45,8 @@ Every AuthZEN request can include a `context` object. Use it for:
 
 Use the provided data schema (JSON Graph Format) to identify entity types:
 
-- **Nodes with `system_labels` containing "DigitalTwin"** → may be **Subjects** (type = node label; see Subject binding above for how `subject.id`/`subject.type` are populated)
+- **Any node type** → can be a **Subject** (type = node label; see Subject binding above for how `subject.type`/`subject.id` are determined) and/or a **Resource** (type = node label, id = extracted identifier)
 - **Edge labels** → can be **Actions** (use `name` in AuthZEN Action) or provide **context**
-- **All node types** (from `user_defined_labels`) → can be **Resources** (type = node label, id = extracted identifier)
 
 ## Step 2: Construct AuthZEN statements
 
@@ -55,6 +58,7 @@ When the prompt asks "Can X do Y on Z?" use the Evaluation format:
 
 ```json
 {
+  "subject": { "type": "<entity_type>" },
   "action": { "name": "<action_name>" },
   "resource": { "type": "<entity_type>", "id": "<id>" },
   "context": {}
@@ -67,6 +71,7 @@ When the prompt asks "What can X do?" or "Which resources can X access?" omit `r
 
 ```json
 {
+  "subject": { "type": "<entity_type>" },
   "action": { "name": "<action_name>" },
   "resource": { "type": "<entity_type>" },
   "context": { "filters": "<criteria from prompt>" }
@@ -92,6 +97,7 @@ When the prompt asks "What can X do on Z?" omit the `action` key entirely:
 
 ```json
 {
+  "subject": { "type": "<entity_type>" },
   "resource": { "type": "<entity_type>", "id": "<id>" },
   "context": {}
 }
@@ -107,12 +113,14 @@ User prompt: *"what policy documents contain information regarding refunds?"*
 
 → **Resource Search**
 
+- Subject.type: the caller's identity type - the prompt gives no explicit cue here, so pick the schema's most plausible caller-identity node type
 - Action: Read
 - Resource.type: Document
 - Context: filters/criteria from the prompt, e.g. `resource.name` contains "refund policy" OR `resource.description` contains "refund policy"
 
 ```json
 {
+  "subject": { "type": "<entity_type>" },
   "action": { "name": "read" },
   "resource": { "type": "Document" },
   "context": {
@@ -141,6 +149,6 @@ If the prompt doesn't match the data schema, or is too unclear to map to a Subje
 
 ## Edge cases
 
-- **Ambiguous entity types**: Use the schema to pick the most likely type; prefer DigitalTwin for people/users
+- **Ambiguous entity types**: Use the schema to pick the most likely type. For `subject.type` specifically, infer the caller's identity from the prompt's phrasing (first-person framing, a mentioned role or department) when possible, otherwise pick the node type that most plausibly represents an actor making requests
 - **Unknown actions**: Map to the closest edge label from the schema - action.name is constrained to the schema's edge labels, so an invented name (e.g. "read") isn't a valid fallback; if nothing in the schema is a reasonable match, treat it as no coherent intent and return an empty `evaluations` array instead
 - **Multi-part requests**: Produce multiple AuthZEN objects in the evaluations array

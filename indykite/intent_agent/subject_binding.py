@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any
 
-from indykite.intent_agent.errors import IntentValidationError, SubjectTypeMismatchError, no_intent_error
+from indykite.intent_agent.errors import IntentValidationError, no_intent_error
 
 
 def _node_types(schema: dict[str, Any]) -> set[str]:
@@ -39,22 +39,10 @@ def schema_has_no_node_types(schema: dict[str, Any]) -> bool:
 
     _Application (the calling app itself) is always present in the graph, even before any
     real data model is configured - so its presence alone doesn't mean the data model has
-    been populated. Ignoring it, an empty remainder means nothing has been modeled yet, not
-    that SUBJECT_TYPE itself is misconfigured (SubjectTypeMismatchError, raised when at least
-    one *other* node type exists and SUBJECT_TYPE just isn't one of them) - callers should
-    treat this as a distinct "not yet populated" state, not a fetch failure or a mismatch.
+    been populated. Ignoring it, an empty remainder means nothing has been modeled yet -
+    callers should treat this as a distinct "not yet populated" state, not a fetch failure.
     """
     return not (_node_types(schema) - {_BOOTSTRAP_NODE_TYPE})
-
-
-def validate_subject_type(schema: dict[str, Any] | None, subject_type: str) -> None:
-    """Raise if subject_type isn't one of the schema's node types."""
-    if schema is None:
-        return
-    types = _node_types(schema)
-    if subject_type not in types:
-        message = f"SUBJECT_TYPE {subject_type!r} is not a node type in the schema."
-        raise SubjectTypeMismatchError(message)
 
 
 def _blank(value: object) -> bool:
@@ -82,13 +70,15 @@ def _vocabulary_reason(field: str, value: object, allowed: set[str]) -> str | No
 def _evaluation_errors(evaluation: object, node_types: set[str], edge_relations: set[str]) -> list[str]:
     """Return every reason this evaluation can't be accepted, empty if it can.
 
-    Must run before _bind_subject, which unconditionally overwrites subject.type/id
-    regardless of what the LLM produced. A key entirely absent (e.g. no `subject` for
-    Access Evaluation, no `action` for Action Search - see SKILL.md) is a legitimate
-    per-evaluation-kind omission, not a failure; a key present but malformed (wrong
-    type, or a blank/off-schema type/name inside it) means the LLM tried and failed to
-    correlate it. subject is exempt from the malformed-shape check (though not the
-    blank/off-schema one) since _bind_subject replaces it outright either way.
+    resource and subject are mandatory in every evaluation kind: resource.type is core to
+    every AuthZEN evaluation (PRD), and subject.type is now the LLM's own call - it decides
+    which node type represents the subject (the caller's identity for every kind but Subject
+    Search, where it's the type being searched for - see SKILL.md), so an evaluation without
+    one is malformed, not a legitimate omission. action is the one field still optional at
+    the key level: Action Search omits it entirely (SKILL.md) - a key present but malformed
+    (wrong type, or a blank/off-schema name inside it) means the LLM tried and failed to
+    correlate it. subject.id is untouched here - _bind_subject binds it deterministically
+    from the validated token afterward, regardless of what the LLM produced.
     """
     if not isinstance(evaluation, dict):
         return ["evaluation is not an object"]
@@ -98,15 +88,17 @@ def _evaluation_errors(evaluation: object, node_types: set[str], edge_relations:
         errors.append("resource is missing or not an object")
     else:
         errors.append(_vocabulary_reason("resource.type", resource.get("type"), node_types))
+    subject = evaluation.get("subject")
+    if not isinstance(subject, dict):
+        errors.append("subject is missing or not an object")
+    else:
+        errors.append(_vocabulary_reason("subject.type", subject.get("type"), node_types))
     action = evaluation.get("action")
     if action is not None:
         if not isinstance(action, dict):
             errors.append("action is not an object")
         else:
             errors.append(_vocabulary_reason("action.name", action.get("name"), edge_relations))
-    subject = evaluation.get("subject")
-    if isinstance(subject, dict):
-        errors.append(_vocabulary_reason("subject.type", subject.get("type"), node_types))
     return [error for error in errors if error]
 
 
@@ -145,7 +137,6 @@ def normalize_intent_response(
     *,
     schema: dict[str, Any],
     subject_id: str | None,
-    subject_type: str,
 ) -> str:
     """Ensure the response is valid JSON with prompt/evaluations, wrap it if needed.
 
@@ -177,16 +168,17 @@ def normalize_intent_response(
     if errors:
         raise IntentValidationError(errors)
 
-    _bind_subject(data, subject_id=subject_id, subject_type=subject_type)
+    _bind_subject(data, subject_id=subject_id)
     return json.dumps(data, indent=2, ensure_ascii=False)
 
 
-def _bind_subject(data: dict[str, Any], *, subject_id: str | None, subject_type: str) -> None:
-    """Force subject.id/subject.type on every evaluation from the validated token and
-    deployment config, not whatever the LLM produced - closes the prompt-injection
-    surface where the LLM could otherwise set the subject itself.
+def _bind_subject(data: dict[str, Any], *, subject_id: str | None) -> None:
+    """Force subject.id on every evaluation from the validated token, not whatever the LLM
+    produced - closes the prompt-injection surface where the LLM could otherwise set its own
+    identity. subject.type is untouched here: the LLM decides it (validated against the
+    schema's node types by validate_evaluations before this runs), not deployment config.
 
-    TODO: Subject Search evaluations use subject.type as a search parameter, not the
+    TODO: Subject Search evaluations use subject.id as a search parameter's absence, not the
     caller's own identity, and must not get this override - deferred to a later task.
     """
     for evaluation in data.get("evaluations", []):
@@ -194,9 +186,7 @@ def _bind_subject(data: dict[str, Any], *, subject_id: str | None, subject_type:
             continue
         subject = evaluation.get("subject")
         if not isinstance(subject, dict):
-            subject = {}
-            evaluation["subject"] = subject
-        subject["type"] = subject_type
+            continue
         if subject_id:
             subject["id"] = subject_id
         else:

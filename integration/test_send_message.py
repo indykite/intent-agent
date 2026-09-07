@@ -18,7 +18,6 @@ def test_gemini_send_message_end_to_end(monkeypatch, mocker, tmp_path):
     monkeypatch.setenv("INTROSPECT_URL", "https://idp.example.com/introspect")
     monkeypatch.setenv("INTROSPECT_CLIENT_ID", "client-id")
     monkeypatch.setenv("INTROSPECT_CLIENT_SECRET", "client-secret")
-    monkeypatch.setenv("SUBJECT_TYPE", "Customer")
     monkeypatch.setenv("INDYKITE_BASE_URL", "https://ikg.example.com")
     monkeypatch.setenv("IK_APP_AGENT_KEY", "test-app-agent-key")
     monkeypatch.setenv("AUDIT_DELIVERY", "file")
@@ -47,7 +46,8 @@ def test_gemini_send_message_end_to_end(monkeypatch, mocker, tmp_path):
     final_response = AIMessage(
         content=(
             '{"prompt": "Can I buy 50 shares of AAPL?", "evaluations": '
-            '[{"action": {"name": "buy"}, "resource": {"type": "Stock", "id": "AAPL"}}]}'
+            '[{"subject": {"type": "Customer"}, "action": {"name": "buy"}, '
+            '"resource": {"type": "Stock", "id": "AAPL"}}]}'
         ),
         tool_calls=[],
     )

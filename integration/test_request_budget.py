@@ -29,7 +29,6 @@ def test_hung_llm_call_is_cut_off_within_request_budget(monkeypatch, mocker, tmp
     monkeypatch.setenv("INTROSPECT_URL", "https://idp.example.com/introspect")
     monkeypatch.setenv("INTROSPECT_CLIENT_ID", "client-id")
     monkeypatch.setenv("INTROSPECT_CLIENT_SECRET", "client-secret")
-    monkeypatch.setenv("SUBJECT_TYPE", "Customer")
     monkeypatch.setenv("INDYKITE_BASE_URL", "https://ikg.example.com")
     monkeypatch.setenv("IK_APP_AGENT_KEY", "test-app-agent-key")
     monkeypatch.setenv("AUDIT_DELIVERY", "file")

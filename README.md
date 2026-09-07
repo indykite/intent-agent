@@ -144,7 +144,7 @@ the steps below.
 
 `.env.example` leaves several settings blank that `Settings` requires at startup - set at least
 `GEMINI_API_KEY`, `INDYKITE_BASE_URL`, `IK_APP_AGENT_KEY`, `INTROSPECT_URL`,
-`INTROSPECT_CLIENT_ID`, `INTROSPECT_CLIENT_SECRET`, and `SUBJECT_TYPE` before starting (see
+`INTROSPECT_CLIENT_ID`, and `INTROSPECT_CLIENT_SECRET` before starting (see
 "Testing end-to-end against real RC + Redis + Gemini" below for where to get real values, or a
 local introspection stub, for the introspection/schema settings):
 
@@ -234,13 +234,16 @@ cache, and real Gemini calls:
 
    Run it, then set `INTROSPECT_URL=http://127.0.0.1:9001/introspect` with any
    `INTROSPECT_CLIENT_ID`/`INTROSPECT_CLIENT_SECRET`.
-4. Send a prompt that actually matches your graph's schema. `intent-agent`'s subject
-   is always auto-bound to the caller (from the introspection `sub` claim, per
-   `SUBJECT_TYPE`), never from prompt text - a third-person prompt like "what can
-   user X buy" doesn't test what it looks like it tests. Prefer first-person prompts,
-   and check the platform schema for resource types that actually exist before
-   assuming an entity is graph-modeled (e.g. an individual stock ticker usually
-   isn't a node - that data tends to come from an external source instead).
+4. Send a prompt that actually matches your graph's schema. `intent-agent`'s
+   `subject.id` is always auto-bound to the caller from the introspection `sub`
+   claim, never from prompt text; `subject.type` is the LLM's own call, inferred
+   from the prompt and the schema's node types - a third-person prompt like "what
+   can user X buy" doesn't test what it looks like it tests, since `subject.id`
+   still resolves to the caller's own token regardless of who the prompt names.
+   Prefer first-person prompts, and check the platform schema for resource types
+   that actually exist before assuming an entity is graph-modeled (e.g. an
+   individual stock ticker usually isn't a node - that data tends to come from an
+   external source instead).
 
 ### Testing end-to-end against real RC + Redis + Gemini with scripts
 

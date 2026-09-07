@@ -54,21 +54,15 @@ from indykite.intent_agent.audit.sender import Sender, build_sender
 from indykite.intent_agent.config import Settings
 from indykite.intent_agent.errors import (
     IntentValidationError,
-    SubjectTypeMismatchError,
     llm_timeout_error,
     no_intent_error,
     schema_not_populated_error,
     schema_unavailable_error,
-    subject_type_mismatch_error,
     validation_feedback_error,
 )
 from indykite.intent_agent.input_schema import build_input_schema
 from indykite.intent_agent.schema import SchemaClient
-from indykite.intent_agent.subject_binding import (
-    normalize_intent_response,
-    schema_has_no_node_types,
-    validate_subject_type,
-)
+from indykite.intent_agent.subject_binding import normalize_intent_response, schema_has_no_node_types
 
 logger = logging.getLogger(__name__)
 
@@ -231,12 +225,7 @@ class IntentAgent:
         get_cached_schema() on every request until the schema is populated. A schema that
         fetches successfully but has no node types beyond the platform's own bootstrap node
         (data model not populated - see schema_has_no_node_types) gets the same "keep
-        retrying" treatment, logged distinctly from an actual fetch failure. If the schema
-        *is* available and populated at cold start, SUBJECT_TYPE is checked here too - purely
-        for an early signal in the startup logs, since otherwise a misconfigured SUBJECT_TYPE
-        would go unnoticed until the first real request hits it (run_extraction re-checks it
-        per request regardless, so this is a diagnostic convenience, not the enforcement
-        point).
+        retrying" treatment, logged distinctly from an actual fetch failure.
         """
         self._schema_client.preload()
         schema = self.get_cached_schema()
@@ -251,10 +240,6 @@ class IntentAgent:
                 "will keep retrying on every request until it's populated",
             )
             return
-        try:
-            validate_subject_type(schema, self.settings.subject_type)
-        except SubjectTypeMismatchError:
-            logger.exception("SUBJECT_TYPE %r invalid for the schema fetched at cold start", self.settings.subject_type)
 
     def get_cached_schema(self) -> dict[str, Any] | None:
         """Return the cached schema, fetching it once if not already cached."""
@@ -428,18 +413,17 @@ class IntentAgent:
         """Run the LLM tool-call loop for one prompt, return the final response and its audit
         classification (ExtractionResult).
 
-        Checks schema availability and SUBJECT_TYPE validity upfront, before any LLM call -
-        neither can be verified without the schema, so there's no point spending an LLM call
-        (or several, across tool-call iterations) on a result that would just be discarded
-        afterward. A schema-unavailable request never populates the cache as a side effect of
+        Checks schema availability upfront, before any LLM call - entity types can't be mapped
+        without the schema, so there's no point spending an LLM call (or several, across
+        tool-call iterations) on a result that would just be discarded afterward. A
+        schema-unavailable request never populates the cache as a side effect of
         failing - get_cached_schema() retries the fetch itself on every call while the cache is
         empty, so the next request tries again on its own. A schema that fetches successfully
         but has no node types beyond the platform's own _Application node (data model not
-        populated - see schema_has_no_node_types) is a distinct third state from both that and
-        an actual SUBJECT_TYPE mismatch: there's nothing yet to validate SUBJECT_TYPE against,
-        so it isn't a misconfiguration, but the schema itself isn't unreachable either. Both
-        the unavailable and not-populated states self-heal without a restart, the same way any
-        cached schema does, once a refresh (per-request retry, or the next request after
+        populated - see schema_has_no_node_types) is a distinct state from that: there's
+        nothing yet to map entity types against, but the schema itself isn't unreachable
+        either. Both states self-heal without a restart, the same way any cached schema
+        does, once a refresh (per-request retry, or the next request after
         SCHEMA_REFRESH_TTL_MINUTES elapses) picks up a real response.
 
         Binds tools/response_mime_type/response_schema here, per request, rather than once on
@@ -454,31 +438,18 @@ class IntentAgent:
         schema = self.get_cached_schema()
         if schema is None:
             logger.error(
-                "Schema unavailable - cannot verify subject_type %r; skipping extraction for prompt %r",
-                self.settings.subject_type,
+                "Schema unavailable - cannot map entity types; skipping extraction for prompt %r",
                 prompt,
             )
             return ExtractionResult.failed(Outcome.ERROR, schema_unavailable_error(prompt))
         version = schema_version(schema)
         if schema_has_no_node_types(schema):
             logger.error(
-                "Schema fetched but the data model isn't populated yet - cannot verify "
-                "subject_type %r; skipping extraction for prompt %r",
-                self.settings.subject_type,
+                "Schema fetched but the data model isn't populated yet - cannot map entity "
+                "types; skipping extraction for prompt %r",
                 prompt,
             )
             return ExtractionResult.failed(Outcome.ERROR, schema_not_populated_error(prompt), schema_version=version)
-
-        try:
-            validate_subject_type(schema, self.settings.subject_type)
-        except SubjectTypeMismatchError as exc:
-            logger.error(  # noqa: TRY400
-                "SUBJECT_TYPE %r invalid for the current schema; skipping extraction for prompt %r: %s",
-                self.settings.subject_type,
-                prompt,
-                exc,
-            )
-            return ExtractionResult.failed(Outcome.ERROR, subject_type_mismatch_error(prompt), schema_version=version)
 
         llm_with_tools = self._llm.bind_tools(
             self.tools,
@@ -596,7 +567,6 @@ class IntentAgent:
                     prompt,
                     schema=schema,
                     subject_id=subject_id,
-                    subject_type=self.settings.subject_type,
                 )
             except IntentValidationError as exc:
                 logger.warning(

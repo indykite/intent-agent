@@ -69,7 +69,6 @@ def _build_test_app(monkeypatch, mocker, schema_server, tmp_path, *, mock_ainvok
     monkeypatch.setenv("INTROSPECT_URL", "https://idp.example.com/introspect")
     monkeypatch.setenv("INTROSPECT_CLIENT_ID", "client-id")
     monkeypatch.setenv("INTROSPECT_CLIENT_SECRET", "client-secret")
-    monkeypatch.setenv("SUBJECT_TYPE", "Customer")
     monkeypatch.setenv("IK_APP_AGENT_KEY", _APP_AGENT_KEY)
     monkeypatch.setenv("INDYKITE_BASE_URL", f"http://{schema_server.server_address[0]}:{schema_server.server_port}")
     monkeypatch.setenv("AUDIT_DELIVERY", "file")
@@ -146,7 +145,8 @@ def test_recovers_on_next_request_once_platform_publishes_schema(monkeypatch, mo
     final_response = AIMessage(
         content=(
             '{"prompt": "Can I buy 50 shares of AAPL?", "evaluations": '
-            '[{"action": {"name": "buy"}, "resource": {"type": "Stock", "id": "AAPL"}}]}'
+            '[{"subject": {"type": "Customer"}, "action": {"name": "buy"}, '
+            '"resource": {"type": "Stock", "id": "AAPL"}}]}'
         ),
         tool_calls=[],
     )

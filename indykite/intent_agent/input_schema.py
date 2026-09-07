@@ -90,10 +90,11 @@ def _constrain_to_enum(field_schema: dict[str, Any], values: list[str]) -> None:
 
     No-op if `values` is empty. Only reachable for the action-name enum (_edge_relations) -
     edges can't be ingested before their endpoint nodes, and build_input_schema's caller
-    (agent.run_extraction) already validates SUBJECT_TYPE against the schema's node types
-    before calling this, so _node_types(schema) can never be empty here. A schema with nodes
-    but no edges yet is a legitimate state, not a failure - there's no vocabulary to constrain
-    the action name to, so leaving it as a plain string is correct.
+    (agent.run_extraction) already rejects a schema with no node types beyond the platform's
+    own bootstrap node (subject_binding.schema_has_no_node_types) before calling this, so
+    _node_types(schema) can never be empty here. A schema with nodes but no edges yet is a
+    legitimate state, not a failure - there's no vocabulary to constrain the action name to,
+    so leaving it as a plain string is correct.
     """
     if not values:
         return

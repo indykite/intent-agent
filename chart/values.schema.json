@@ -43,7 +43,6 @@
         "indykiteBaseUrl",
         "introspectUrl",
         "introspectClientId",
-        "subjectType",
         "geminiApiKeySecretRef",
         "introspectClientSecretRef",
         "ikAppAgentKeySecretRef"
@@ -127,10 +126,6 @@
         "introspectTimeoutSeconds": {
           "type": "number",
           "exclusiveMinimum": 0
-        },
-        "subjectType": {
-          "type": "string",
-          "minLength": 1
         },
         "auditDelivery": {
           "type": "string",

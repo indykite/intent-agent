@@ -149,12 +149,9 @@ and `IK_APP_AGENT_KEY` are required (`Settings` fails fast at startup if either 
 fetch itself failing (network/HTTP error, or the platform not being up yet) does **not** prevent
 cold start - the process keeps serving, and `run_extraction()` retries the fetch (via
 `get_cached_schema()`) on every request until the schema is populated, returning
-`schema_unavailable_error` for requests in the meantime. Once a schema is available,
-`SUBJECT_TYPE` is validated against it on every request too (`validate_subject_type`) - a
-mismatch fails that request with `subject_type_mismatch_error` rather than crashing the process.
-`SCHEMA_REFRESH_TTL_MINUTES` controls how long a cached schema is served
-before the next request triggers a refresh; a failed refresh after a cached schema has expired
-keeps the stale schema instead of losing it.
+`schema_unavailable_error` for requests in the meantime. `SCHEMA_REFRESH_TTL_MINUTES` controls
+how long a cached schema is served before the next request triggers a refresh; a failed refresh
+after a cached schema has expired keeps the stale schema instead of losing it.
 
 **Validation loop (TDD 4.8/4.9).** After the LLM's final answer, `subject_binding.py`'s
 `normalize_intent_response` checks every evaluation's `subject.type` / `action.name` /

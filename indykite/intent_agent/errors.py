@@ -1,15 +1,6 @@
 """Structured error responses and startup-failure exceptions (TDD 4.7, 4.4)."""
 
 
-class SubjectTypeMismatchError(Exception):
-    """Raised when the configured SUBJECT_TYPE isn't a node type in the schema.
-
-    Caught per-request in run_extraction() and turned into subject_type_mismatch_error() -
-    a misconfigured SUBJECT_TYPE doesn't get fixed by retrying, but it must not take down an
-    otherwise-healthy process either.
-    """
-
-
 class IntentValidationError(Exception):
     """Raised when the LLM's extraction output can't be accepted as-is: not JSON, or a
     subject.type / action.name / resource.type that isn't in the cached schema (TDD 4.8).
@@ -47,10 +38,10 @@ def error_response(prompt: str, reason: str, obligation: str) -> dict[str, str]:
 
 
 def schema_unavailable_error(prompt: str) -> dict[str, str]:
-    """Build the 4.7 error shape for when the schema can't be used to verify subject.type."""
+    """Build the 4.7 error shape for when the schema can't be used to map entity types."""
     return error_response(
         prompt,
-        "Data schema unavailable - cannot verify the configured subject type against it.",
+        "Data schema unavailable - cannot map the prompt to entity types.",
         "Retry once the data schema is available, or contact the administrator.",
     )
 
@@ -58,10 +49,8 @@ def schema_unavailable_error(prompt: str) -> dict[str, str]:
 def schema_not_populated_error(prompt: str) -> dict[str, str]:
     """Build the 4.7 error shape for when the schema is fetched but the data model has no
     node types beyond the platform's own bootstrap node (_Application) - i.e. nothing has
-    been modeled yet. Distinct from schema_unavailable_error (the fetch itself failed) and
-    from subject_type_mismatch_error (real types exist, SUBJECT_TYPE just isn't one of them) -
-    there's nothing yet to validate SUBJECT_TYPE against, so this is neither a fetch failure
-    nor a misconfiguration.
+    been modeled yet. Distinct from schema_unavailable_error (the fetch itself failed) -
+    there's nothing yet to map entity types against, but the schema itself isn't unreachable.
     """
     return error_response(
         prompt,
@@ -70,29 +59,15 @@ def schema_not_populated_error(prompt: str) -> dict[str, str]:
     )
 
 
-def subject_type_mismatch_error(prompt: str) -> dict[str, str]:
-    """Build the 4.7 error shape for when SUBJECT_TYPE isn't a valid type in the schema.
-
-    Deliberately generic, unlike the log line for the same failure (which does include the
-    schema's actual node type names): the caller of the intent-agent's API shouldn't learn
-    the shape of the underlying data schema just by tripping a config error.
-    """
-    return error_response(
-        prompt,
-        "SUBJECT_TYPE is not a valid entity type for the current data schema.",
-        "Contact the administrator to correct the SUBJECT_TYPE configuration.",
-    )
-
-
 def no_intent_error(prompt: str) -> dict[str, str]:
     """Build the 4.7 error shape for when no coherent intent could be extracted.
 
     Covers both the LLM's own empty evaluations list (its "nothing coherent" signal,
     SKILL.md) and the TDD 4.9 terminal failure: output still not JSON / off-schema after
-    the retry budget. Deliberately generic, like subject_type_mismatch_error: the specific
-    off-schema values reach the server-side log, but the caller shouldn't learn the
-    schema's vocabulary from an error message. An empty evaluations list must never reach
-    the caller as a bare success response.
+    the retry budget. Deliberately generic: the specific off-schema values reach the
+    server-side log, but the caller shouldn't learn the schema's vocabulary from an error
+    message. An empty evaluations list must never reach the caller as a bare success
+    response.
     """
     return error_response(
         prompt,

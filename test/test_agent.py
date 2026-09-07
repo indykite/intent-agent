@@ -15,12 +15,10 @@ from indykite.intent_agent.audit.message import Outcome, schema_version
 from indykite.intent_agent.config import Settings
 from indykite.intent_agent.errors import (
     IntentValidationError,
-    SubjectTypeMismatchError,
     llm_timeout_error,
     no_intent_error,
     schema_not_populated_error,
     schema_unavailable_error,
-    subject_type_mismatch_error,
     validation_feedback_error,
 )
 from indykite.intent_agent.input_schema import build_input_schema
@@ -30,7 +28,6 @@ from indykite.intent_agent.subject_binding import (
     normalize_intent_response,
     schema_has_no_node_types,
     validate_evaluations,
-    validate_subject_type,
 )
 
 _MIN_EXPECTED_ROUTES = 2
@@ -44,12 +41,15 @@ _LLM_CALLS_WITH_ONE_RETRY = 3
 _UNREACHABLE_TOOL_BUDGET = 100
 _ACTIVATE_EXTRACT_INTENT_CALL = {"name": "activate_skill", "args": {"name": "extract-intent"}, "id": "call-1"}
 # Vocabulary from test/fixtures/mock_ikg_schema.json: nodes Car/Company/Customer/_Application,
-# edge relations OWN/RENT/WORKS_AT.
+# edge relations OWN/RENT/WORKS_AT. subject.type is on-schema in both so the off-schema
+# answer's failure stays isolated to the action/resource values it's actually testing.
 _ON_SCHEMA_ANSWER = (
-    '{"prompt": "rent kitt", "evaluations": [{"action": {"name": "RENT"}, "resource": {"type": "Car", "id": "kitt"}}]}'
+    '{"prompt": "rent kitt", "evaluations": [{"subject": {"type": "Customer"}, '
+    '"action": {"name": "RENT"}, "resource": {"type": "Car", "id": "kitt"}}]}'
 )
 _OFF_SCHEMA_ANSWER = (
-    '{"prompt": "buy AAPL", "evaluations": [{"action": {"name": "BUY"}, "resource": {"type": "Stock", "id": "AAPL"}}]}'
+    '{"prompt": "buy AAPL", "evaluations": [{"subject": {"type": "Customer"}, '
+    '"action": {"name": "BUY"}, "resource": {"type": "Stock", "id": "AAPL"}}]}'
 )
 _SCHEMA_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mock_ikg_schema.json"
 _EMPTY_SCHEMA_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mock_ikg_schema_empty.json"
@@ -82,7 +82,7 @@ def test_discovers_extract_intent_skill():
 
 def test_build_app_registers_routes(monkeypatch, mocker):
     """build_app must wire up the agent-card and JSON-RPC routes on the app."""
-    settings = _settings_with_subject_type(monkeypatch)
+    settings = _full_settings(monkeypatch)
     fake_schema_client = mocker.Mock(
         preload=mocker.Mock(),
         get_cached=mocker.Mock(return_value=_load_schema_fixture()),
@@ -113,7 +113,7 @@ def test_build_app_starts_when_schema_unavailable_at_cold_start(monkeypatch, moc
     """A schema fetch failure at cold start must not abort startup - the platform may still be
     coming up, so the process keeps serving and retries the fetch on every request instead.
     """
-    settings = _settings_with_subject_type(monkeypatch)
+    settings = _full_settings(monkeypatch)
     # INDYKITE_BASE_URL is now mandatory, so simulate "schema unavailable" via a failed fetch
     # instead of an unset base URL - same client-patching approach as test_schema.py.
     failing_client = mocker.MagicMock()
@@ -129,55 +129,82 @@ def test_build_app_starts_when_schema_unavailable_at_cold_start(monkeypatch, moc
 
 
 def test_bind_subject():
-    data = {"evaluations": [{"action": {"name": "buy"}}]}
-    _bind_subject(data, subject_id="user-1", subject_type="Customer")
+    data = {"evaluations": [{"subject": {"type": "Customer"}, "action": {"name": "buy"}}]}
+    _bind_subject(data, subject_id="user-1")
     assert data["evaluations"][0]["subject"] == {"type": "Customer", "id": "user-1"}
 
 
-def test_bind_subject_overwrites_llm_supplied_subject():
-    """An LLM-supplied subject.id/type must be overwritten, not trusted - closes the injection surface."""
-    data = {"evaluations": [{"subject": {"type": "Admin", "id": "attacker-controlled"}}]}
-    _bind_subject(data, subject_id="user-1", subject_type="Customer")
+def test_bind_subject_overwrites_llm_supplied_id_but_not_type():
+    """An LLM-supplied subject.id must be overwritten (closes the injection surface where the
+    LLM could otherwise set its own identity) - subject.type is left alone, since the LLM
+    decides it now, not deployment config.
+    """
+    data = {"evaluations": [{"subject": {"type": "Customer", "id": "attacker-controlled"}}]}
+    _bind_subject(data, subject_id="user-1")
     assert data["evaluations"][0]["subject"] == {"type": "Customer", "id": "user-1"}
 
 
 def test_bind_subject_applies_to_every_evaluation():
     """Every evaluation in the list must get the override, not just the first."""
-    data = {"evaluations": [{"action": {"name": "buy"}}, {"action": {"name": "sell"}}]}
-    _bind_subject(data, subject_id="user-1", subject_type="Customer")
+    data = {
+        "evaluations": [
+            {"subject": {"type": "Customer"}, "action": {"name": "buy"}},
+            {"subject": {"type": "Customer"}, "action": {"name": "sell"}},
+        ],
+    }
+    _bind_subject(data, subject_id="user-1")
     assert all(e["subject"] == {"type": "Customer", "id": "user-1"} for e in data["evaluations"])
 
 
 def test_bind_subject_tolerates_non_dict_evaluation_entries():
     """A malformed (non-dict) evaluation entry must be skipped, not crash the whole response."""
-    data = {"evaluations": ["not-a-dict", {"action": {"name": "buy"}}]}
-    _bind_subject(data, subject_id="user-1", subject_type="Customer")
+    data = {"evaluations": ["not-a-dict", {"subject": {"type": "Customer"}, "action": {"name": "buy"}}]}
+    _bind_subject(data, subject_id="user-1")
     assert data["evaluations"][0] == "not-a-dict"
     assert data["evaluations"][1]["subject"] == {"type": "Customer", "id": "user-1"}
 
 
 def test_bind_subject_omits_id_when_subject_id_is_falsy():
-    """A falsy subject_id (e.g. Subject Search's blank id) must remove any id, not set it to None/empty."""
+    """A falsy subject_id (e.g. Subject Search's blank id) must remove any id, not set it to
+    None/empty - subject.type (the search target, for Subject Search) is left untouched.
+    """
     data = {"evaluations": [{"subject": {"type": "Admin", "id": "stale-id"}}]}
-    _bind_subject(data, subject_id=None, subject_type="Customer")
-    assert data["evaluations"][0]["subject"] == {"type": "Customer"}
+    _bind_subject(data, subject_id=None)
+    assert data["evaluations"][0]["subject"] == {"type": "Admin"}
+
+
+def test_bind_subject_skips_evaluation_with_no_subject_object():
+    """An evaluation without a subject dict is left alone, not given one - unreachable in
+    practice since validate_evaluations rejects a missing subject before this ever runs.
+    """
+    data = {"evaluations": [{"action": {"name": "buy"}}]}
+    _bind_subject(data, subject_id="user-1")
+    assert "subject" not in data["evaluations"][0]
 
 
 @pytest.mark.parametrize(
     ("evaluation", "expected_errors"),
     [
-        pytest.param({"action": {"name": "RENT"}}, ["resource is missing or not an object"], id="missing_resource"),
         pytest.param(
-            {"action": {"name": "RENT"}, "resource": {"type": "Car"}},
+            {"subject": {"type": "Customer"}, "action": {"name": "RENT"}},
+            ["resource is missing or not an object"],
+            id="missing_resource",
+        ),
+        pytest.param(
+            {"subject": {"type": "Customer"}, "action": {"name": "RENT"}, "resource": {"type": "Car"}},
             [],
             id="resource_search_missing_id",
         ),
         pytest.param(
-            {"action": {"name": ""}, "resource": {"type": "Car"}},
+            {"subject": {"type": "Customer"}, "action": {"name": ""}, "resource": {"type": "Car"}},
             ["action.name is missing or blank"],
             id="empty_action_name_when_action_key_present",
         ),
-        pytest.param({"resource": {"type": "Car", "id": "kitt"}}, [], id="missing_action_key"),
+        pytest.param(
+            {"subject": {"type": "Customer"}, "resource": {"type": "Car", "id": "kitt"}},
+            [],
+            id="missing_action_key",
+        ),
         pytest.param(
             {"subject": {"type": ""}, "action": {"name": "OWN"}, "resource": {"type": "Car"}},
             ["subject.type is missing or blank"],
@@ -185,16 +212,21 @@ def test_bind_subject_omits_id_when_subject_id_is_falsy():
         ),
         pytest.param(
             {"action": {"name": "RENT"}, "resource": {"type": "Car", "id": "kitt"}},
-            [],
+            ["subject is missing or not an object"],
             id="missing_subject_key",
         ),
         pytest.param(
-            {"action": {"name": "BUY"}, "resource": {"type": "Car"}},
+            {"subject": "Admin", "action": {"name": "OWN"}, "resource": {"type": "Car"}},
+            ["subject is missing or not an object"],
+            id="subject_not_an_object",
+        ),
+        pytest.param(
+            {"subject": {"type": "Customer"}, "action": {"name": "BUY"}, "resource": {"type": "Car"}},
             ["action.name 'BUY' is not defined in the data schema"],
             id="off_schema_action_name",
         ),
         pytest.param(
-            {"action": {"name": "RENT"}, "resource": {"type": "Stock"}},
+            {"subject": {"type": "Customer"}, "action": {"name": "RENT"}, "resource": {"type": "Stock"}},
             ["resource.type 'Stock' is not defined in the data schema"],
             id="off_schema_resource_type",
         ),
@@ -204,7 +236,7 @@ def test_bind_subject_omits_id_when_subject_id_is_falsy():
             id="off_schema_subject_type",
         ),
         pytest.param(
-            {"action": "RENT", "resource": {"type": "Car"}},
+            {"subject": {"type": "Customer"}, "action": "RENT", "resource": {"type": "Car"}},
             ["action is not an object"],
             id="action_not_an_object",
         ),
@@ -213,21 +245,21 @@ def test_bind_subject_omits_id_when_subject_id_is_falsy():
             {"subject": {"type": "Admin"}, "action": {"name": "BUY"}, "resource": {"type": "Stock"}},
             [
                 "resource.type 'Stock' is not defined in the data schema",
-                "action.name 'BUY' is not defined in the data schema",
                 "subject.type 'Admin' is not defined in the data schema",
+                "action.name 'BUY' is not defined in the data schema",
             ],
             id="every_field_off_schema_reports_all",
         ),
     ],
 )
 def test_validate_evaluations(evaluation, expected_errors):
-    """resource.type is core to every evaluation kind (PRD) - never legitimately omitted, so
-    its absence always flags. action/subject are only checked when their key is present at
+    """resource.type and subject.type are core to every evaluation kind (PRD; subject.type is
+    the LLM's own call now, not deployment config) - never legitimately omitted, so their
+    absence always flags. action is the one field only checked when its key is present at
     all: an entirely missing key is a legitimate per-evaluation-kind omission (Action Search
-    omits `action`; everything but Subject Search omits `subject` - SKILL.md), while a key
-    present with an empty or off-schema type/name means the LLM tried and failed to
-    correlate it (TDD 4.8 schema-membership check). Every problem is reported, not just the
-    first, so one retry can fix them all.
+    omits `action` - SKILL.md), while a key present with an empty or off-schema type/name
+    means the LLM tried and failed to correlate it (TDD 4.8 schema-membership check). Every
+    problem is reported, not just the first, so one retry can fix them all.
     """
     errors = validate_evaluations(_load_schema_fixture(), [evaluation])
     assert errors == [f"evaluations[0]: {error}" for error in expected_errors]
@@ -236,8 +268,8 @@ def test_validate_evaluations(evaluation, expected_errors):
 def test_validate_evaluations_indexes_each_evaluation():
     """Errors must name the offending evaluation's index so the LLM can tell which entry to fix."""
     evaluations = [
-        {"action": {"name": "RENT"}, "resource": {"type": "Car"}},
-        {"action": {"name": "BUY"}, "resource": {"type": "Car"}},
+        {"subject": {"type": "Customer"}, "action": {"name": "RENT"}, "resource": {"type": "Car"}},
+        {"subject": {"type": "Customer"}, "action": {"name": "BUY"}, "resource": {"type": "Car"}},
     ]
     assert validate_evaluations(_load_schema_fixture(), evaluations) == [
         "evaluations[1]: action.name 'BUY' is not defined in the data schema",
@@ -251,7 +283,7 @@ def test_validate_evaluations_skips_action_membership_when_schema_has_no_edges()
     """
     schema = _load_schema_fixture()
     schema["graph"]["edges"] = []
-    evaluations = [{"action": {"name": "ANYTHING"}, "resource": {"type": "Car"}}]
+    evaluations = [{"subject": {"type": "Customer"}, "action": {"name": "ANYTHING"}, "resource": {"type": "Car"}}]
     assert validate_evaluations(schema, evaluations) == []
 
 
@@ -260,7 +292,7 @@ def test_validate_evaluations_tolerates_malformed_schema_sections():
     not crash - same tolerance as input_schema.build_input_schema.
     """
     schema = {"graph": {"nodes": "oops", "edges": {"also": "oops"}}}
-    evaluations = [{"action": {"name": "RENT"}, "resource": {"type": "Car"}}]
+    evaluations = [{"subject": {"type": "Customer"}, "action": {"name": "RENT"}, "resource": {"type": "Car"}}]
     assert validate_evaluations(schema, evaluations) == []
 
 
@@ -271,8 +303,8 @@ def test_validate_evaluations_ignores_non_string_relations():
     schema = _load_schema_fixture()
     schema["graph"]["edges"] = [{"relation": 123}, {"relation": ""}, {"relation": "RENT"}]
     evaluations = [
-        {"action": {"name": "RENT"}, "resource": {"type": "Car"}},
-        {"action": {"name": "123"}, "resource": {"type": "Car"}},
+        {"subject": {"type": "Customer"}, "action": {"name": "RENT"}, "resource": {"type": "Car"}},
+        {"subject": {"type": "Customer"}, "action": {"name": "123"}, "resource": {"type": "Car"}},
     ]
     assert validate_evaluations(schema, evaluations) == [
         "evaluations[1]: action.name '123' is not defined in the data schema",
@@ -293,13 +325,12 @@ def test_validation_feedback_error_lists_every_error_in_fixed_shape():
 
 
 def _normalize(llm_text, prompt="rent kitt"):
-    """normalize_intent_response against the fixture schema with the usual test subject."""
+    """normalize_intent_response against the fixture schema with the usual test subject id."""
     return normalize_intent_response(
         llm_text,
         prompt,
         schema=_load_schema_fixture(),
         subject_id="user-1",
-        subject_type="Customer",
     )
 
 
@@ -377,8 +408,8 @@ def test_normalize_intent_response_handles_bare_evaluations_array():
     evaluations list directly, not nested as a single non-dict evaluation that gets dropped.
     """
     llm_text = (
-        '[{"action": {"name": "RENT"}, "resource": {"type": "Car", "id": "kitt"}}, '
-        '{"action": {"name": "OWN"}, "resource": {"type": "Car", "id": "kitt"}}]'
+        '[{"subject": {"type": "Customer"}, "action": {"name": "RENT"}, "resource": {"type": "Car", "id": "kitt"}}, '
+        '{"subject": {"type": "Customer"}, "action": {"name": "OWN"}, "resource": {"type": "Car", "id": "kitt"}}]'
     )
     data = json.loads(_normalize(llm_text, "rent or own kitt"))
     assert data["prompt"] == "rent or own kitt"
@@ -407,9 +438,8 @@ def test_normalize_intent_response_raises_on_malformed_json():
         _normalize("Sorry, I can't help with that.", "some prompt")
 
 
-def _settings_with_subject_type(monkeypatch, subject_type="Customer"):
+def _full_settings(monkeypatch):
     """Build a Settings with every required env var set, for run_extraction-level tests.
-
     AUDIT_DELIVERY is required too; the file path is never created here because these tests
     build an IntentAgent directly (no sender) or inject a fake sender into build_app.
     """
@@ -417,7 +447,6 @@ def _settings_with_subject_type(monkeypatch, subject_type="Customer"):
     monkeypatch.setenv("INTROSPECT_URL", "https://idp.example.com/introspect")
     monkeypatch.setenv("INTROSPECT_CLIENT_ID", "client-id")
     monkeypatch.setenv("INTROSPECT_CLIENT_SECRET", "client-secret")
-    monkeypatch.setenv("SUBJECT_TYPE", subject_type)
     monkeypatch.setenv("IK_APP_AGENT_KEY", _APP_AGENT_KEY)
     monkeypatch.setenv("INDYKITE_BASE_URL", "https://ikg.example.com")
     monkeypatch.setenv("AUDIT_DELIVERY", "file")
@@ -434,7 +463,7 @@ def _fake_audit_sender(mocker):
 
 def test_build_schema_cache_uses_memory_backend_by_default(monkeypatch):
     """CACHE_BACKEND defaults to memory - the in-process Memory cache - with no REDIS_URL set."""
-    settings = _settings_with_subject_type(monkeypatch)
+    settings = _full_settings(monkeypatch)
     assert isinstance(_build_schema_cache(settings).backend, MemoryBackend)
 
 
@@ -447,7 +476,7 @@ def test_build_schema_cache_uses_redis_backend_when_configured(monkeypatch):
     monkeypatch.setenv("CACHE_BACKEND", "redis")
     monkeypatch.setenv("REDIS_URL", redis_url)
     monkeypatch.setenv("SCHEMA_REFRESH_TTL_MINUTES", "2.0")
-    settings = _settings_with_subject_type(monkeypatch)
+    settings = _full_settings(monkeypatch)
     cache = _build_schema_cache(settings)
     assert isinstance(cache.backend, RedisBackend)
     assert cache.backend.url == redis_url
@@ -456,7 +485,7 @@ def test_build_schema_cache_uses_redis_backend_when_configured(monkeypatch):
 
 def test_get_data_schema_tool_returns_cached_schema(monkeypatch, mocker):
     """The get_data_schema tool must return the cached schema as minified JSON."""
-    settings = _settings_with_subject_type(monkeypatch)
+    settings = _full_settings(monkeypatch)
     schema = _load_schema_fixture()
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock()))
     fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=schema))
@@ -472,7 +501,7 @@ def test_run_extraction_binds_structured_output_schema_derived_from_current_sche
     """run_extraction must call bind_tools with a response_schema derived from the last
     successfully derived schema (via build_input_schema), not some other/unrelated schema.
     """
-    settings = _settings_with_subject_type(monkeypatch)
+    settings = _full_settings(monkeypatch)
     schema = _load_schema_fixture()
     fake_response = mocker.Mock(text="ok", content="ok", tool_calls=[])
     mock_ainvoke = mocker.AsyncMock(return_value=fake_response)
@@ -497,7 +526,7 @@ def test_run_extraction_rebuilds_schema_when_cached_schema_changes_between_reque
     return a DIFFERENT schema on the second call and checking bind_tools' second call reflects
     it; a schema fixed at construction time would bind the first schema both times.
     """
-    settings = _settings_with_subject_type(monkeypatch)
+    settings = _full_settings(monkeypatch)
     schema_v1 = _load_schema_fixture()
     schema_v2 = json.loads(json.dumps(schema_v1))  # deep copy, safe to mutate independently
     schema_v2["graph"]["nodes"]["Boat"] = schema_v2["graph"]["nodes"]["Car"]
@@ -523,28 +552,19 @@ def test_run_extraction_rebuilds_schema_when_cached_schema_changes_between_reque
 @pytest.mark.parametrize(
     "case",
     [
-        pytest.param((lambda: None, "Customer", schema_unavailable_error, None), id="schema_unavailable"),
-        pytest.param(
-            (_load_empty_schema_fixture, "Customer", schema_not_populated_error, None),
-            id="schema_not_populated",
-        ),
-        pytest.param(
-            (_load_schema_fixture, "NotARealType", subject_type_mismatch_error, "NotARealType"),
-            id="subject_type_mismatch",
-        ),
+        pytest.param((lambda: None, schema_unavailable_error), id="schema_unavailable"),
+        pytest.param((_load_empty_schema_fixture, schema_not_populated_error), id="schema_not_populated"),
     ],
 )
 def test_run_extraction_fails_before_any_llm_call(monkeypatch, mocker, caplog, case):
-    """Schema unavailability, an unpopulated data model, and a real SUBJECT_TYPE mismatch are
-    three distinct 4.7 error shapes, each checked and returned before any LLM call - not
-    conflated with each other (see schema_has_no_node_types), and not wasting an LLM call on a
-    result that would just be discarded. A mismatch's specific detail (log_detail) must reach
-    the server-side log but never the caller-facing response - the other two have no such
-    detail to leak in the first place.
+    """Schema unavailability and an unpopulated data model are two distinct 4.7 error shapes,
+    each checked and returned before any LLM call - not conflated with each other (see
+    schema_has_no_node_types), and not wasting an LLM call on a result that would just be
+    discarded.
     """
-    build_schema, subject_type, expected_error, log_detail = case
+    build_schema, expected_error = case
     caplog.set_level("ERROR")
-    settings = _settings_with_subject_type(monkeypatch, subject_type=subject_type)
+    settings = _full_settings(monkeypatch)
     mock_ainvoke = mocker.AsyncMock()
     fake_bound_llm = mocker.Mock(ainvoke=mock_ainvoke)
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=fake_bound_llm))
@@ -576,7 +596,7 @@ def _agent_with_responses(monkeypatch, mocker, responses, **env):
     """
     for name, value in env.items():
         monkeypatch.setenv(name, str(value))
-    settings = _settings_with_subject_type(monkeypatch)
+    settings = _full_settings(monkeypatch)
     mock_ainvoke = mocker.AsyncMock(side_effect=responses)
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mock_ainvoke)))
     fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=_load_schema_fixture()))
@@ -865,31 +885,6 @@ def test_run_extraction_times_out_during_retry_too(monkeypatch, mocker):
     assert mock_ainvoke.call_count == _LLM_CALLS_WITH_ONE_RETRY
 
 
-@pytest.mark.parametrize("subject_type", ["Customer", "Company", "_Application", "Car"])
-def test_validate_subject_type_accepts_any_real_node_type(subject_type):
-    """Every node type in the real schema fixture must be accepted"""
-    schema = _load_schema_fixture()
-    validate_subject_type(schema, subject_type)
-
-
-def test_validate_subject_type_rejects_unknown_type():
-    """A SUBJECT_TYPE that doesn't match any node type at all must be rejected."""
-    schema = _load_schema_fixture()
-    with pytest.raises(SubjectTypeMismatchError):
-        validate_subject_type(schema, "NotARealType")
-
-
-def test_validate_subject_type_tolerates_non_dict_nodes():
-    """A malformed schema where graph.nodes isn't a dict must be rejected cleanly, not crash."""
-    with pytest.raises(SubjectTypeMismatchError):
-        validate_subject_type({"graph": {"nodes": ["not", "a", "dict"]}}, "Customer")
-
-
-def test_validate_subject_type_skips_when_schema_unavailable():
-    """With no schema (unset/unreachable INDYKITE_BASE_URL), there's nothing to validate against."""
-    validate_subject_type(None, "AnythingGoes")
-
-
 @pytest.mark.parametrize(
     ("schema", "expected"),
     [
@@ -905,19 +900,17 @@ def test_validate_subject_type_skips_when_schema_unavailable():
 )
 def test_schema_has_no_node_types(schema, expected):
     """Only _Application - the calling app's own node, always present even before any real
-    data model is configured - doesn't count as populated; any other node type does, even if
-    SUBJECT_TYPE itself doesn't match it (that's a SubjectTypeMismatchError, not this).
+    data model is configured - doesn't count as populated; any other node type does.
     """
     assert schema_has_no_node_types(schema) is expected
 
 
 def test_build_app_starts_when_schema_not_yet_populated_at_cold_start(monkeypatch, mocker, caplog):
-    """A schema that fetches successfully but is empty at cold start must not log a
-    SubjectTypeMismatchError - that would misleadingly suggest SUBJECT_TYPE is misconfigured
-    when the real cause is just an unpopulated data model.
+    """A schema that fetches successfully but is empty at cold start must not abort startup -
+    the data model may just not be populated yet.
     """
     caplog.set_level("WARNING")
-    settings = _settings_with_subject_type(monkeypatch)
+    settings = _full_settings(monkeypatch)
     empty_schema = _load_empty_schema_fixture()
     fake_schema_client = mocker.Mock(
         preload=mocker.Mock(),
@@ -929,25 +922,4 @@ def test_build_app_starts_when_schema_not_yet_populated_at_cold_start(monkeypatc
     assert agent.get_cached_schema() == empty_schema
     assert not any(record.levelname == "ERROR" for record in caplog.records)
     assert any("isn't populated yet" in record.message for record in caplog.records)
-    assert len(app.routes) >= _MIN_EXPECTED_ROUTES
-
-
-def test_build_app_starts_when_subject_type_mismatches_schema(monkeypatch, mocker, caplog):
-    """build_app must not raise/abort at startup when SUBJECT_TYPE doesn't match the schema -
-    the mismatch is instead surfaced per-request (see test_run_extraction_fails_before_any_llm_call
-    below), so a bad SUBJECT_TYPE doesn't take down an otherwise-healthy process. It must still
-    be logged at startup though - an early signal beats waiting for the first live request.
-    """
-    caplog.set_level("ERROR")
-    settings = _settings_with_subject_type(monkeypatch, subject_type="NotARealType")
-    fake_schema_client = mocker.Mock(
-        preload=mocker.Mock(),
-        get_cached=mocker.Mock(return_value=_load_schema_fixture()),
-    )
-
-    app, agent = build_app(settings, schema_client=fake_schema_client, audit_sender=_fake_audit_sender(mocker))
-
-    assert agent.get_cached_schema() is not None
-    assert any(record.levelname == "ERROR" for record in caplog.records)
-    assert "NotARealType" in caplog.text
     assert len(app.routes) >= _MIN_EXPECTED_ROUTES

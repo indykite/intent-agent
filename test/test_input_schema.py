@@ -38,9 +38,8 @@ def test_build_input_schema_enumerates_edge_relations_as_action_names():
 
 
 def test_build_input_schema_enumerates_all_node_types_as_subject_types():
-    """subject.type must enumerate every node label, same as resource.type - SUBJECT_TYPE is
-    no longer restricted to DigitalTwin-labelled types (ENG-9647), and the LLM's subject.type
-    enum follows the same rule.
+    """subject.type must enumerate every node label, same as resource.type - the LLM decides
+    subject.type itself now (ENG-9668), not restricted to any particular labelled subset.
     """
     schema = build_input_schema(_load_schema_fixture())
     subject_type = schema["$defs"]["_Subject"]["properties"]["type"]
