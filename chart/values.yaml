@@ -99,7 +99,7 @@ redis:
   # renovate: datasource=docker depName=bitnami/redis
   image:
     tag: latest
-    digest: "sha256:d75bda00b778ad5e03a639ec36e00f6665a5d7e0f35a6250be5b103fb2117275"
+    digest: "sha256:ffa455a3ad00bccc24dfde113ef55329dde687da242e9feb6ccd2b30eb93e8f3"
   master:
     persistence:
       enabled: false
