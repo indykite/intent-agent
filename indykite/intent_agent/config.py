@@ -7,6 +7,7 @@ from pydantic import (
     Field,
     HttpUrl,
     IPvAnyAddress,
+    NonNegativeInt,
     PositiveFloat,
     PositiveInt,
     RedisDsn,
@@ -36,6 +37,20 @@ class Settings(BaseSettings):
     gemini_model: str = Field(min_length=1, default="gemini-3.5-flash-lite")
     tool_call_max_iterations: PositiveInt = 5
     schema_preview_chars: PositiveInt = 12000
+    # Per-LLM-call ceiling - mirrors the other *_TIMEOUT_SECONDS fields, which each bound a
+    # single outbound call. 3s is sized for the common path (skill activation, answer, one
+    # validation retry) to fit the request budget below; Gemini's own 10s client default
+    # would not. It is not the end-to-end guarantee: extra tool-call rounds (up to
+    # TOOL_CALL_MAX_ITERATIONS per attempt) add calls, and REQUEST_TIMEOUT_SECONDS is what
+    # actually caps the whole request.
+    llm_timeout_seconds: PositiveFloat = 3.0
+    # Whole-extraction deadline (PRD: answer within 10s end to end), spanning every LLM call,
+    # tool-call round and validation retry of one request. Introspection and a cold schema
+    # fetch happen before it starts and keep their own timeouts.
+    request_timeout_seconds: PositiveFloat = 10.0
+    # Extra attempts after the first, so the LLM is invoked at most 1 + this many times per
+    # request on validation failure (TDD 4.9, open decision 1: default N=1). 0 disables retry.
+    validation_max_retries: NonNegativeInt = 1
 
     indykite_base_url: HttpUrl
     ik_app_agent_key: SecretStr = Field(min_length=1)
@@ -57,6 +72,16 @@ class Settings(BaseSettings):
         """Reject intent_port and health_port being the same (would collide on bind)."""
         if self.intent_port == self.health_port:
             message = "INTENT_PORT and HEALTH_PORT must be different"
+            raise ValueError(message)
+        return self
+
+    @model_validator(mode="after")
+    def _reject_llm_timeout_over_request_timeout(self) -> "Settings":
+        """Reject a per-call timeout longer than the whole-request deadline - the per-call
+        limit could then never fire before the request one, so it would be dead config.
+        """
+        if self.llm_timeout_seconds > self.request_timeout_seconds:
+            message = "LLM_TIMEOUT_SECONDS must not exceed REQUEST_TIMEOUT_SECONDS"
             raise ValueError(message)
         return self
 

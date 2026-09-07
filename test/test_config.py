@@ -6,6 +6,13 @@ from indykite.intent_agent.config import Settings
 _DEFAULT_INTENT_PORT = 6003
 _DEFAULT_HEALTH_PORT = 8001
 _DEFAULT_SCHEMA_REFRESH_TTL_MINUTES = 5.0
+_DEFAULT_LLM_TIMEOUT_SECONDS = 3.0
+_DEFAULT_VALIDATION_MAX_RETRIES = 1
+# PRD: a request must be answered within 10s end to end. REQUEST_TIMEOUT_SECONDS enforces it;
+# the per-call default is sized so the common path (skill activation, answer, one retry
+# answer) fits inside it, with extra tool-call rounds still cut off by the request deadline.
+_PRD_REQUEST_BUDGET_SECONDS = 10.0
+_LLM_CALLS_ON_COMMON_RETRIED_PATH = 3
 
 
 @pytest.fixture(autouse=True)
@@ -47,6 +54,9 @@ def test_defaults(monkeypatch):
     assert settings.redis_url is None
     assert settings.schema_refresh_ttl_minutes == _DEFAULT_SCHEMA_REFRESH_TTL_MINUTES
     assert settings.cache_backend == "memory"
+    assert settings.llm_timeout_seconds == _DEFAULT_LLM_TIMEOUT_SECONDS
+    assert settings.request_timeout_seconds == _PRD_REQUEST_BUDGET_SECONDS
+    assert settings.validation_max_retries == _DEFAULT_VALIDATION_MAX_RETRIES
     assert str(settings.bind_host) == "0.0.0.0"  # noqa: S104 - asserting the default, not binding anything
     assert settings.log_level == "INFO"
 
@@ -264,15 +274,59 @@ def test_rejects_non_positive_schema_refresh_ttl(monkeypatch, ttl):
 
 @pytest.mark.parametrize(
     "env_var",
-    ["TOOL_CALL_MAX_ITERATIONS", "SCHEMA_PREVIEW_CHARS", "SCHEMA_FETCH_TIMEOUT_SECONDS", "INTROSPECT_TIMEOUT_SECONDS"],
+    [
+        "TOOL_CALL_MAX_ITERATIONS",
+        "SCHEMA_PREVIEW_CHARS",
+        "SCHEMA_FETCH_TIMEOUT_SECONDS",
+        "INTROSPECT_TIMEOUT_SECONDS",
+        "LLM_TIMEOUT_SECONDS",
+        "REQUEST_TIMEOUT_SECONDS",
+    ],
 )
 @pytest.mark.parametrize("value", [0, -1])
 def test_rejects_non_positive_numeric_settings(monkeypatch, env_var, value):
     """TOOL_CALL_MAX_ITERATIONS, SCHEMA_PREVIEW_CHARS, and the timeout fields must all be
     strictly positive - zero or negative would either skip the tool-call loop entirely,
-    truncate every schema preview to nothing, or make an instantly-timing-out HTTP request.
+    truncate every schema preview to nothing, or make an instantly-timing-out call.
     """
     _set_baseline_env(monkeypatch)
     monkeypatch.setenv(env_var, str(value))
     with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_rejects_negative_validation_max_retries(monkeypatch):
+    """VALIDATION_MAX_RETRIES is a count of extra attempts - negative is meaningless."""
+    _set_baseline_env(monkeypatch)
+    monkeypatch.setenv("VALIDATION_MAX_RETRIES", "-1")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_accepts_zero_validation_max_retries(monkeypatch):
+    """Unlike the timeout fields, zero is a legitimate value here: it disables the retry."""
+    _set_baseline_env(monkeypatch)
+    monkeypatch.setenv("VALIDATION_MAX_RETRIES", "0")
+    assert Settings(_env_file=None).validation_max_retries == 0
+
+
+def test_default_timeouts_match_prd_request_budget(monkeypatch):
+    """REQUEST_TIMEOUT_SECONDS defaults to the PRD's 10s end-to-end limit, and the per-call
+    default is sized so the common retried path (activation + answer + one retry answer, each
+    at the per-call limit) fits inside it - Gemini's own 10s client default would not. Guards
+    against bumping either default without redoing that arithmetic.
+    """
+    _set_baseline_env(monkeypatch)
+    settings = Settings(_env_file=None)
+    assert settings.request_timeout_seconds <= _PRD_REQUEST_BUDGET_SECONDS
+    assert settings.validation_max_retries == _DEFAULT_VALIDATION_MAX_RETRIES
+    assert settings.llm_timeout_seconds * _LLM_CALLS_ON_COMMON_RETRIED_PATH <= settings.request_timeout_seconds
+
+
+def test_rejects_llm_timeout_longer_than_request_timeout(monkeypatch):
+    """A per-call limit above the whole-request deadline could never fire first - dead config."""
+    _set_baseline_env(monkeypatch)
+    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "11")
+    monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "10")
+    with pytest.raises(ValidationError, match="LLM_TIMEOUT_SECONDS must not exceed REQUEST_TIMEOUT_SECONDS"):
         Settings(_env_file=None)

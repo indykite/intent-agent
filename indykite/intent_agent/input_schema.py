@@ -16,11 +16,20 @@ def _node_types(schema: dict[str, Any]) -> list[str]:
 
 
 def _edge_relations(schema: dict[str, Any]) -> list[str]:
-    """Return every distinct edge relation (action name) in the schema, sorted."""
+    """Return every distinct edge relation (action name) in the schema, sorted.
+
+    Only non-empty strings count - a malformed relation (e.g. a number) is skipped rather than
+    put into a string enum, the same rule as subject_binding._edge_relations so the enum and
+    the post-assembly check agree on the vocabulary.
+    """
     edges = schema.get("graph", {}).get("edges", [])
     if not isinstance(edges, list):
         return []
-    relations = {edge.get("relation") for edge in edges if isinstance(edge, dict) and edge.get("relation")}
+    relations = {
+        relation
+        for edge in edges
+        if isinstance(edge, dict) and isinstance(relation := edge.get("relation"), str) and relation
+    }
     return sorted(relations)
 
 

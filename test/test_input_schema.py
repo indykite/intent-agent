@@ -82,6 +82,17 @@ def test_build_input_schema_tolerates_missing_graph_sections():
     assert "enum" not in _variant(schema["$defs"]["_Subject"]["properties"]["type"], "string")
 
 
+def test_build_input_schema_ignores_non_string_relations():
+    """A malformed relation (a number, an empty string) must not land in the action-name
+    enum - a string enum with a non-string member is an invalid schema for Gemini, and the
+    post-assembly check (subject_binding._edge_relations) applies the same rule.
+    """
+    graph_schema = _load_schema_fixture()
+    graph_schema["graph"]["edges"] = [{"relation": 123}, {"relation": ""}, {"relation": "RENT"}]
+    schema = build_input_schema(graph_schema)
+    assert _variant(schema["$defs"]["_Action"]["properties"]["name"], "string")["enum"] == ["RENT"]
+
+
 def test_build_input_schema_drops_pydantic_only_keys():
     """`title`/`default` are pydantic-generated noise; `default` isn't even in Gemini's
     supported `response_json_schema` keys (google.genai.types.GenerateContentConfig's

@@ -3,7 +3,7 @@ apiVersion: v2
 name: intent-agent
 description: IndyKite Intent Agent - A2A service extracting AuthZEN-style intent from natural-language prompts
 type: application
-version: 0.2.1
+version: 0.2.2
 
 keywords:
   - intent-agent

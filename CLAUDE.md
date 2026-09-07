@@ -156,6 +156,28 @@ mismatch fails that request with `subject_type_mismatch_error` rather than crash
 before the next request triggers a refresh; a failed refresh after a cached schema has expired
 keeps the stale schema instead of losing it.
 
+**Validation loop (TDD 4.8/4.9).** After the LLM's final answer, `subject_binding.py`'s
+`normalize_intent_response` checks every evaluation's `subject.type` / `action.name` /
+`resource.type` against the cached schema (`validate_evaluations`) - belt-and-braces on top of
+the structured-output enum, since Gemini treats the enum as a strong hint, not a guarantee. An
+off-schema value (or non-JSON output) raises `IntentValidationError`; `IntentAgent` feeds the
+errors back to the LLM as a follow-up message (`validation_feedback_error`) in the same
+conversation and asks again, up to `VALIDATION_MAX_RETRIES` extra times (default 1, `0`
+disables retry), then returns `no_intent_error`. An empty `evaluations` array is the LLM's
+legitimate "nothing coherent" answer and becomes the same `no_intent_error` without a retry.
+Each LLM call is bounded by `LLM_TIMEOUT_SECONDS` (per call, like the other
+`*_TIMEOUT_SECONDS`), and the whole extraction - every tool-call round and validation retry
+of one request - by `REQUEST_TIMEOUT_SECONDS` (default 10, the PRD's end-to-end limit; the
+per-call default is sized so the common activation + answer + retry path fits inside it).
+Both surface as `llm_timeout_error`. Exhausting `TOOL_CALL_MAX_ITERATIONS`
+after `extract-intent` was activated is also `no_intent_error`, never the free-text placeholder;
+a repeat `activate_skill` for the already-active skill gets a short "answer now" tool message
+instead of the skill body plus schema again (seen live: Gemini otherwise re-activates until the
+budget is gone). Every error - caller-facing or fed
+back to the LLM - is the fixed `{prompt, error, reason, obligation}` shape built by
+`errors.error_response`; new ones go in `errors.py` next to the existing ones, never as ad-hoc
+dicts or strings elsewhere.
+
 **Schema cache backend.** `CACHE_BACKEND` (`Settings`, default `"memory"`) picks the
 `dogpile.cache` backend `_build_schema_cache` (`agent.py`) configures: in-process `memory`, or
 `redis` using `REDIS_URL` — required whenever `CACHE_BACKEND=redis` (`Settings` fails fast at

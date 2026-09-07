@@ -1,5 +1,4 @@
 import json
-from pathlib import Path
 from unittest.mock import AsyncMock
 
 from langchain_core.messages import AIMessage
@@ -8,8 +7,7 @@ from starlette.testclient import TestClient
 
 from indykite.intent_agent.agent import build_app
 from indykite.intent_agent.config import Settings
-
-_SCHEMA_FIXTURE_PATH = Path(__file__).parent.parent / "test" / "fixtures" / "mock_ikg_schema.json"
+from integration.schema_fixtures import schema_with_stocks
 
 
 def test_gemini_send_message_end_to_end(monkeypatch, mocker):
@@ -27,7 +25,7 @@ def test_gemini_send_message_end_to_end(monkeypatch, mocker):
     )
     fake_schema_client = mocker.Mock(
         preload=mocker.Mock(),
-        get_cached=mocker.Mock(return_value=json.loads(_SCHEMA_FIXTURE_PATH.read_text())),
+        get_cached=mocker.Mock(return_value=schema_with_stocks()),
     )
 
     tool_call_response = AIMessage(

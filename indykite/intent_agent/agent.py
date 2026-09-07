@@ -5,6 +5,7 @@ Design Document). This is a structural port for this repository's package layout
 config model, not a rewrite of the extraction pipeline itself.
 """
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -29,6 +30,7 @@ from a2a.utils.constants import DEFAULT_RPC_URL
 from dogpile.cache.region import CacheRegion, make_region
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
+from langchain_core.runnables import Runnable
 from langchain_core.tools import StructuredTool, tool
 from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel
@@ -39,10 +41,14 @@ from starlette.status import HTTP_401_UNAUTHORIZED
 from indykite.intent_agent import auth, skills
 from indykite.intent_agent.config import Settings
 from indykite.intent_agent.errors import (
+    IntentValidationError,
     SubjectTypeMismatchError,
+    llm_timeout_error,
+    no_intent_error,
     schema_not_populated_error,
     schema_unavailable_error,
     subject_type_mismatch_error,
+    validation_feedback_error,
 )
 from indykite.intent_agent.input_schema import build_input_schema
 from indykite.intent_agent.schema import SchemaClient
@@ -55,6 +61,12 @@ from indykite.intent_agent.subject_binding import (
 logger = logging.getLogger(__name__)
 
 _SECONDS_PER_MINUTE = 60
+_NO_RESPONSE_TEXT = "(No response generated)"
+_SKILL_ALREADY_ACTIVE = (
+    "Skill 'extract-intent' is already active in this conversation - its instructions and the "
+    "data schema are in the earlier tool result. Do not call activate_skill again; answer now "
+    'with the {"prompt", "evaluations"} JSON object.'
+)
 
 
 def _build_schema_cache(settings: Settings) -> CacheRegion:
@@ -277,15 +289,8 @@ class IntentAgent:
         ]
 
     @staticmethod
-    def _extract_final_text(
-        response: BaseMessage,
-        *,
-        activated_extract_intent: bool,
-        prompt: str,
-        subject_id: str | None,
-        subject_type: str,
-    ) -> str:
-        """Render the LLM's final response, normalizing it if extract-intent ran."""
+    def _response_text(response: BaseMessage) -> str:
+        """Flatten the LLM's final response (plain text or content blocks) to one string."""
         raw_response_text = getattr(response, "text", "") or ""
         raw_content = getattr(response, "content", "") or ""
         if isinstance(raw_content, list) and raw_content and not raw_response_text:
@@ -295,26 +300,32 @@ class IntentAgent:
                     parts.append(block.get("text", ""))
                 elif hasattr(block, "text"):
                     parts.append(getattr(block, "text", ""))
-            final_text = " ".join(parts) if parts else ""
-        else:
-            final_text = str(raw_response_text or raw_content or "")
-        if activated_extract_intent:
-            final_text = normalize_intent_response(
-                final_text,
-                prompt,
-                subject_id=subject_id,
-                subject_type=subject_type,
-            )
-        return final_text
+            return " ".join(parts) if parts else ""
+        return str(raw_response_text or raw_content or "")
 
-    def _dispatch_tool_call(self, call: dict[str, Any], messages: list[BaseMessage]) -> bool:
-        """Invoke one tool call, append ToolMessage, report if extract-intent ran."""
+    def _dispatch_tool_call(
+        self,
+        call: dict[str, Any],
+        messages: list[BaseMessage],
+        *,
+        extract_intent_active: bool = False,
+    ) -> bool:
+        """Invoke one tool call, append ToolMessage, report if extract-intent is now active.
+
+        A repeat activate_skill for an already-active extract-intent gets a short "answer now"
+        reminder instead of the full skill body plus schema again: re-injecting those every
+        round bloats the context and is what an LLM stuck re-activating the skill until
+        TOOL_CALL_MAX_ITERATIONS runs out looks like in practice.
+        """
         name = call.get("name", "")
         args = call.get("args", {}) or {}
         call_id = call.get("id", "")
         activated_extract_intent = name == "activate_skill" and args.get("name") == "extract-intent"
         tool_obj = next((t for t in self.tools if t.name == name), None)
-        if tool_obj:
+        if activated_extract_intent and extract_intent_active:
+            logger.info("Skipping repeat activation of extract-intent - already active")
+            result = _SKILL_ALREADY_ACTIVE
+        elif tool_obj:
             try:
                 result = tool_obj.invoke(args)
             except Exception as exc:  # noqa: BLE001 - tool errors are fed back to the LLM, not raised
@@ -383,31 +394,118 @@ class IntentAgent:
             response_mime_type="application/json",
             response_schema=build_input_schema(schema),
         )
+        try:
+            async with asyncio.timeout(self.settings.request_timeout_seconds) as deadline:
+                return await self._extract_with_retries(llm_with_tools, prompt, subject_id=subject_id, schema=schema)
+        except TimeoutError:
+            # Both the per-call and the whole-request limits raise TimeoutError; only the
+            # request one marks its own context as expired.
+            if deadline.expired():
+                logger.error(  # noqa: TRY400 - a timeout's traceback carries no diagnostic value
+                    "Request exceeded the %.1fs end-to-end budget; giving up on prompt %r",
+                    self.settings.request_timeout_seconds,
+                    prompt,
+                )
+            else:
+                logger.error(  # noqa: TRY400 - a timeout's traceback carries no diagnostic value
+                    "LLM call exceeded %.1fs; skipping extraction for prompt %r",
+                    self.settings.llm_timeout_seconds,
+                    prompt,
+                )
+            return json.dumps(llm_timeout_error(prompt), indent=2, ensure_ascii=False)
 
-        messages = self.build_initial_messages(prompt)
-        final_text = ""
-        activated_extract_intent = False
+    async def _invoke_llm(self, llm: Runnable[Any, BaseMessage], messages: list[BaseMessage]) -> BaseMessage:
+        """One LLM call, bounded by LLM_TIMEOUT_SECONDS - raises TimeoutError past it."""
+        async with asyncio.timeout(self.settings.llm_timeout_seconds):
+            return await llm.ainvoke(messages)
 
+    async def _run_tool_call_loop(
+        self,
+        llm: Runnable[Any, BaseMessage],
+        messages: list[BaseMessage],
+        *,
+        extract_intent_active: bool = False,
+    ) -> tuple[BaseMessage | None, bool]:
+        """Invoke the LLM, dispatching tool calls, until it answers without any (or the
+        TOOL_CALL_MAX_ITERATIONS budget runs out - then the response is None).
+
+        Also reports whether extract-intent is active afterwards (it may already be, from an
+        earlier attempt in the same conversation), since only then is the final answer an
+        extraction to normalize rather than free text to pass through.
+        """
         for _ in range(self.settings.tool_call_max_iterations):
-            response = await llm_with_tools.ainvoke(messages)
+            response = await self._invoke_llm(llm, messages)
             tool_calls = getattr(response, "tool_calls", None) or []
-
             if not tool_calls:
-                final_text = self._extract_final_text(
-                    response,
-                    activated_extract_intent=activated_extract_intent,
-                    prompt=prompt,
+                return response, extract_intent_active
+            messages.append(response)
+            for call in tool_calls:
+                if self._dispatch_tool_call(call, messages, extract_intent_active=extract_intent_active):
+                    extract_intent_active = True
+        return None, extract_intent_active
+
+    async def _extract_with_retries(
+        self,
+        llm: Runnable[Any, BaseMessage],
+        prompt: str,
+        *,
+        subject_id: str | None,
+        schema: dict[str, Any],
+    ) -> str:
+        """Run the tool-call loop, validate the extraction, and retry with feedback (TDD 4.9).
+
+        A validation failure (IntentValidationError: not JSON, or off-schema subject.type /
+        action.name / resource.type) appends the rejected answer plus a corrective message
+        (validation_feedback_error, in the fixed 4.7 error shape) to the same conversation
+        and asks again, at most VALIDATION_MAX_RETRIES extra times - the retry budget is
+        separate from TOOL_CALL_MAX_ITERATIONS, which bounds each attempt's tool-call rounds.
+        The conversation (skill activation, injected schema) is kept across attempts so a
+        retry doesn't re-spend tool calls re-activating the skill. Past the budget the caller
+        gets no_intent_error, never the off-schema output. An extraction that exhausts the
+        tool-call budget without ever answering gets no_intent_error too - the fixed 4.7
+        shape, not the free-text placeholder reserved for a non-extraction conversation.
+        """
+        messages = self.build_initial_messages(prompt)
+        activated_extract_intent = False
+        max_retries = self.settings.validation_max_retries
+        for attempt in range(1, max_retries + 2):
+            response, activated_extract_intent = await self._run_tool_call_loop(
+                llm,
+                messages,
+                extract_intent_active=activated_extract_intent,
+            )
+            if response is None:
+                if not activated_extract_intent:
+                    return _NO_RESPONSE_TEXT
+                logger.error(
+                    "Tool-call budget (%d) exhausted without an extraction answer; giving up on prompt %r",
+                    self.settings.tool_call_max_iterations,
+                    prompt,
+                )
+                return json.dumps(no_intent_error(prompt), indent=2, ensure_ascii=False)
+            final_text = self._response_text(response)
+            if not activated_extract_intent:
+                return final_text or _NO_RESPONSE_TEXT
+            try:
+                return normalize_intent_response(
+                    final_text,
+                    prompt,
+                    schema=schema,
                     subject_id=subject_id,
                     subject_type=self.settings.subject_type,
                 )
-                break
-
-            messages.append(response)
-            for call in tool_calls:
-                if self._dispatch_tool_call(call, messages):
-                    activated_extract_intent = True
-
-        return final_text or "(No response generated)"
+            except IntentValidationError as exc:
+                logger.warning(
+                    "Extraction attempt %d/%d failed validation for prompt %r: %s",
+                    attempt,
+                    max_retries + 1,
+                    prompt,
+                    exc,
+                )
+                feedback = json.dumps(validation_feedback_error(prompt, exc.errors), indent=2, ensure_ascii=False)
+                messages.extend((response, HumanMessage(content=feedback)))
+        logger.error("Extraction still off-schema after %d retries; giving up on prompt %r", max_retries, prompt)
+        return json.dumps(no_intent_error(prompt), indent=2, ensure_ascii=False)
 
 
 class IntentExecutor(AgentExecutor):
