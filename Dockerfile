@@ -2,7 +2,7 @@
 # https://sourcery.ai/blog/python-docker/
 # https://fastapi.tiangolo.com/deployment/docker/#dockerfile
 # Supports multi-arch
-FROM python:3.13-trixie@sha256:7a23da3060583bd76c105beab149d388f493702246fdf68670c4ae7ea88b5ba3 AS python-deps
+FROM python:3.13-trixie@sha256:4a0820d8b1b1a1e012a23ff9a1296a3e28b48896a4d27a328a91ee197ce619d9 AS python-deps
 
 # Setup env
 ENV LANG=C.UTF-8 \

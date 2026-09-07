@@ -63,7 +63,7 @@ jobs:
             type=semver,pattern={{major}}
 
       - name: Setup Docker
-        uses: indykite/ops-common/.github/actions/docker-setup@c66cc43f6b14cc3f0947f870331a7cf80749a6a2 # master
+        uses: indykite/ops-common/.github/actions/docker-setup@8ab0cd1f15d223f877f2978c23be2420844f58ae # master
         with:
           workload-identity-provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER_MGMT }}
           gcp-service-account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
@@ -93,7 +93,7 @@ jobs:
     needs: [build-docker]
     steps:
       - name: Checkout argocd applications repo
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: indykite/ml-argocd-applications
           ssh-key: ${{ secrets.SSH_DEPLOY_KEY_ML_ARGOCD_APPLICATIONS }}
