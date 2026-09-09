@@ -664,7 +664,8 @@ class _RequestAudit:
             request_id=self.request_id,
             subject_id=self.subject_id,
             subject_type=self._settings.subject_type,
-            # v1.1: the ik_token actor claim (see auth.validate_ik_token) - no ITS yet.
+            # The ik_token's act.sub (auth.requesting_agent_id) once _authenticate hands it
+            # back; the ITS leg currently only logs it. Follow-up, not a validation gate.
             requesting_agent_id="",
             context_id=self.context_id,
             prompt=self.prompt,
@@ -724,9 +725,20 @@ class IntentExecutor(AgentExecutor):
             logger.exception("Failed to audit request %s (outcome %s)", audit_record.request_id, result.outcome)
 
     async def _authenticate(self, context: RequestContext) -> str:
-        """Validate the Bearer access_token and return its subject; 401 (HTTPException) otherwise."""
+        """Validate the request's tokens (TDD 4.1 steps 1-3) and return the subject id.
+
+        The access_token (Authorization: Bearer) is always required and introspected against
+        the external IdP; its `sub` is the subject id. The ik_token leg (X-IK-Token,
+        introspected against ITS) runs only when ITS is configured - see
+        ``Settings.its_enabled`` - and is then required too. Without ITS configured (IAG in
+        classic IdP mode, or no ITS deployed), the external IdP token alone authenticates
+        the request and any X-IK-Token that still arrives is ignored, not validated - that
+        mode is announced once, at startup (build_app), not per request. Any failure is a
+        401, never a request served with a half-validated identity.
+        """
         access_token = auth.get_access_token_from_context(context)
         if not access_token:
+            logger.info("Rejecting request: no Bearer token in the Authorization header")
             raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="Authorization required")
 
         settings = self._agent.settings
@@ -740,7 +752,43 @@ class IntentExecutor(AgentExecutor):
             )
         except auth.TokenValidationError as exc:
             raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
-        return claims["sub"]
+        subject_id: str = claims["sub"]
+        if settings.its_enabled:
+            await self._validate_delegation(context, subject_id)
+        return subject_id
+
+    async def _validate_delegation(self, context: RequestContext, subject_id: str) -> None:
+        """Require and validate the X-IK-Token against ITS for the given access-token subject.
+
+        Only called with ITS configured (`its_enabled`), and `Settings` rejects a partial
+        ITS_* triple at startup, so the client id and secret are set alongside the URL here.
+        A missing header, an inactive token, or a delegation minted for a different subject
+        than the access token's are all 401s (TDD 4.3 failure modes). The act chain is not
+        checked here - IAG validated it upstream (see validate_ik_token).
+        """
+        settings = self._agent.settings
+        ik_token = auth.get_ik_token_from_context(context)
+        if not ik_token:
+            logger.info("Rejecting request: X-IK-Token header missing while ITS is configured")
+            raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="X-IK-Token required")
+
+        try:
+            ik_claims = await auth.validate_ik_token(
+                ik_token,
+                introspect_url=str(settings.its_introspect_url),
+                client_id=settings.its_client_id,
+                client_secret=settings.its_client_secret.get_secret_value(),
+                timeout_seconds=settings.its_introspect_timeout_seconds,
+            )
+            auth.check_delegated_subject(ik_claims, subject_id=subject_id)
+        except auth.TokenValidationError as exc:
+            raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+
+        logger.info(
+            "ik_token validated: agent %r acting for subject %r",
+            auth.requesting_agent_id(ik_claims) or "(no act claim)",
+            subject_id,
+        )
 
     async def _extract(
         self,
@@ -806,6 +854,23 @@ class IntentExecutor(AgentExecutor):
         )
 
 
+def _log_token_validation_mode(settings: Settings) -> None:
+    """Announce once, at startup, whether the ik_token (ITS) leg is on - see _authenticate.
+
+    ITS off is the shipped default, so a deployment behind IAG in token-service mode that lost
+    its ITS_* values would otherwise downgrade to access_token-only auth with no visible
+    signal: X-IK-Token headers would arrive and be dropped silently. WARNING, once, is the
+    signal; the per-request path stays quiet.
+    """
+    if settings.its_enabled:
+        logger.info("ITS configured at %s - X-IK-Token is required and validated", settings.its_introspect_url)
+        return
+    logger.warning(
+        "ITS not configured (ITS_INTROSPECT_URL unset) - X-IK-Token headers will NOT be validated; "
+        "only the Authorization access token authenticates requests",
+    )
+
+
 def build_app(
     settings: Settings,
     *,
@@ -822,6 +887,7 @@ def build_app(
     agent = IntentAgent(settings, llm=llm, schema_client=schema_client)
     agent.preload_schema()
     sender = audit_sender or build_sender(settings)
+    _log_token_validation_mode(settings)
 
     agent_card = agent.build_agent_card()
     handler = DefaultRequestHandler(

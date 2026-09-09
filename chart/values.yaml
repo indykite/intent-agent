@@ -41,6 +41,20 @@ app:
   introspectClientId: "placeholder" # INTROSPECT_CLIENT_ID
   introspectTimeoutSeconds: 5.0 # INTROSPECT_TIMEOUT_SECONDS
 
+  # IndyKite Token Service (ITS) - validates the X-IK-Token delegation token IAG sends in
+  # token-service mode. Optional as a group: leave itsIntrospectUrl empty and only the
+  # access_token (external IdP) is validated; set it and itsClientId plus
+  # itsClientSecretRef.name/key become required (the chart refuses to render without them, and
+  # Settings fails fast at startup), and every SendMessage must then carry a valid X-IK-Token.
+  itsIntrospectUrl: "" # ITS_INTROSPECT_URL, e.g. "http://token-service:8102/oauth2/introspect"
+  itsClientId: "" # ITS_CLIENT_ID
+  itsIntrospectTimeoutSeconds: 5.0 # ITS_INTROSPECT_TIMEOUT_SECONDS
+
+  # ITS_CLIENT_SECRET - required whenever itsIntrospectUrl is set.
+  itsClientSecretRef:
+    name: ""
+    key: ""
+
   subjectType: "placeholder" # SUBJECT_TYPE
 
   # Audit log (TDD 4.9) - AUDIT_DELIVERY is required by Settings ("file" or "webhook", the Agent

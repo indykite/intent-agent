@@ -39,6 +39,41 @@
     "app": {
       "type": "object",
       "additionalProperties": false,
+      "if": {
+        "properties": {
+          "itsIntrospectUrl": {
+            "minLength": 1
+          }
+        },
+        "required": [
+          "itsIntrospectUrl"
+        ]
+      },
+      "then": {
+        "required": [
+          "itsClientId",
+          "itsClientSecretRef"
+        ],
+        "properties": {
+          "itsClientId": {
+            "minLength": 1
+          },
+          "itsClientSecretRef": {
+            "required": [
+              "name",
+              "key"
+            ],
+            "properties": {
+              "name": {
+                "minLength": 1
+              },
+              "key": {
+                "minLength": 1
+              }
+            }
+          }
+        }
+      },
       "required": [
         "indykiteBaseUrl",
         "introspectUrl",
@@ -127,6 +162,37 @@
         "introspectTimeoutSeconds": {
           "type": "number",
           "exclusiveMinimum": 0
+        },
+        "itsIntrospectUrl": {
+          "type": "string",
+          "anyOf": [
+            {
+              "const": ""
+            },
+            {
+              "format": "uri",
+              "pattern": "^https?://"
+            }
+          ]
+        },
+        "itsClientId": {
+          "type": "string"
+        },
+        "itsIntrospectTimeoutSeconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "itsClientSecretRef": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            }
+          }
         },
         "subjectType": {
           "type": "string",

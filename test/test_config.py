@@ -1,3 +1,5 @@
+import re
+
 import pytest
 from pydantic import ValidationError
 
@@ -214,6 +216,92 @@ def test_introspect_client_secret_does_not_leak_in_repr(monkeypatch):
     settings = Settings(_env_file=None)
     assert "client-secret" not in repr(settings)
     assert settings.introspect_client_secret.get_secret_value() == "client-secret"
+
+
+_ITS_ENV = {
+    "ITS_INTROSPECT_URL": "https://its.example.com/oauth2/introspect",
+    "ITS_CLIENT_ID": "its-client-id",
+    "ITS_CLIENT_SECRET": "its-client-secret",
+}
+_DEFAULT_ITS_INTROSPECT_TIMEOUT_SECONDS = 5.0
+
+
+def _set_its_env(monkeypatch):
+    """Set the complete ITS (ik_token introspection) configuration on top of the baseline."""
+    for env_var, value in _ITS_ENV.items():
+        monkeypatch.setenv(env_var, value)
+
+
+def test_its_is_disabled_by_default(monkeypatch):
+    """With no ITS_* variables set, the ik_token leg is off - the access_token-only path (IAG in
+    classic IdP mode, or no ITS deployed yet) must not require any ITS configuration.
+    """
+    _set_baseline_env(monkeypatch)
+    settings = Settings(_env_file=None)
+    assert settings.its_enabled is False
+    assert settings.its_introspect_url is None
+    assert settings.its_client_id is None
+    assert settings.its_client_secret is None
+    assert settings.its_introspect_timeout_seconds == _DEFAULT_ITS_INTROSPECT_TIMEOUT_SECONDS
+
+
+def test_its_is_enabled_when_fully_configured(monkeypatch):
+    """The complete ITS_* triple must be accepted and switch the ik_token leg on."""
+    _set_baseline_env(monkeypatch)
+    _set_its_env(monkeypatch)
+    settings = Settings(_env_file=None)
+    assert settings.its_enabled is True
+    assert str(settings.its_introspect_url) == _ITS_ENV["ITS_INTROSPECT_URL"]
+    assert settings.its_client_id == _ITS_ENV["ITS_CLIENT_ID"]
+    assert settings.its_client_secret is not None
+    assert settings.its_client_secret.get_secret_value() == _ITS_ENV["ITS_CLIENT_SECRET"]
+
+
+@pytest.mark.parametrize("env_var", list(_ITS_ENV))
+@pytest.mark.parametrize(
+    "make_invalid",
+    [
+        pytest.param(lambda monkeypatch, env_var: monkeypatch.delenv(env_var, raising=False), id="missing"),
+        pytest.param(lambda monkeypatch, env_var: monkeypatch.setenv(env_var, "   "), id="blank"),
+    ],
+)
+def test_rejects_partial_its_config(monkeypatch, env_var, make_invalid):
+    """ITS_* is all-or-nothing: any one of the three missing (or whitespace-only) while the
+    others are set must fail fast, naming the offending variable (the model validator names
+    the env var, pydantic's own min_length failure names the field), not half-enable the leg.
+    """
+    _set_baseline_env(monkeypatch)
+    _set_its_env(monkeypatch)
+    make_invalid(monkeypatch, env_var)
+    with pytest.raises(ValidationError, match=re.compile(env_var, re.IGNORECASE)):
+        Settings(_env_file=None)
+
+
+@pytest.mark.parametrize("bad_url", ["not-a-url", "ftp://its.example.com/oauth2/introspect"])
+def test_rejects_malformed_its_introspect_url(monkeypatch, bad_url):
+    """ITS_INTROSPECT_URL must be a well-formed http(s) URL, like INTROSPECT_URL."""
+    _set_baseline_env(monkeypatch)
+    _set_its_env(monkeypatch)
+    monkeypatch.setenv("ITS_INTROSPECT_URL", bad_url)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+@pytest.mark.parametrize("timeout", ["0", "-1", "abc"])
+def test_rejects_non_positive_its_introspect_timeout(monkeypatch, timeout):
+    """ITS_INTROSPECT_TIMEOUT_SECONDS must be a positive number, like INTROSPECT_TIMEOUT_SECONDS."""
+    _set_baseline_env(monkeypatch)
+    _set_its_env(monkeypatch)
+    monkeypatch.setenv("ITS_INTROSPECT_TIMEOUT_SECONDS", timeout)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_its_client_secret_does_not_leak_in_repr(monkeypatch):
+    """SecretStr must mask ITS_CLIENT_SECRET from logs/tracebacks that repr() Settings."""
+    _set_baseline_env(monkeypatch)
+    _set_its_env(monkeypatch)
+    assert _ITS_ENV["ITS_CLIENT_SECRET"] not in repr(Settings(_env_file=None))
 
 
 def test_requires_subject_type(monkeypatch):

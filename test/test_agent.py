@@ -109,6 +109,37 @@ def test_build_app_closes_audit_sender_on_shutdown(monkeypatch, mocker):
     sender.close.assert_awaited_once()
 
 
+def test_build_app_warns_once_at_startup_when_its_not_configured(monkeypatch, mocker, caplog):
+    """ITS off is the shipped default, so build_app must say so loudly once at startup - a
+    deployment behind IAG in token-service mode that lost its ITS_* values would otherwise
+    drop every X-IK-Token silently.
+    """
+    settings = _settings_with_subject_type(monkeypatch)
+    fake_schema_client = mocker.Mock(preload=mocker.Mock(), get_cached=mocker.Mock(return_value=_load_schema_fixture()))
+
+    with caplog.at_level("WARNING", logger="indykite.intent_agent.agent"):
+        build_app(settings, schema_client=fake_schema_client)
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING" and "ITS not configured" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "X-IK-Token headers will NOT be validated" in warnings[0].getMessage()
+
+
+def test_build_app_logs_its_endpoint_at_startup_when_configured(monkeypatch, mocker, caplog):
+    """With ITS configured, startup states the endpoint at INFO and emits no downgrade warning."""
+    monkeypatch.setenv("ITS_INTROSPECT_URL", "https://its.example.com/oauth2/introspect")
+    monkeypatch.setenv("ITS_CLIENT_ID", "its-client-id")
+    monkeypatch.setenv("ITS_CLIENT_SECRET", "its-client-secret")
+    settings = _settings_with_subject_type(monkeypatch)
+    fake_schema_client = mocker.Mock(preload=mocker.Mock(), get_cached=mocker.Mock(return_value=_load_schema_fixture()))
+
+    with caplog.at_level("INFO", logger="indykite.intent_agent.agent"):
+        build_app(settings, schema_client=fake_schema_client)
+
+    assert "ITS configured at https://its.example.com/oauth2/introspect" in caplog.text
+    assert "ITS not configured" not in caplog.text
+
+
 def test_build_app_starts_when_schema_unavailable_at_cold_start(monkeypatch, mocker):
     """A schema fetch failure at cold start must not abort startup - the platform may still be
     coming up, so the process keeps serving and retries the fetch on every request instead.

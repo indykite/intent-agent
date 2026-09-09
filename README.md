@@ -146,7 +146,11 @@ the steps below.
 `GEMINI_API_KEY`, `INDYKITE_BASE_URL`, `IK_APP_AGENT_KEY`, `INTROSPECT_URL`,
 `INTROSPECT_CLIENT_ID`, `INTROSPECT_CLIENT_SECRET`, and `SUBJECT_TYPE` before starting (see
 "Testing end-to-end against real RC + Redis + Gemini" below for where to get real values, or a
-local introspection stub, for the introspection/schema settings):
+local introspection stub, for the introspection/schema settings). The `ITS_*` settings are
+optional as a group: leave them blank and only the `Authorization` access token is validated;
+set them (all three of `ITS_INTROSPECT_URL`, `ITS_CLIENT_ID`, `ITS_CLIENT_SECRET`) and every
+`SendMessage` must also carry a valid `X-IK-Token`, validated against the IndyKite Token
+Service - see "Token validation" in `CLAUDE.md`:
 
 ```sh
 cp .env.example .env   # then fill in the required settings listed above
@@ -233,7 +237,13 @@ cache, and real Gemini calls:
    ```
 
    Run it, then set `INTROSPECT_URL=http://127.0.0.1:9001/introspect` with any
-   `INTROSPECT_CLIENT_ID`/`INTROSPECT_CLIENT_SECRET`.
+   `INTROSPECT_CLIENT_ID`/`INTROSPECT_CLIENT_SECRET`. The same stub can stand in for ITS
+   (an active response with a `sub` is all the ik_token leg checks): set
+   `ITS_INTROSPECT_URL=http://127.0.0.1:9001/oauth2/introspect` with any `ITS_CLIENT_ID`/
+   `ITS_CLIENT_SECRET`, and send an `X-IK-Token: <any-non-empty-token>` header alongside
+   `Authorization`. That only proves the wiring, though - the stub accepts any token, so
+   for the ik_token leg itself use a real token-service, see "Manual test: ik_token (ITS)
+   validation" below.
 4. Send a prompt that actually matches your graph's schema. `intent-agent`'s subject
    is always auto-bound to the caller (from the introspection `sub` claim, per
    `SUBJECT_TYPE`), never from prompt text - a third-person prompt like "what can
@@ -241,6 +251,61 @@ cache, and real Gemini calls:
    and check the platform schema for resource types that actually exist before
    assuming an entity is graph-modeled (e.g. an individual stock ticker usually
    isn't a node - that data tends to come from an external source instead).
+
+### Manual test: ik_token (ITS) validation
+
+Runs the real `indykite/token-service` image as ITS, the stub above as the external IdP, and
+exercises every branch of `IntentExecutor._authenticate` (see "Token validation" in
+`CLAUDE.md`). `manual_testing/its_local.py` writes a throwaway ITS config and mints
+delegations against it. Four terminals:
+
+```sh
+# terminal 1 - the IdP stub (answers sub=rebecca for any token)
+make start_mock_introspect_service
+
+# terminal 2 - the ITS, on port 8103 (8102 may be taken by a demo stack)
+uv run --locked python -m manual_testing.its_local setup /tmp/its
+docker run -d --name its-local -p 8103:8102 \
+  -v /tmp/its/token-service.yaml:/app/.configs/token-service.yaml:ro \
+  indykite/token-service:1.0.0 --config=/app/.configs/token-service.yaml
+
+# terminal 3 - the agent, ITS enabled (client id/secret are the ones `setup` printed)
+export INTROSPECT_URL=http://127.0.0.1:9001/introspect INTROSPECT_CLIENT_ID=x INTROSPECT_CLIENT_SECRET=y
+export ITS_INTROSPECT_URL=http://127.0.0.1:8103/oauth2/introspect \
+       ITS_CLIENT_ID=intent-agent ITS_CLIENT_SECRET=$(cat /tmp/its/client-secret)
+make start_app
+```
+
+Terminal 4 - one call per case. `mint` prints a delegation whose `sub` is `--subject`
+(default `rebecca`, matching the stub) and whose `act.sub` is `--actor` (default
+`orchestrator`); it expires after 5 minutes, so mint again per round.
+
+| Call | Response | Agent log line just before it |
+| --- | --- | --- |
+| `INTENT_AGENT_IK_TOKEN=$(uv run --locked python -m manual_testing.its_local mint /tmp/its) manual_testing/call_agent.sh` | 200, evaluations with `subject.id: rebecca` | `ik_token validated: agent 'orchestrator' acting for subject 'rebecca'` |
+| `manual_testing/call_agent.sh` (no ik_token) | 401 `X-IK-Token required` | `Rejecting request: X-IK-Token header missing while ITS is configured` |
+| `INTENT_AGENT_IK_TOKEN=garbage manual_testing/call_agent.sh` | 401 `ik_token is not active` | `ik_token introspection: token is not active` |
+| `INTENT_AGENT_IK_TOKEN=$(... mint /tmp/its --subject millicent) manual_testing/call_agent.sh` | 401 `actor delegation not authorized` | `ik_token subject 'millicent' does not match access token subject 'rebecca'` |
+| `docker stop its-local`, then any of the above | 401 `ik_token introspection request failed` | WARNING `ik_token introspection request failed: ...` |
+
+Every 401 stops before extraction: no `Received message ...` line and no Gemini call after
+it. The happy-path log must show the second introspection going to
+`http://127.0.0.1:8103/oauth2/introspect` - if it goes to port `9001`, `ITS_INTROSPECT_URL`
+still points at the stub (a leftover export or a value in `.env`; the environment wins over
+`.env`), and the ITS leg isn't being tested at all: the stub would also accept `garbage`.
+
+Two startup checks, in terminal 3 after stopping the agent:
+
+```sh
+# a partial ITS_* triple must refuse to start, naming ITS_CLIENT_ID and ITS_CLIENT_SECRET
+ITS_CLIENT_ID= ITS_CLIENT_SECRET= make start_app
+
+# ITS off: the ik_token leg is skipped, so the no-ik_token call above now returns 200
+unset ITS_INTROSPECT_URL ITS_CLIENT_ID ITS_CLIENT_SECRET
+make start_app
+```
+
+Tear down with `docker rm -f its-local`.
 
 ### Testing end-to-end against real RC + Redis + Gemini with scripts
 

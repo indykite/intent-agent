@@ -122,11 +122,11 @@ Six modules carry whole service:
   tier-1 system-prompt catalog (`skill_catalog_preamble.txt` + skill names/descriptions) and the
   A2A `AgentSkill` list for the agent card.
 - **`schema.py`** — `SchemaClient`: fetches/caches the IndyKite graph schema (JGF) over `httpx2`.
-- **`auth.py`** — pulls the Bearer `access_token` off the A2A request context and validates it via
-  RFC 7662 Token Introspection against the external IdP (no local JWT decode/signature check -
-  the introspection call itself is what covers signature validity). The `ik_token`/IndyKite Token
-  Service leg (`validate_ik_token`) is a deliberate `NotImplementedError` stub, blocked on ITS not
-  existing yet (`ENG-8846`) - not wired into `agent.py` yet either.
+- **`auth.py`** — pulls the Bearer `access_token` (`Authorization`) and the raw `ik_token`
+  (`X-IK-Token`) off the A2A request context and validates each via RFC 7662 Token Introspection:
+  the access_token against the external IdP, the ik_token against the IndyKite Token Service
+  (ITS). No local JWT decode/signature check - the introspection call itself is what covers
+  signature validity. See "Token validation" below for which leg runs when.
 - **`__main__.py`** — process entrypoint (`python -m indykite.intent_agent`). Wires `Settings()`,
   calls `build_app`, starts background health server on `HEALTH_PORT` (default 8001) using
   stdlib `http.server` — deliberately **not** part of main Starlette app, second listener —
@@ -196,6 +196,54 @@ no-op sender - `AUDIT_DELIVERY` is required, so a deployment can't silently run 
 evaluations, retry count, schema hash) so `IntentExecutor` never parses its own output to
 classify it; a new exit path from the pipeline must set its outcome there, not in the executor.
 
+**Token validation (TDD 4.3, dual-token design).** `IntentExecutor._authenticate` runs before
+anything else in a `SendMessage` and is the only place a 401 comes from. It lives in the
+executor, so it guards extraction only: the A2A `GetTask`/`ListTasks` methods are served by the
+SDK's request handler straight from the task store, with no token check at all (pre-existing,
+not introduced by the ITS leg - moving both legs into a call-context builder or middleware is
+the follow-up; until then, don't describe the service as authenticating "every request"). Two
+legs, same wire contract (RFC 7662 `POST` form-encoded `token=...`, `client_secret_basic`,
+`{active, sub, ...}` back), two servers:
+
+- **`access_token`** (`Authorization: Bearer ...`, external IdP, `INTROSPECT_*` settings) -
+  always required. Missing header, inactive token, no `sub`, or the IdP unreachable → 401. Its
+  `sub` is the `subject_id` bound into every evaluation (TDD 4.1 step 3) - never the
+  ik_token's, even when both are present.
+- **`ik_token`** (`X-IK-Token`, IndyKite Token Service, `ITS_*` settings) - the delegation token
+  IAG mints via ITS (jarvis `services/agent-gateway/token-service`, `POST /oauth2/introspect`)
+  and forwards *beside* the untouched access_token when IAG runs in token-service mode. The
+  header carries the raw JWT, no `Bearer` prefix (IAG's `forward.Tokens.SetHeaders`; the
+  platform reads it "as is" too) - `get_ik_token_from_context` returns it whole. ITS's
+  introspection body is RFC 7662 plus the RFC 8693 `act` chain; `validate_ik_token` requires
+  `active` and `sub` only, and `check_delegated_subject` then requires the ik_token's `sub` to
+  equal the access_token's (the "actor delegation not authorized" 401; IAG and the platform
+  MCP server apply the same rule on ingress).
+
+**Which leg runs is a startup decision, not a per-request one.** `ITS_INTROSPECT_URL`,
+`ITS_CLIENT_ID`, `ITS_CLIENT_SECRET` are optional as a group (`Settings` rejects a partial
+triple at startup; `ITS_INTROSPECT_TIMEOUT_SECONDS` defaults to 5s like the IdP's):
+
+- **ITS not configured** (`Settings.its_enabled` false - IAG in classic IdP mode, or no ITS
+  deployed): the external IdP token alone authenticates the request, exactly the v1.0 path.
+  An `X-IK-Token` that still arrives is ignored, not validated - there is nothing configured
+  to validate it against. Because that is also the shipped default, `build_app` logs one
+  WARNING at startup (`_log_token_validation_mode`) so a deployment that lost its `ITS_*`
+  values doesn't downgrade silently; the per-request path stays quiet.
+- **ITS configured**: `X-IK-Token` is required and validated on every `SendMessage`; missing,
+  inactive, subject-mismatched, *or ITS unreachable* → 401. That last one is
+  deliberately fail-closed: falling back to the access_token alone when ITS is down would let
+  anyone bypass the delegation check by taking ITS down. "ITS not available" therefore means
+  "not configured", never "not answering".
+
+New token checks go in `auth.py` next to these (pure functions over the claims where possible,
+like `check_delegated_subject`, so they unit-test without HTTP) and are wired through
+`_authenticate`/`_validate_delegation` in `agent.py` - don't add a third header-parsing path.
+`validate_app_agent_token` stays a deliberate `NotImplementedError` stub (blocked on the backend
+team's design). Local testing: `manual_testing/mock_introspect.py` answers active with a `sub`,
+so the same stub can serve as both IdP and ITS for wiring checks; `manual_testing/its_local.py`
+runs a real token-service for the leg itself (see README, "Manual test: ik_token (ITS)
+validation").
+
 **Schema cache backend.** `CACHE_BACKEND` (`Settings`, default `"memory"`) picks the
 `dogpile.cache` backend `_build_schema_cache` (`agent.py`) configures: in-process `memory`, or
 `redis` using `REDIS_URL` — required whenever `CACHE_BACKEND=redis` (`Settings` fails fast at
@@ -207,7 +255,9 @@ test): JSON-RPC method name is `SendMessage`, not `message/send`; requests need
 `A2A-Version: 1.0` header; message `role` must be literal `ROLE_USER`; `Authorization: Bearer
 <token>` required and validated via RFC 7662 introspection against the external IdP (real network
 call - a valid-looking-but-fake token, like the old JWT-decode design accepted, is now rejected);
-`subject_id` comes from the introspection response's `sub` claim, not a locally-decoded one.
+`subject_id` comes from the introspection response's `sub` claim, not a locally-decoded one; with
+ITS configured, a raw `X-IK-Token: <ik_token>` header (no `Bearer`) is required as well, see
+"Token validation" above.
 
 ## Docker
 

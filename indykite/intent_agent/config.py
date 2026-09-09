@@ -76,6 +76,17 @@ class Settings(BaseSettings):
     introspect_client_secret: SecretStr = Field(min_length=1)
     introspect_timeout_seconds: PositiveFloat = 5.0
 
+    # IndyKite Token Service (ITS) leg of the dual-token design (TDD 4.3): the `X-IK-Token`
+    # delegation token is introspected here, RFC 7662-style with client_secret_basic, the same
+    # way the external IdP validates the Bearer access_token above. Optional as a group - set
+    # none of the three and only the access_token path runs (IAG in classic IdP mode, or no
+    # ITS deployed yet); set ITS_INTROSPECT_URL and the other two become required, and every
+    # request must then carry a valid `X-IK-Token`.
+    its_introspect_url: HttpUrl | None = None
+    its_client_id: str | None = Field(default=None, min_length=1)
+    its_client_secret: SecretStr | None = Field(default=None, min_length=1)
+    its_introspect_timeout_seconds: PositiveFloat = 5.0
+
     subject_type: str = Field(min_length=1)
 
     # Audit log delivery (TDD 4.9 record, IAG-shaped delivery - see audit/). The keys mirror the
@@ -162,6 +173,11 @@ class Settings(BaseSettings):
             raise ValueError(message)
         return self
 
+    @property
+    def its_enabled(self) -> bool:
+        """Whether the ik_token (ITS) validation leg is configured - see _require_complete_its_config."""
+        return self.its_introspect_url is not None
+
     @model_validator(mode="after")
     def _reject_matching_ports(self) -> "Settings":
         """Reject intent_port and health_port being the same (would collide on bind)."""
@@ -185,5 +201,23 @@ class Settings(BaseSettings):
         """Reject CACHE_BACKEND=redis with no REDIS_URL - there'd be nothing to connect to."""
         if self.cache_backend == "redis" and self.redis_url is None:
             message = "REDIS_URL is required when CACHE_BACKEND is 'redis'"
+            raise ValueError(message)
+        return self
+
+    @model_validator(mode="after")
+    def _require_complete_its_config(self) -> "Settings":
+        """Reject a partial ITS configuration: ITS_INTROSPECT_URL, ITS_CLIENT_ID and
+        ITS_CLIENT_SECRET are all-or-nothing. A URL with no credentials would fail every
+        introspection call at request time (ITS uses client_secret_basic); credentials with no
+        URL would silently leave the ik_token unvalidated while looking configured.
+        """
+        its_fields = {
+            "ITS_INTROSPECT_URL": self.its_introspect_url,
+            "ITS_CLIENT_ID": self.its_client_id,
+            "ITS_CLIENT_SECRET": self.its_client_secret,
+        }
+        missing = [name for name, value in its_fields.items() if value is None]
+        if missing and len(missing) != len(its_fields):
+            message = f"{', '.join(missing)} required when any of {', '.join(its_fields)} is set"
             raise ValueError(message)
         return self

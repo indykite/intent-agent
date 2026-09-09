@@ -100,6 +100,19 @@ spec:
               value: {{ .Values.app.introspectClientId | quote }}
             - name: INTROSPECT_TIMEOUT_SECONDS
               value: {{ .Values.app.introspectTimeoutSeconds | quote }}
+            {{- if .Values.app.itsIntrospectUrl }}
+            - name: ITS_INTROSPECT_URL
+              value: {{ .Values.app.itsIntrospectUrl | quote }}
+            - name: ITS_CLIENT_ID
+              value: {{ required "app.itsClientId is required when app.itsIntrospectUrl is set" .Values.app.itsClientId | quote }}
+            - name: ITS_INTROSPECT_TIMEOUT_SECONDS
+              value: {{ .Values.app.itsIntrospectTimeoutSeconds | quote }}
+            - name: ITS_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "app.itsClientSecretRef.name is required when app.itsIntrospectUrl is set" .Values.app.itsClientSecretRef.name }}
+                  key: {{ required "app.itsClientSecretRef.key is required when app.itsIntrospectUrl is set" .Values.app.itsClientSecretRef.key }}
+            {{- end }}
             - name: SUBJECT_TYPE
               value: {{ .Values.app.subjectType | quote }}
             - name: AUDIT_DELIVERY
