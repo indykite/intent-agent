@@ -178,6 +178,24 @@ back to the LLM - is the fixed `{prompt, error, reason, obligation}` shape built
 `errors.error_response`; new ones go in `errors.py` next to the existing ones, never as ad-hoc
 dicts or strings elsewhere.
 
+**Audit log (TDD 4.9).** Every request produces exactly one audit record - a successful
+extraction, an `unmatched`/`validation_failed` one, a rejected token (audited as
+`outcome = error` with the same reason the caller got, like the Agent Gateway audits every
+rejection), and an unexpected exception alike. The record is the TDD's field list verbatim
+(`audit/message.py`'s `AuditMessage`: snake_case, `outcome`/`message`, `prompt` and
+`evaluations` recorded in full - a deliberate, TDD-owner-confirmed departure from the IAG's
+no-payload rule); `message` follows the IAG's `reason` rule and always equals the text the caller
+received. Delivery is the IAG's (`jarvis-proto/services/agent-gateway/internal/audit`), ported
+one `Sender` per IAG sender under `audit/`: `file.py` (rotating `audit-<service>-<unixNano>.<fmt>`
+files, json/csv/txt), `http.py` (one POST/PUT per record, mTLS/api-key/no-auth, failures logged
+never raised), `async_sender.py` (bounded queue + worker, drop-on-full, drained by the Starlette
+lifespan on shutdown), picked by `sender.build_sender` from the flat `AUDIT_*` `Settings` fields
+that mirror the IAG's `audit.` YAML keys. The one deliberate difference from the IAG: there is no
+no-op sender - `AUDIT_DELIVERY` is required, so a deployment can't silently run unaudited.
+`IntentAgent.run_extraction` returns an `ExtractionResult` (response text plus outcome, message,
+evaluations, retry count, schema hash) so `IntentExecutor` never parses its own output to
+classify it; a new exit path from the pipeline must set its outcome there, not in the executor.
+
 **Schema cache backend.** `CACHE_BACKEND` (`Settings`, default `"memory"`) picks the
 `dogpile.cache` backend `_build_schema_cache` (`agent.py`) configures: in-process `memory`, or
 `redis` using `REDIS_URL` — required whenever `CACHE_BACKEND=redis` (`Settings` fails fast at

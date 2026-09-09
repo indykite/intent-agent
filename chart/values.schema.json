@@ -132,6 +132,92 @@
           "type": "string",
           "minLength": 1
         },
+        "auditDelivery": {
+          "type": "string",
+          "enum": [
+            "file",
+            "webhook"
+          ]
+        },
+        "auditAsync": {
+          "type": "boolean"
+        },
+        "auditAsyncBufferSize": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "auditFileStoragePath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "auditFileFormat": {
+          "type": "string",
+          "enum": [
+            "csv",
+            "json",
+            "txt"
+          ]
+        },
+        "auditFileRotationStrategy": {
+          "type": "string",
+          "enum": [
+            "time",
+            "size",
+            "size-and-time"
+          ]
+        },
+        "auditFileRotationIntervalSeconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "auditFileRotationMaxBytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "auditHttpUrl": {
+          "type": "string"
+        },
+        "auditHttpMethod": {
+          "type": "string",
+          "enum": [
+            "POST",
+            "PUT"
+          ]
+        },
+        "auditHttpAuthType": {
+          "type": "string",
+          "enum": [
+            "mTLS",
+            "no-auth",
+            "api-key"
+          ]
+        },
+        "auditHttpApiKeyHeader": {
+          "type": "string",
+          "minLength": 1
+        },
+        "auditHttpTimeoutSeconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "auditHttpApiKeySecretRef": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            }
+          }
+        },
+        "auditHttpMtlsCertificateFilePath": {
+          "type": "string"
+        },
+        "auditHttpMtlsPrivateKeyPath": {
+          "type": "string"
+        },
         "geminiApiKeySecretRef": {
           "type": "object",
           "additionalProperties": false,

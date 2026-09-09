@@ -102,6 +102,50 @@ spec:
               value: {{ .Values.app.introspectTimeoutSeconds | quote }}
             - name: SUBJECT_TYPE
               value: {{ .Values.app.subjectType | quote }}
+            - name: AUDIT_DELIVERY
+              value: {{ .Values.app.auditDelivery | quote }}
+            - name: AUDIT_ASYNC
+              value: {{ .Values.app.auditAsync | quote }}
+            - name: AUDIT_ASYNC_BUFFER_SIZE
+              value: {{ .Values.app.auditAsyncBufferSize | quote }}
+            {{- if eq .Values.app.auditDelivery "file" }}
+            - name: AUDIT_FILE_STORAGE_PATH
+              value: {{ .Values.app.auditFileStoragePath | quote }}
+            - name: AUDIT_FILE_FORMAT
+              value: {{ .Values.app.auditFileFormat | quote }}
+            - name: AUDIT_FILE_ROTATION_STRATEGY
+              value: {{ .Values.app.auditFileRotationStrategy | quote }}
+            - name: AUDIT_FILE_ROTATION_INTERVAL_SECONDS
+              value: {{ .Values.app.auditFileRotationIntervalSeconds | quote }}
+            - name: AUDIT_FILE_ROTATION_MAX_BYTES
+              value: {{ .Values.app.auditFileRotationMaxBytes | quote }}
+            {{- else }}
+            - name: AUDIT_HTTP_URL
+              value: {{ .Values.app.auditHttpUrl | quote }}
+            - name: AUDIT_HTTP_METHOD
+              value: {{ .Values.app.auditHttpMethod | quote }}
+            - name: AUDIT_HTTP_AUTH_TYPE
+              value: {{ .Values.app.auditHttpAuthType | quote }}
+            - name: AUDIT_HTTP_API_KEY_HEADER
+              value: {{ .Values.app.auditHttpApiKeyHeader | quote }}
+            - name: AUDIT_HTTP_TIMEOUT_SECONDS
+              value: {{ .Values.app.auditHttpTimeoutSeconds | quote }}
+            {{- if .Values.app.auditHttpApiKeySecretRef.name }}
+            - name: AUDIT_HTTP_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.app.auditHttpApiKeySecretRef.name }}
+                  key: {{ .Values.app.auditHttpApiKeySecretRef.key }}
+            {{- end }}
+            {{- if .Values.app.auditHttpMtlsCertificateFilePath }}
+            - name: AUDIT_HTTP_MTLS_CERTIFICATE_FILE_PATH
+              value: {{ .Values.app.auditHttpMtlsCertificateFilePath | quote }}
+            {{- end }}
+            {{- if .Values.app.auditHttpMtlsPrivateKeyPath }}
+            - name: AUDIT_HTTP_MTLS_PRIVATE_KEY_PATH
+              value: {{ .Values.app.auditHttpMtlsPrivateKeyPath | quote }}
+            {{- end }}
+            {{- end }}
 
             - name: GEMINI_API_KEY
               valueFrom:
@@ -159,6 +203,17 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: [ALL]
+          {{- if eq .Values.app.auditDelivery "file" }}
+          volumeMounts:
+            # The root filesystem is read-only, so file audit delivery needs somewhere writable.
+            - name: audit-log
+              mountPath: {{ .Values.app.auditFileStoragePath | quote }}
+          {{- end }}
+      {{- if eq .Values.app.auditDelivery "file" }}
+      volumes:
+        - name: audit-log
+          emptyDir: {}
+      {{- end }}
 
       {{- with .Values.nodeSelector }}
       nodeSelector:

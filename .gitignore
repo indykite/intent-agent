@@ -48,3 +48,6 @@ gha-creds-*.json
 # helm-dependency-build pre-commit hook / CI (see .pre-commit-config.yaml,
 # .github/workflows/chart-publish.yaml) rather than committed. chart/Chart.lock IS committed.
 chart/charts/
+
+# Local audit log files (AUDIT_DELIVERY=file with the .env.example default path)
+.private/

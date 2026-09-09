@@ -1,0 +1,69 @@
+"""Audit delivery, shaped after the Agent Gateway's `audit` package: a `Sender` that a call
+site hands a record to and never hears back from (delivery failures are logged, never raised
+into the request path), picked at startup from AUDIT_DELIVERY - `file` or `webhook` - and
+optionally wrapped in the buffered `AsyncSender` (AUDIT_ASYNC).
+
+The one place this diverges from the IAG is that there is no no-op sender: AUDIT_DELIVERY is
+required (see config.py), because the TDD requires every request to produce a record.
+"""
+
+from typing import Protocol
+
+from indykite.intent_agent.audit.async_sender import AsyncSender
+from indykite.intent_agent.audit.file import FileConfig, FileSender
+from indykite.intent_agent.audit.http import HttpConfig, HttpSender
+from indykite.intent_agent.audit.message import AuditMessage
+from indykite.intent_agent.config import Settings
+
+
+class Sender(Protocol):
+    """What every audit delivery implements (the IAG's `SenderCloser`)."""
+
+    async def send(self, message: AuditMessage) -> None:
+        """Deliver one record. Never raises - a delivery failure is logged instead."""
+
+    async def close(self) -> None:
+        """Release the underlying resource (file handle, HTTP client, worker task)."""
+
+
+def _required[T](value: T | None, env_var: str) -> T:
+    """Narrow a delivery-specific setting Settings' validators already guarantee is set.
+
+    Settings rejects a missing one at startup, so this only fires if a validator and this
+    factory ever disagree - a bug, reported with the env var it concerns rather than an
+    AttributeError deep inside a sender.
+    """
+    if value is None:
+        message = f"audit: {env_var} is required"
+        raise ValueError(message)
+    return value
+
+
+def build_sender(settings: Settings) -> Sender:
+    """Construct the sender AUDIT_DELIVERY names."""
+    sender: Sender
+    if settings.audit_delivery == "webhook":
+        api_key = settings.audit_http_api_key
+        config = HttpConfig(
+            url=str(_required(settings.audit_http_url, "AUDIT_HTTP_URL")),
+            method=_required(settings.audit_http_method, "AUDIT_HTTP_METHOD"),
+            auth_type=_required(settings.audit_http_auth_type, "AUDIT_HTTP_AUTH_TYPE"),
+            api_key=api_key.get_secret_value() if api_key else "",
+            api_key_header=settings.audit_http_api_key_header,
+            mtls_certificate_file_path=settings.audit_http_mtls_certificate_file_path,
+            mtls_private_key_path=settings.audit_http_mtls_private_key_path,
+            timeout_seconds=settings.audit_http_timeout_seconds,
+        )
+        sender = HttpSender(config)
+    else:
+        file_config = FileConfig(
+            storage_path=_required(settings.audit_file_storage_path, "AUDIT_FILE_STORAGE_PATH"),
+            file_format=_required(settings.audit_file_format, "AUDIT_FILE_FORMAT"),
+            rotation_strategy=_required(settings.audit_file_rotation_strategy, "AUDIT_FILE_ROTATION_STRATEGY"),
+            rotation_interval_seconds=settings.audit_file_rotation_interval_seconds,
+            rotation_max_bytes=settings.audit_file_rotation_max_bytes,
+        )
+        sender = FileSender(file_config, service=settings.intent_agent_name)
+    if settings.audit_async:
+        return AsyncSender(sender, buffer_size=settings.audit_async_buffer_size)
+    return sender

@@ -23,7 +23,7 @@ _LLM_TIMEOUT_SECONDS = 0.2
 _MAX_ELAPSED_SECONDS = 2.0
 
 
-def test_hung_llm_call_is_cut_off_within_request_budget(monkeypatch, mocker):
+def test_hung_llm_call_is_cut_off_within_request_budget(monkeypatch, mocker, tmp_path):
     """Drive a SendMessage request through the ASGI app against an LLM that never answers."""
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("INTROSPECT_URL", "https://idp.example.com/introspect")
@@ -32,6 +32,10 @@ def test_hung_llm_call_is_cut_off_within_request_budget(monkeypatch, mocker):
     monkeypatch.setenv("SUBJECT_TYPE", "Customer")
     monkeypatch.setenv("INDYKITE_BASE_URL", "https://ikg.example.com")
     monkeypatch.setenv("IK_APP_AGENT_KEY", "test-app-agent-key")
+    monkeypatch.setenv("AUDIT_DELIVERY", "file")
+    monkeypatch.setenv("AUDIT_FILE_STORAGE_PATH", str(tmp_path / "audit"))
+    monkeypatch.setenv("AUDIT_FILE_FORMAT", "json")
+    monkeypatch.setenv("AUDIT_FILE_ROTATION_STRATEGY", "time")
     monkeypatch.setenv("LLM_TIMEOUT_SECONDS", str(_LLM_TIMEOUT_SECONDS))
     mocker.patch(
         "indykite.intent_agent.agent.auth.validate_access_token",
