@@ -33,6 +33,20 @@ def _set_baseline_env(monkeypatch):
     monkeypatch.setenv("SUBJECT_TYPE", "Customer")
     monkeypatch.setenv("IK_APP_AGENT_KEY", "test-app-agent-key")
     monkeypatch.setenv("INDYKITE_BASE_URL", "https://ikg.example.com")
+    # AUDIT_DELIVERY is required (TDD 4.9: every request produces a record); Settings never
+    # creates the directory, so a placeholder path is fine here.
+    monkeypatch.setenv("AUDIT_DELIVERY", "file")
+    monkeypatch.setenv("AUDIT_FILE_STORAGE_PATH", "./.private/audit-never-created")
+    monkeypatch.setenv("AUDIT_FILE_FORMAT", "json")
+    monkeypatch.setenv("AUDIT_FILE_ROTATION_STRATEGY", "time")
+
+
+def _set_webhook_env(monkeypatch, auth_type="no-auth"):
+    """Switch the baseline to webhook delivery with the given auth type."""
+    monkeypatch.setenv("AUDIT_DELIVERY", "webhook")
+    monkeypatch.setenv("AUDIT_HTTP_URL", "https://audit.example.com/records")
+    monkeypatch.setenv("AUDIT_HTTP_METHOD", "POST")
+    monkeypatch.setenv("AUDIT_HTTP_AUTH_TYPE", auth_type)
 
 
 def test_requires_gemini_api_key(monkeypatch):
@@ -329,4 +343,166 @@ def test_rejects_llm_timeout_longer_than_request_timeout(monkeypatch):
     monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "11")
     monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "10")
     with pytest.raises(ValidationError, match="LLM_TIMEOUT_SECONDS must not exceed REQUEST_TIMEOUT_SECONDS"):
+        Settings(_env_file=None)
+
+
+_DEFAULT_AUDIT_ASYNC_BUFFER_SIZE = 512
+_DEFAULT_AUDIT_ROTATION_INTERVAL_SECONDS = 24 * 60 * 60.0
+_DEFAULT_AUDIT_ROTATION_MAX_BYTES = 100 * 1024 * 1024
+_DEFAULT_AUDIT_HTTP_TIMEOUT_SECONDS = 5.0
+
+
+def test_requires_audit_delivery(monkeypatch):
+    """Unlike the IAG (audit section absent = auditing off), AUDIT_DELIVERY has no default: the
+    TDD requires every request to produce an audit record, so a deployment can't silently
+    run without one configured.
+    """
+    _set_baseline_env(monkeypatch)
+    monkeypatch.delenv("AUDIT_DELIVERY", raising=False)
+    with pytest.raises(ValidationError, match="audit_delivery"):
+        Settings(_env_file=None)
+
+
+def test_rejects_unknown_audit_delivery(monkeypatch):
+    """AUDIT_DELIVERY is `file` or `webhook`, the IAG's two delivery types - nothing else."""
+    _set_baseline_env(monkeypatch)
+    monkeypatch.setenv("AUDIT_DELIVERY", "stdout")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_audit_defaults_match_the_iag(monkeypatch):
+    """Every optional audit setting defaults to the IAG's documented default."""
+    _set_baseline_env(monkeypatch)
+    settings = Settings(_env_file=None)
+    assert settings.audit_async is False
+    assert settings.audit_async_buffer_size == _DEFAULT_AUDIT_ASYNC_BUFFER_SIZE
+    assert settings.audit_http_api_key_header == "X-API-Key"
+    assert settings.audit_http_timeout_seconds == _DEFAULT_AUDIT_HTTP_TIMEOUT_SECONDS
+    assert settings.audit_file_rotation_interval_seconds == _DEFAULT_AUDIT_ROTATION_INTERVAL_SECONDS
+    assert settings.audit_file_rotation_max_bytes == _DEFAULT_AUDIT_ROTATION_MAX_BYTES
+
+
+@pytest.mark.parametrize(
+    "env_var",
+    ["AUDIT_FILE_STORAGE_PATH", "AUDIT_FILE_FORMAT", "AUDIT_FILE_ROTATION_STRATEGY"],
+)
+def test_file_delivery_requires_its_settings(monkeypatch, env_var):
+    """AUDIT_DELIVERY=file without path/format/rotation fails at startup (IAG FileConfig rules)."""
+    _set_baseline_env(monkeypatch)
+    monkeypatch.delenv(env_var, raising=False)
+    with pytest.raises(ValidationError, match="audit: "):
+        Settings(_env_file=None)
+
+
+@pytest.mark.parametrize(
+    ("env_var", "value"),
+    [("AUDIT_FILE_FORMAT", "yaml"), ("AUDIT_FILE_ROTATION_STRATEGY", "daily")],
+)
+def test_rejects_unknown_file_format_or_rotation(monkeypatch, env_var, value):
+    """Formats are csv/json/txt and rotation is time/size/size-and-time, as documented for the IAG."""
+    _set_baseline_env(monkeypatch)
+    monkeypatch.setenv(env_var, value)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+@pytest.mark.parametrize(
+    "env_var",
+    ["AUDIT_ASYNC_BUFFER_SIZE", "AUDIT_FILE_ROTATION_INTERVAL_SECONDS", "AUDIT_FILE_ROTATION_MAX_BYTES"],
+)
+@pytest.mark.parametrize("value", [0, -1])
+def test_rejects_non_positive_audit_limits(monkeypatch, env_var, value):
+    """A zero/negative queue size, rotation interval or size limit would rotate or drop on every record."""
+    _set_baseline_env(monkeypatch)
+    monkeypatch.setenv(env_var, str(value))
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+@pytest.mark.parametrize(
+    ("env_var", "expected"),
+    [
+        ("AUDIT_HTTP_URL", "AUDIT_HTTP_URL is required"),
+        ("AUDIT_HTTP_METHOD", "must be POST or PUT"),
+        ("AUDIT_HTTP_AUTH_TYPE", "AUDIT_HTTP_AUTH_TYPE is required"),
+    ],
+)
+def test_webhook_delivery_requires_its_settings(monkeypatch, env_var, expected):
+    """AUDIT_DELIVERY=webhook without url/method/auth fails at startup (IAG HTTPConfig rules)."""
+    _set_baseline_env(monkeypatch)
+    _set_webhook_env(monkeypatch)
+    monkeypatch.delenv(env_var, raising=False)
+    with pytest.raises(ValidationError, match=expected):
+        Settings(_env_file=None)
+
+
+def test_webhook_method_is_case_insensitive(monkeypatch):
+    """`post`/`put` in any case are accepted and normalised, like the IAG's strings.ToUpper."""
+    _set_baseline_env(monkeypatch)
+    _set_webhook_env(monkeypatch)
+    monkeypatch.setenv("AUDIT_HTTP_METHOD", "put")
+    assert Settings(_env_file=None).audit_http_method == "PUT"
+
+
+@pytest.mark.parametrize("method", ["GET", "PATCH", "DELETE"])
+def test_rejects_other_webhook_methods(monkeypatch, method):
+    """Only POST and PUT can carry a body the receiver is expected to store."""
+    _set_baseline_env(monkeypatch)
+    _set_webhook_env(monkeypatch)
+    monkeypatch.setenv("AUDIT_HTTP_METHOD", method)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_mtls_requires_certificate_and_key(monkeypatch):
+    """The IAG's rule, verbatim in spirit: mTLS needs both files, named at startup."""
+    _set_baseline_env(monkeypatch)
+    _set_webhook_env(monkeypatch, auth_type="mTLS")
+    with pytest.raises(ValidationError, match="mTLS requires"):
+        Settings(_env_file=None)
+
+
+def test_mtls_files_must_exist(monkeypatch, tmp_path):
+    """A certificate path that doesn't exist is a startup error, not a first-record surprise."""
+    _set_baseline_env(monkeypatch)
+    _set_webhook_env(monkeypatch, auth_type="mTLS")
+    monkeypatch.setenv("AUDIT_HTTP_MTLS_CERTIFICATE_FILE_PATH", str(tmp_path / "missing-cert.pem"))
+    monkeypatch.setenv("AUDIT_HTTP_MTLS_PRIVATE_KEY_PATH", str(tmp_path / "missing-key.pem"))
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_api_key_auth_requires_a_key(monkeypatch):
+    """The IAG's rule: api-key auth without a key is a config error."""
+    _set_baseline_env(monkeypatch)
+    _set_webhook_env(monkeypatch, auth_type="api-key")
+    with pytest.raises(ValidationError, match="api-key auth requires AUDIT_HTTP_API_KEY"):
+        Settings(_env_file=None)
+
+
+def test_audit_api_key_does_not_leak_in_repr(monkeypatch):
+    """SecretStr must mask AUDIT_HTTP_API_KEY from logs/tracebacks that repr() Settings."""
+    _set_baseline_env(monkeypatch)
+    _set_webhook_env(monkeypatch, auth_type="api-key")
+    monkeypatch.setenv("AUDIT_HTTP_API_KEY", "audit-secret")
+    settings = Settings(_env_file=None)
+    assert "audit-secret" not in repr(settings)
+    assert settings.audit_http_api_key.get_secret_value() == "audit-secret"
+
+
+def test_rejects_unknown_audit_auth_type(monkeypatch):
+    """Auth is mTLS, no-auth or api-key - the IAG's three."""
+    _set_baseline_env(monkeypatch)
+    _set_webhook_env(monkeypatch, auth_type="basic")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_api_key_auth_rejects_blank_key(monkeypatch):
+    """A whitespace-only AUDIT_HTTP_API_KEY is as useless as a missing one and fails at startup too."""
+    _set_baseline_env(monkeypatch)
+    _set_webhook_env(monkeypatch, auth_type="api-key")
+    monkeypatch.setenv("AUDIT_HTTP_API_KEY", "   ")
+    with pytest.raises(ValidationError, match="api-key auth requires AUDIT_HTTP_API_KEY"):
         Settings(_env_file=None)

@@ -8,8 +8,10 @@ import pytest
 from dogpile.cache.backends.memory import MemoryBackend
 from dogpile.cache.backends.redis import RedisBackend
 from langchain_core.messages import HumanMessage, ToolMessage
+from starlette.testclient import TestClient
 
 from indykite.intent_agent.agent import IntentAgent, _build_schema_cache, build_app
+from indykite.intent_agent.audit.message import Outcome, schema_version
 from indykite.intent_agent.config import Settings
 from indykite.intent_agent.errors import (
     IntentValidationError,
@@ -86,11 +88,25 @@ def test_build_app_registers_routes(monkeypatch, mocker):
         get_cached=mocker.Mock(return_value=_load_schema_fixture()),
     )
 
-    app, agent = build_app(settings, schema_client=fake_schema_client)
+    app, agent = build_app(settings, schema_client=fake_schema_client, audit_sender=_fake_audit_sender(mocker))
 
     assert agent.settings.gemini_api_key.get_secret_value() == "test-key"
     assert agent.get_cached_schema() is not None
     assert len(app.routes) >= _MIN_EXPECTED_ROUTES
+
+
+def test_build_app_closes_audit_sender_on_shutdown(monkeypatch, mocker):
+    """The app's lifespan closes the audit sender on shutdown - that is what drains a buffered
+    (AUDIT_ASYNC) queue before the process exits, so nothing audited is lost on a rollout.
+    """
+    settings = _settings_with_subject_type(monkeypatch)
+    fake_schema_client = mocker.Mock(preload=mocker.Mock(), get_cached=mocker.Mock(return_value=_load_schema_fixture()))
+    sender = _fake_audit_sender(mocker)
+    app, _agent = build_app(settings, schema_client=fake_schema_client, audit_sender=sender)
+
+    with TestClient(app):
+        sender.close.assert_not_awaited()
+    sender.close.assert_awaited_once()
 
 
 def test_build_app_starts_when_schema_unavailable_at_cold_start(monkeypatch, mocker):
@@ -106,7 +122,7 @@ def test_build_app_starts_when_schema_unavailable_at_cold_start(monkeypatch, moc
     failing_client.get = mocker.Mock(side_effect=httpx2.ConnectTimeout("connect timed out"))
     mocker.patch("indykite.intent_agent.schema.httpx2.Client", return_value=failing_client)
 
-    app, agent = build_app(settings)
+    app, agent = build_app(settings, audit_sender=_fake_audit_sender(mocker))
 
     assert agent.get_cached_schema() is None
     assert len(app.routes) >= _MIN_EXPECTED_ROUTES
@@ -392,7 +408,11 @@ def test_normalize_intent_response_raises_on_malformed_json():
 
 
 def _settings_with_subject_type(monkeypatch, subject_type="Customer"):
-    """Build a Settings with every required env var set, for run_extraction-level tests."""
+    """Build a Settings with every required env var set, for run_extraction-level tests.
+
+    AUDIT_DELIVERY is required too; the file path is never created here because these tests
+    build an IntentAgent directly (no sender) or inject a fake sender into build_app.
+    """
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("INTROSPECT_URL", "https://idp.example.com/introspect")
     monkeypatch.setenv("INTROSPECT_CLIENT_ID", "client-id")
@@ -400,7 +420,16 @@ def _settings_with_subject_type(monkeypatch, subject_type="Customer"):
     monkeypatch.setenv("SUBJECT_TYPE", subject_type)
     monkeypatch.setenv("IK_APP_AGENT_KEY", _APP_AGENT_KEY)
     monkeypatch.setenv("INDYKITE_BASE_URL", "https://ikg.example.com")
+    monkeypatch.setenv("AUDIT_DELIVERY", "file")
+    monkeypatch.setenv("AUDIT_FILE_STORAGE_PATH", "./.private/audit-never-created")
+    monkeypatch.setenv("AUDIT_FILE_FORMAT", "json")
+    monkeypatch.setenv("AUDIT_FILE_ROTATION_STRATEGY", "time")
     return Settings(_env_file=None)
+
+
+def _fake_audit_sender(mocker):
+    """An audit sender that records nothing - build_app tests here are about startup, not auditing."""
+    return mocker.Mock(send=mocker.AsyncMock(), close=mocker.AsyncMock())
 
 
 def test_build_schema_cache_uses_memory_backend_by_default(monkeypatch):
@@ -524,12 +553,14 @@ def test_run_extraction_fails_before_any_llm_call(monkeypatch, mocker, caplog, c
 
     result = asyncio.run(agent.run_extraction("buy AAPL", "user-1"))
 
-    assert json.loads(result) == expected_error("buy AAPL")
+    assert json.loads(result.text) == expected_error("buy AAPL")
+    assert result.outcome == Outcome.ERROR
+    assert result.message == expected_error("buy AAPL")["reason"]
     mock_ainvoke.assert_not_called()
     assert any(record.levelname == "ERROR" for record in caplog.records)
     if log_detail:
         assert log_detail in caplog.text
-        assert log_detail not in result
+        assert log_detail not in result.text
 
 
 def _llm_response(mocker, text="", tool_calls=()):
@@ -560,10 +591,17 @@ def test_run_extraction_returns_bound_evaluations_when_first_answer_is_on_schema
         [_llm_response(mocker, tool_calls=[_ACTIVATE_EXTRACT_INTENT_CALL]), _llm_response(mocker, _ON_SCHEMA_ANSWER)],
     )
 
-    data = json.loads(asyncio.run(agent.run_extraction("rent kitt", "user-1")))
+    result = asyncio.run(agent.run_extraction("rent kitt", "user-1"))
+    data = json.loads(result.text)
 
     assert data["evaluations"][0]["subject"] == {"type": "Customer", "id": "user-1"}
     assert mock_ainvoke.call_count == _LLM_CALLS_TO_FIRST_ANSWER
+    # The audit classification (TDD 4.9) rides along with the response text.
+    assert result.outcome == Outcome.SUCCESS
+    assert result.evaluations == data["evaluations"]
+    assert result.validation_retries == 0
+    assert result.schema_version == schema_version(_load_schema_fixture())
+    assert result.message == ""
 
 
 def test_run_extraction_retries_with_feedback_when_answer_is_off_schema(monkeypatch, mocker, caplog):
@@ -582,13 +620,16 @@ def test_run_extraction_retries_with_feedback_when_answer_is_off_schema(monkeypa
         ],
     )
 
-    data = json.loads(asyncio.run(agent.run_extraction("buy AAPL", "user-1")))
+    result = asyncio.run(agent.run_extraction("buy AAPL", "user-1"))
+    data = json.loads(result.text)
 
     assert data["evaluations"][0] == {
         "action": {"name": "RENT"},
         "resource": {"type": "Car", "id": "kitt"},
         "subject": {"type": "Customer", "id": "user-1"},
     }
+    assert result.outcome == Outcome.SUCCESS
+    assert result.validation_retries == 1
     assert mock_ainvoke.call_count == _LLM_CALLS_WITH_ONE_RETRY
     messages = mock_ainvoke.call_args_list[-1].args[0]
     feedback = messages[-1]
@@ -620,10 +661,14 @@ def test_run_extraction_fails_after_retry_budget_when_answers_stay_off_schema(mo
 
     result = asyncio.run(agent.run_extraction("buy AAPL", "user-1"))
 
-    assert json.loads(result) == no_intent_error("buy AAPL")
-    assert "Stock" not in result
+    assert json.loads(result.text) == no_intent_error("buy AAPL")
+    assert "Stock" not in result.text
     assert mock_ainvoke.call_count == _LLM_CALLS_WITH_ONE_RETRY
     assert "after 1 retries" in caplog.text
+    # TDD 4.9: terminal failure after N retries is audited as validation_failed, N recorded.
+    assert result.outcome == Outcome.VALIDATION_FAILED
+    assert result.validation_retries == 1
+    assert result.message == no_intent_error("buy AAPL")["reason"]
 
 
 def test_run_extraction_retry_budget_is_configurable(monkeypatch, mocker):
@@ -637,7 +682,9 @@ def test_run_extraction_retry_budget_is_configurable(monkeypatch, mocker):
 
     result = asyncio.run(agent.run_extraction("buy AAPL", "user-1"))
 
-    assert json.loads(result) == no_intent_error("buy AAPL")
+    assert json.loads(result.text) == no_intent_error("buy AAPL")
+    assert result.outcome == Outcome.VALIDATION_FAILED
+    assert result.validation_retries == 0
     assert mock_ainvoke.call_count == _LLM_CALLS_TO_FIRST_ANSWER
 
 
@@ -655,7 +702,7 @@ def test_run_extraction_retries_malformed_json_too(monkeypatch, mocker):
         ],
     )
 
-    data = json.loads(asyncio.run(agent.run_extraction("rent kitt", "user-1")))
+    data = json.loads(asyncio.run(agent.run_extraction("rent kitt", "user-1")).text)
 
     assert data["evaluations"][0]["subject"] == {"type": "Customer", "id": "user-1"}
     assert mock_ainvoke.call_count == _LLM_CALLS_WITH_ONE_RETRY
@@ -663,13 +710,19 @@ def test_run_extraction_retries_malformed_json_too(monkeypatch, mocker):
 
 def test_run_extraction_passes_free_text_through_when_skill_not_activated(monkeypatch, mocker):
     """Without extract-intent activated, the answer isn't an extraction - it's passed through
-    unvalidated, and an empty answer becomes the placeholder text.
+    unvalidated, and an empty answer becomes the placeholder text. Neither extracted an
+    intent, so both audit as `unmatched` with the pass-through text as the message.
     """
     agent, _ = _agent_with_responses(monkeypatch, mocker, [_llm_response(mocker, "hello")])
-    assert asyncio.run(agent.run_extraction("hi", "user-1")) == "hello"
+    result = asyncio.run(agent.run_extraction("hi", "user-1"))
+    assert result.text == "hello"
+    assert result.outcome == Outcome.UNMATCHED
+    assert result.message == "hello"
 
     agent, _ = _agent_with_responses(monkeypatch, mocker, [_llm_response(mocker, "")])
-    assert asyncio.run(agent.run_extraction("hi", "user-1")) == "(No response generated)"
+    result = asyncio.run(agent.run_extraction("hi", "user-1"))
+    assert result.text == "(No response generated)"
+    assert result.outcome == Outcome.UNMATCHED
 
 
 def test_run_extraction_gives_up_when_tool_call_budget_runs_out(monkeypatch, mocker, caplog):
@@ -688,7 +741,8 @@ def test_run_extraction_gives_up_when_tool_call_budget_runs_out(monkeypatch, moc
 
     result = asyncio.run(agent.run_extraction("rent kitt", "user-1"))
 
-    assert json.loads(result) == no_intent_error("rent kitt")
+    assert json.loads(result.text) == no_intent_error("rent kitt")
+    assert result.outcome == Outcome.ERROR
     assert mock_ainvoke.call_count == 1
     assert "Tool-call budget (1) exhausted" in caplog.text
 
@@ -705,7 +759,7 @@ def test_run_extraction_keeps_placeholder_when_budget_runs_out_before_activation
         TOOL_CALL_MAX_ITERATIONS=1,
     )
 
-    assert asyncio.run(agent.run_extraction("hi", "user-1")) == "(No response generated)"
+    assert asyncio.run(agent.run_extraction("hi", "user-1")).text == "(No response generated)"
     assert mock_ainvoke.call_count == 1
 
 
@@ -725,7 +779,7 @@ def test_run_extraction_short_circuits_repeat_skill_activation(monkeypatch, mock
         ],
     )
 
-    data = json.loads(asyncio.run(agent.run_extraction("rent kitt", "user-1")))
+    data = json.loads(asyncio.run(agent.run_extraction("rent kitt", "user-1")).text)
 
     assert data["evaluations"][0]["subject"] == {"type": "Customer", "id": "user-1"}
     assert mock_ainvoke.call_count == _LLM_CALLS_WITH_ONE_RETRY
@@ -750,7 +804,9 @@ def test_run_extraction_returns_timeout_error_when_llm_call_exceeds_limit(monkey
 
     result = asyncio.run(agent.run_extraction("rent kitt", "user-1"))
 
-    assert json.loads(result) == llm_timeout_error("rent kitt")
+    assert json.loads(result.text) == llm_timeout_error("rent kitt")
+    assert result.outcome == Outcome.ERROR
+    assert result.message == llm_timeout_error("rent kitt")["reason"]
     assert mock_ainvoke.call_count == 1
     assert "exceeded 0.0s" in caplog.text
 
@@ -777,7 +833,7 @@ def test_run_extraction_enforces_request_deadline_across_calls(monkeypatch, mock
 
     result = asyncio.run(agent.run_extraction("rent kitt", "user-1"))
 
-    assert json.loads(result) == llm_timeout_error("rent kitt")
+    assert json.loads(result.text) == llm_timeout_error("rent kitt")
     # Several rounds got through before the deadline, but nowhere near the tool budget.
     assert 1 < mock_ainvoke.call_count < _UNREACHABLE_TOOL_BUDGET
     assert "Request exceeded the 0.1s end-to-end budget" in caplog.text
@@ -804,8 +860,8 @@ def test_run_extraction_times_out_during_retry_too(monkeypatch, mocker):
 
     result = asyncio.run(agent.run_extraction("buy AAPL", "user-1"))
 
-    assert json.loads(result) == llm_timeout_error("buy AAPL")
-    assert "Stock" not in result
+    assert json.loads(result.text) == llm_timeout_error("buy AAPL")
+    assert "Stock" not in result.text
     assert mock_ainvoke.call_count == _LLM_CALLS_WITH_ONE_RETRY
 
 
@@ -868,7 +924,7 @@ def test_build_app_starts_when_schema_not_yet_populated_at_cold_start(monkeypatc
         get_cached=mocker.Mock(return_value=empty_schema),
     )
 
-    app, agent = build_app(settings, schema_client=fake_schema_client)
+    app, agent = build_app(settings, schema_client=fake_schema_client, audit_sender=_fake_audit_sender(mocker))
 
     assert agent.get_cached_schema() == empty_schema
     assert not any(record.levelname == "ERROR" for record in caplog.records)
@@ -889,7 +945,7 @@ def test_build_app_starts_when_subject_type_mismatches_schema(monkeypatch, mocke
         get_cached=mocker.Mock(return_value=_load_schema_fixture()),
     )
 
-    app, agent = build_app(settings, schema_client=fake_schema_client)
+    app, agent = build_app(settings, schema_client=fake_schema_client, audit_sender=_fake_audit_sender(mocker))
 
     assert agent.get_cached_schema() is not None
     assert any(record.levelname == "ERROR" for record in caplog.records)

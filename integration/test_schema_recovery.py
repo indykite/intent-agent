@@ -60,7 +60,7 @@ def schema_server():
         thread.join()
 
 
-def _build_test_app(monkeypatch, mocker, schema_server, *, mock_ainvoke):
+def _build_test_app(monkeypatch, mocker, schema_server, tmp_path, *, mock_ainvoke):
     """Wire up Settings/build_app pointed at the real local schema_server, with only the LLM
     and access-token introspection mocked (both are external services, same as
     test_send_message.py's existing integration test).
@@ -72,6 +72,10 @@ def _build_test_app(monkeypatch, mocker, schema_server, *, mock_ainvoke):
     monkeypatch.setenv("SUBJECT_TYPE", "Customer")
     monkeypatch.setenv("IK_APP_AGENT_KEY", _APP_AGENT_KEY)
     monkeypatch.setenv("INDYKITE_BASE_URL", f"http://{schema_server.server_address[0]}:{schema_server.server_port}")
+    monkeypatch.setenv("AUDIT_DELIVERY", "file")
+    monkeypatch.setenv("AUDIT_FILE_STORAGE_PATH", str(tmp_path / "audit"))
+    monkeypatch.setenv("AUDIT_FILE_FORMAT", "json")
+    monkeypatch.setenv("AUDIT_FILE_ROTATION_STRATEGY", "time")
     mocker.patch(
         "indykite.intent_agent.agent.auth.validate_access_token",
         return_value={"active": True, "sub": "test-subject"},
@@ -106,22 +110,22 @@ def _send_message(client, text):
     return response.json()["result"]["task"]["artifacts"][0]["parts"][0]["text"]
 
 
-def test_schema_unavailable_at_cold_start_does_not_abort_startup(monkeypatch, mocker, schema_server):
+def test_schema_unavailable_at_cold_start_does_not_abort_startup(monkeypatch, mocker, schema_server, tmp_path):
     """build_app must not raise/exit when the real schema endpoint is failing at cold start -
     the process is expected to keep serving and retry the fetch per-request instead.
     """
     mock_ainvoke = AsyncMock()
-    _client, agent = _build_test_app(monkeypatch, mocker, schema_server, mock_ainvoke=mock_ainvoke)
+    _client, agent = _build_test_app(monkeypatch, mocker, schema_server, tmp_path, mock_ainvoke=mock_ainvoke)
 
     assert agent.get_cached_schema() is None
 
 
-def test_request_fails_cleanly_while_schema_still_unavailable(monkeypatch, mocker, schema_server):
+def test_request_fails_cleanly_while_schema_still_unavailable(monkeypatch, mocker, schema_server, tmp_path):
     """A request made before the platform ever serves a schema must get the structured
     schema_unavailable error, without reaching the LLM.
     """
     mock_ainvoke = AsyncMock()
-    client, _agent = _build_test_app(monkeypatch, mocker, schema_server, mock_ainvoke=mock_ainvoke)
+    client, _agent = _build_test_app(monkeypatch, mocker, schema_server, tmp_path, mock_ainvoke=mock_ainvoke)
 
     result_text = _send_message(client, "Can I buy 50 shares of AAPL?")
 
@@ -131,7 +135,7 @@ def test_request_fails_cleanly_while_schema_still_unavailable(monkeypatch, mocke
     mock_ainvoke.assert_not_called()
 
 
-def test_recovers_on_next_request_once_platform_publishes_schema(monkeypatch, mocker, schema_server):
+def test_recovers_on_next_request_once_platform_publishes_schema(monkeypatch, mocker, schema_server, tmp_path):
     """Once the real platform starts serving the schema, the very next request on the same
     running agent (no restart) must pick it up and proceed through the LLM normally.
     """
@@ -147,7 +151,7 @@ def test_recovers_on_next_request_once_platform_publishes_schema(monkeypatch, mo
         tool_calls=[],
     )
     mock_ainvoke = AsyncMock(side_effect=[tool_call_response, final_response])
-    client, agent = _build_test_app(monkeypatch, mocker, schema_server, mock_ainvoke=mock_ainvoke)
+    client, agent = _build_test_app(monkeypatch, mocker, schema_server, tmp_path, mock_ainvoke=mock_ainvoke)
 
     # First request: platform still schema-less.
     first_result = json.loads(_send_message(client, "Can I buy 50 shares of AAPL?"))

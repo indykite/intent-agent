@@ -1,10 +1,12 @@
 """Runtime configuration for the Intent Agent, loaded from environment / .env."""
 
 from ipaddress import IPv4Address
+from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import (
     Field,
+    FilePath,
     HttpUrl,
     IPvAnyAddress,
     NonNegativeInt,
@@ -12,12 +14,21 @@ from pydantic import (
     PositiveInt,
     RedisDsn,
     SecretStr,
+    field_validator,
     model_validator,
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _Port = Annotated[int, Field(ge=1, le=65535)]
 _LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+_AuditDelivery = Literal["file", "webhook"]
+_AuditHttpMethod = Literal["POST", "PUT"]
+_AuditHttpAuthType = Literal["mTLS", "no-auth", "api-key"]
+_AuditFileFormat = Literal["csv", "json", "txt"]
+_AuditFileRotationStrategy = Literal["time", "size", "size-and-time"]
+
+_ONE_DAY_SECONDS = 24 * 60 * 60
+_100_MIB = 100 * 1024 * 1024
 
 
 class Settings(BaseSettings):
@@ -66,6 +77,90 @@ class Settings(BaseSettings):
     introspect_timeout_seconds: PositiveFloat = 5.0
 
     subject_type: str = Field(min_length=1)
+
+    # Audit log delivery (TDD 4.9 record, IAG-shaped delivery - see audit/). The keys mirror the
+    # Agent Gateway's `audit.` config section one to one, flattened to AUDIT_* env vars. Unlike
+    # the IAG, where omitting the section disables auditing, AUDIT_DELIVERY has no default:
+    # the TDD requires every request to produce one audit record, so a deployment can't
+    # silently run without a delivery configured.
+    audit_delivery: _AuditDelivery
+    # Buffered delivery through a bounded in-memory queue drained by a background worker
+    # (IAG `audit.async`); records are dropped with a warning once the queue is full.
+    audit_async: bool = False
+    audit_async_buffer_size: PositiveInt = 512
+    # Webhook delivery (IAG `audit.http.*`) - all required when AUDIT_DELIVERY is `webhook`.
+    audit_http_url: HttpUrl | None = None
+    audit_http_method: _AuditHttpMethod | None = None
+    audit_http_auth_type: _AuditHttpAuthType | None = None
+    audit_http_mtls_certificate_file_path: FilePath | None = None
+    audit_http_mtls_private_key_path: FilePath | None = None
+    audit_http_api_key: SecretStr | None = None
+    audit_http_api_key_header: str = Field(min_length=1, default="X-API-Key")
+    audit_http_timeout_seconds: PositiveFloat = 5.0
+    # File delivery (IAG `audit.file.*`) - path/format/rotation required when AUDIT_DELIVERY is
+    # `file`. The directory is created at startup if missing.
+    audit_file_storage_path: Path | None = None
+    audit_file_format: _AuditFileFormat | None = None
+    audit_file_rotation_strategy: _AuditFileRotationStrategy | None = None
+    audit_file_rotation_interval_seconds: PositiveFloat = float(_ONE_DAY_SECONDS)
+    audit_file_rotation_max_bytes: PositiveInt = _100_MIB
+
+    @field_validator("audit_http_method", mode="before")
+    @classmethod
+    def _uppercase_http_method(cls, value: object) -> object:
+        """Accept `post`/`put` in any case, like the IAG does, before the Literal check."""
+        return value.upper() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def _require_webhook_config(self) -> "Settings":
+        """Reject AUDIT_DELIVERY=webhook without the HTTP settings the sender needs, at startup
+        rather than on the first record it fails to deliver (same rules as the IAG's HTTPConfig).
+        """
+        if self.audit_delivery != "webhook":
+            return self
+        if self.audit_http_url is None:
+            message = "audit: AUDIT_HTTP_URL is required when AUDIT_DELIVERY is 'webhook'"
+            raise ValueError(message)
+        if self.audit_http_method is None:
+            message = "audit: AUDIT_HTTP_METHOD must be POST or PUT when AUDIT_DELIVERY is 'webhook'"
+            raise ValueError(message)
+        if self.audit_http_auth_type is None:
+            message = "audit: AUDIT_HTTP_AUTH_TYPE is required when AUDIT_DELIVERY is 'webhook'"
+            raise ValueError(message)
+        if self.audit_http_auth_type == "mTLS" and (
+            self.audit_http_mtls_certificate_file_path is None or self.audit_http_mtls_private_key_path is None
+        ):
+            message = "audit: mTLS requires AUDIT_HTTP_MTLS_CERTIFICATE_FILE_PATH and AUDIT_HTTP_MTLS_PRIVATE_KEY_PATH"
+            raise ValueError(message)
+        # SecretStr isn't stripped by str_strip_whitespace, so a whitespace-only key has to be
+        # caught here rather than surfacing later as a bare ValueError from the sender.
+        if self.audit_http_auth_type == "api-key" and (
+            self.audit_http_api_key is None or not self.audit_http_api_key.get_secret_value().strip()
+        ):
+            message = "audit: api-key auth requires AUDIT_HTTP_API_KEY"
+            raise ValueError(message)
+        return self
+
+    @model_validator(mode="after")
+    def _require_file_config(self) -> "Settings":
+        """Reject AUDIT_DELIVERY=file without a storage path, format and rotation strategy (same
+        rules as the IAG's FileConfig).
+        """
+        if self.audit_delivery != "file":
+            return self
+        if self.audit_file_storage_path is None:
+            message = "audit: AUDIT_FILE_STORAGE_PATH is required when AUDIT_DELIVERY is 'file'"
+            raise ValueError(message)
+        if self.audit_file_format is None:
+            message = "audit: AUDIT_FILE_FORMAT must be one of 'csv', 'json', 'txt' when AUDIT_DELIVERY is 'file'"
+            raise ValueError(message)
+        if self.audit_file_rotation_strategy is None:
+            message = (
+                "audit: AUDIT_FILE_ROTATION_STRATEGY is required and must be one of 'time', 'size', 'size-and-time' "
+                "when AUDIT_DELIVERY is 'file'"
+            )
+            raise ValueError(message)
+        return self
 
     @model_validator(mode="after")
     def _reject_matching_ports(self) -> "Settings":

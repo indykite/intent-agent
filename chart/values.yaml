@@ -43,6 +43,33 @@ app:
 
   subjectType: "placeholder" # SUBJECT_TYPE
 
+  # Audit log (TDD 4.9) - AUDIT_DELIVERY is required by Settings ("file" or "webhook", the Agent
+  # Gateway's two delivery types); every request produces one record. With "file" the chart mounts
+  # an emptyDir at auditFileStoragePath (the container root filesystem is read-only), so records
+  # live only as long as the pod does - use "webhook" to ship them anywhere durable.
+  auditDelivery: "file" # AUDIT_DELIVERY
+  auditAsync: false # AUDIT_ASYNC
+  auditAsyncBufferSize: 512 # AUDIT_ASYNC_BUFFER_SIZE
+  auditFileStoragePath: "/var/log/intent-agent/audit" # AUDIT_FILE_STORAGE_PATH
+  auditFileFormat: "json" # AUDIT_FILE_FORMAT - "csv", "json" or "txt"
+  auditFileRotationStrategy: "size-and-time" # AUDIT_FILE_ROTATION_STRATEGY - "time", "size" or "size-and-time"
+  auditFileRotationIntervalSeconds: 86400 # AUDIT_FILE_ROTATION_INTERVAL_SECONDS
+  auditFileRotationMaxBytes: 104857600 # AUDIT_FILE_ROTATION_MAX_BYTES
+  auditHttpUrl: "" # AUDIT_HTTP_URL - required when auditDelivery is "webhook"
+  auditHttpMethod: "POST" # AUDIT_HTTP_METHOD - "POST" or "PUT"
+  auditHttpAuthType: "no-auth" # AUDIT_HTTP_AUTH_TYPE - "mTLS", "no-auth" or "api-key"
+  auditHttpApiKeyHeader: "X-API-Key" # AUDIT_HTTP_API_KEY_HEADER
+  auditHttpTimeoutSeconds: 5.0 # AUDIT_HTTP_TIMEOUT_SECONDS
+  # AUDIT_HTTP_API_KEY - required when auditHttpAuthType is "api-key"; set name/key to a secret.
+  auditHttpApiKeySecretRef:
+    name: ""
+    key: ""
+  # AUDIT_HTTP_MTLS_CERTIFICATE_FILE_PATH / AUDIT_HTTP_MTLS_PRIVATE_KEY_PATH - required when
+  # auditHttpAuthType is "mTLS": the paths inside the container of a certificate and key. The chart
+  # does not mount these.
+  auditHttpMtlsCertificateFilePath: ""
+  auditHttpMtlsPrivateKeyPath: ""
+
   # GEMINI_API_KEY - required, no default in Settings.
   geminiApiKeySecretRef:
     name: "intent-agent-secrets"

@@ -50,6 +50,94 @@ Example `.env` file can be copied from `.env.example`:
 cp .env.example .env
 ```
 
+### Audit log
+
+Every request produces one audit record (TDD 4.9) with the fields `timestamp`, `request_id`,
+`subject_id`, `subject_type`, `requesting_agent_id`, `context_id`, `prompt`, `evaluations`,
+`schema_version`, `llm_provider`, `llm_model`, `latency_ms`, `validation_retries`, `outcome`
+(`success` / `validation_failed` / `unmatched` / `error`) and `message`. Delivery mirrors the
+[Agent Gateway's audit configuration](https://docs.indykite.com/docs/agent-gateway/configuration#audit),
+flattened to env vars:
+
+| Env var | IAG key | Meaning |
+| --- | --- | --- |
+| `AUDIT_DELIVERY` | `audit.delivery` | **Required.** `file` or `webhook` |
+| `AUDIT_ASYNC` | `audit.async` | `true` buffers records behind a background worker (default `false`) |
+| `AUDIT_ASYNC_BUFFER_SIZE` | `audit.async.buffer_size` | Queue size; records are dropped with a warning when full (default `512`) |
+| `AUDIT_FILE_STORAGE_PATH` | `audit.file.storage_path` | Directory for `audit-<name>-<unixNano>.<format>` files, created if missing |
+| `AUDIT_FILE_FORMAT` | `audit.file.format` | `csv`, `json` (one object per line) or `txt` |
+| `AUDIT_FILE_ROTATION_STRATEGY` | `audit.file.rotation_strategy` | `time`, `size` or `size-and-time` |
+| `AUDIT_FILE_ROTATION_INTERVAL_SECONDS` | `audit.file.rotation_interval` | Default `86400` (24h) |
+| `AUDIT_FILE_ROTATION_MAX_BYTES` | `audit.file.rotation_max_bytes` | Default `104857600` (100 MiB) |
+| `AUDIT_HTTP_URL` | `audit.http.url` | Webhook receiving one request per record, the record as JSON body |
+| `AUDIT_HTTP_METHOD` | `audit.http.method` | `POST` or `PUT` |
+| `AUDIT_HTTP_AUTH_TYPE` | `audit.http.auth.type` | `mTLS`, `api-key` or `no-auth` |
+| `AUDIT_HTTP_MTLS_CERTIFICATE_FILE_PATH` | `audit.http.auth.mtls_certificate_file_path` | Client certificate (mTLS, TLS 1.3 minimum) |
+| `AUDIT_HTTP_MTLS_PRIVATE_KEY_PATH` | `audit.http.auth.mtls_private_key_path` | Client key (mTLS) |
+| `AUDIT_HTTP_API_KEY` | `audit.http.auth.api_key` | Key sent in the header below (api-key) |
+| `AUDIT_HTTP_API_KEY_HEADER` | `audit.http.auth.api_key_header` | Default `X-API-Key` |
+| `AUDIT_HTTP_TIMEOUT_SECONDS` | - | Per-delivery timeout (default `5.0`) |
+
+Unlike the Agent Gateway, auditing cannot be switched off: `AUDIT_DELIVERY` has no default and
+the process fails at startup without it. A failed delivery (unreachable webhook, disk error) is
+logged and never fails the request being audited.
+
+#### Trying the audit log by hand
+
+Prerequisites: the agent running locally with the mock IdP (see "Running the agent" below -
+`manual_testing/mock_introspect.py` on port 9001, `INTROSPECT_URL=http://127.0.0.1:9001/introspect`).
+`Settings` reads `.env` once at startup, so **restart the agent after every `.env` change** in
+the steps below.
+
+1. **File delivery, success.** With `.env.example`'s defaults every request appends one JSON line
+   under `./.private/audit/`:
+
+   ```sh
+   ./manual_testing/call_agent.sh
+   tail -n1 .private/audit/audit-intent_agent-*.json | jq .
+   ```
+
+   Expect `outcome: success`, the bound `evaluations`, `subject_id` from the mock IdP, a UUID
+   `request_id` and a small `latency_ms`.
+2. **Failures are audited with the caller's message.** Send the request without the
+   `Authorization` header (401, `outcome: error`, `message: Authorization required`); stop the
+   mock IdP and call again (`Token introspection request failed` - restart it afterwards); send
+   an unrelated prompt (`outcome: unmatched`); set `SUBJECT_TYPE` to a type the schema doesn't
+   have (`outcome: error` with the subject-type reason).
+3. **Request id propagation.** Add `-H "X-Request-ID: my-trace-1"` to the curl: `request_id`
+   becomes `my-trace-1`. A value over 40 characters falls back to a generated UUID.
+4. **File formats and rotation.** `AUDIT_FILE_FORMAT=csv` (or `txt`) writes new records to a
+   new `.csv` / `.txt` file - the old `.json` file stays as it was, so look at the new one:
+   `cat .private/audit/*.csv`. `AUDIT_FILE_ROTATION_STRATEGY=size` with
+   `AUDIT_FILE_ROTATION_MAX_BYTES=500` starts a new file on every request (a record with a
+   prompt and evaluations is 600-900 bytes; rotation happens before a write once the current
+   file is already at the limit).
+5. **Webhook delivery.** Run the throwaway receiver, point the agent at it and restart:
+
+   ```sh
+   uv run python manual_testing/mock_audit_webhook.py   # prints each record it receives; --port N for another port
+   # in .env: AUDIT_DELIVERY=webhook / AUDIT_HTTP_URL=http://127.0.0.1:9002/audit
+   #          AUDIT_HTTP_METHOD=POST / AUDIT_HTTP_AUTH_TYPE=api-key / AUDIT_HTTP_API_KEY=anything
+   ```
+
+   The agent log shows `started auditing through HTTP with API key`; each
+   `./manual_testing/call_agent.sh` makes the receiver print `POST /audit api-key='anything'`
+   and the record. The rejected-request checks from step 2 produce `outcome: error` records here
+   too.
+6. **A failed delivery never fails the request.** Stop the receiver and call the agent: the
+   response is the normal one and the agent log shows `audit: failed to send HTTP request`.
+   Restart the receiver with `--fail` (answers 503): still the normal response, and the log shows
+   `audit: failed to send HTTP request, unexpected status code` with `status_code: 503`.
+7. **Webhook variants.** `AUDIT_HTTP_METHOD=PUT` and `AUDIT_HTTP_AUTH_TYPE=no-auth` make the
+   receiver print `PUT /audit api-key=None`.
+8. **Buffered delivery.** `AUDIT_ASYNC=true` delivers records from the background worker instead
+   of inline; `AUDIT_ASYNC_BUFFER_SIZE=1` plus a burst of parallel requests logs
+   `audit: dropping payload, async queue is full`. Ctrl+C the agent: queued records are flushed
+   before `Application shutdown complete`.
+9. **Startup validation.** Each of these refuses to start with an `audit: ...` message: no
+   `AUDIT_DELIVERY`; `webhook` with an empty `AUDIT_HTTP_URL`; `api-key` auth with an empty
+   `AUDIT_HTTP_API_KEY`; `AUDIT_HTTP_METHOD=GET`; `mTLS` without both file paths.
+
 ## Running the agent
 
 ### Locally, with uv

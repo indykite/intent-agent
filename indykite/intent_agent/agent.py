@@ -6,8 +6,12 @@ config model, not a rewrite of the extraction pipeline itself.
 """
 
 import asyncio
+import contextlib
 import json
 import logging
+import time
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +43,14 @@ from starlette.exceptions import HTTPException
 from starlette.status import HTTP_401_UNAUTHORIZED
 
 from indykite.intent_agent import auth, skills
+from indykite.intent_agent.audit.message import (
+    AuditMessage,
+    Outcome,
+    request_id_from_headers,
+    schema_version,
+    utc_timestamp,
+)
+from indykite.intent_agent.audit.sender import Sender, build_sender
 from indykite.intent_agent.config import Settings
 from indykite.intent_agent.errors import (
     IntentValidationError,
@@ -61,6 +73,7 @@ from indykite.intent_agent.subject_binding import (
 logger = logging.getLogger(__name__)
 
 _SECONDS_PER_MINUTE = 60
+_MILLISECONDS_PER_SECOND = 1000
 _NO_RESPONSE_TEXT = "(No response generated)"
 _SKILL_ALREADY_ACTIVE = (
     "Skill 'extract-intent' is already active in this conversation - its instructions and the "
@@ -95,6 +108,82 @@ class _ActivateSkillArgs(BaseModel):
     """Arguments schema for the activate_skill tool call."""
 
     name: str
+
+
+def _dump(payload: dict[str, Any]) -> str:
+    """Render a response payload the way every response text is rendered."""
+    return json.dumps(payload, indent=2, ensure_ascii=False)
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractionResult:
+    """What one extraction produced: `text` is the A2A response body; the rest feeds the audit
+    record (TDD 4.9) so the executor never has to parse its own output to classify it.
+    `message` follows the IAG's rule for its `reason`: the same text the caller received.
+    """
+
+    text: str
+    outcome: Outcome
+    message: str = ""
+    evaluations: list[dict[str, Any]] = field(default_factory=list)
+    validation_retries: int = 0
+    schema_version: str = ""
+
+    @classmethod
+    def failed(
+        cls,
+        outcome: Outcome,
+        error: dict[str, str],
+        *,
+        schema_version: str = "",
+        validation_retries: int = 0,
+    ) -> "ExtractionResult":
+        """Wrap one of errors.py's 4.7 error shapes; its `reason` is the audit `message`."""
+        return cls(
+            text=_dump(error),
+            outcome=outcome,
+            message=error["reason"],
+            schema_version=schema_version,
+            validation_retries=validation_retries,
+        )
+
+    @classmethod
+    def from_normalized(cls, text: str, *, schema_version: str, validation_retries: int) -> "ExtractionResult":
+        """Classify normalize_intent_response()'s output: bound evaluations are a success, the
+        4.7 no-intent shape (the LLM's own empty evaluations list) is `unmatched`.
+        """
+        data = json.loads(text)
+        evaluations = data.get("evaluations")
+        if isinstance(evaluations, list):
+            # validate_evaluations already rejected anything that isn't an object, so the
+            # list is exactly what the caller received.
+            return cls(
+                text=text,
+                outcome=Outcome.SUCCESS,
+                evaluations=evaluations,
+                schema_version=schema_version,
+                validation_retries=validation_retries,
+            )
+        return cls(
+            text=text,
+            outcome=Outcome.UNMATCHED,
+            message=str(data.get("reason", "")),
+            schema_version=schema_version,
+            validation_retries=validation_retries,
+        )
+
+    @classmethod
+    def free_text(cls, text: str, *, schema_version: str) -> "ExtractionResult":
+        """A conversation that never activated extract-intent: the LLM's free text (or the
+        no-response placeholder) is passed through and audited as `unmatched`, since no
+        intent was extracted - not as an error, since nothing failed.
+        """
+        return cls(
+            text=text or _NO_RESPONSE_TEXT,
+            outcome=Outcome.UNMATCHED,
+            message=text or _NO_RESPONSE_TEXT,
+            schema_version=schema_version,
+        )
 
 
 class IntentAgent:
@@ -335,8 +424,9 @@ class IntentAgent:
         messages.append(ToolMessage(content=str(result), tool_call_id=call_id))
         return activated_extract_intent
 
-    async def run_extraction(self, prompt: str, subject_id: str | None) -> str:
-        """Run the LLM tool-call loop for one prompt, return the final response text.
+    async def run_extraction(self, prompt: str, subject_id: str | None) -> ExtractionResult:
+        """Run the LLM tool-call loop for one prompt, return the final response and its audit
+        classification (ExtractionResult).
 
         Checks schema availability and SUBJECT_TYPE validity upfront, before any LLM call -
         neither can be verified without the schema, so there's no point spending an LLM call
@@ -368,7 +458,8 @@ class IntentAgent:
                 self.settings.subject_type,
                 prompt,
             )
-            return json.dumps(schema_unavailable_error(prompt), indent=2, ensure_ascii=False)
+            return ExtractionResult.failed(Outcome.ERROR, schema_unavailable_error(prompt))
+        version = schema_version(schema)
         if schema_has_no_node_types(schema):
             logger.error(
                 "Schema fetched but the data model isn't populated yet - cannot verify "
@@ -376,7 +467,7 @@ class IntentAgent:
                 self.settings.subject_type,
                 prompt,
             )
-            return json.dumps(schema_not_populated_error(prompt), indent=2, ensure_ascii=False)
+            return ExtractionResult.failed(Outcome.ERROR, schema_not_populated_error(prompt), schema_version=version)
 
         try:
             validate_subject_type(schema, self.settings.subject_type)
@@ -387,7 +478,7 @@ class IntentAgent:
                 prompt,
                 exc,
             )
-            return json.dumps(subject_type_mismatch_error(prompt), indent=2, ensure_ascii=False)
+            return ExtractionResult.failed(Outcome.ERROR, subject_type_mismatch_error(prompt), schema_version=version)
 
         llm_with_tools = self._llm.bind_tools(
             self.tools,
@@ -396,7 +487,13 @@ class IntentAgent:
         )
         try:
             async with asyncio.timeout(self.settings.request_timeout_seconds) as deadline:
-                return await self._extract_with_retries(llm_with_tools, prompt, subject_id=subject_id, schema=schema)
+                return await self._extract_with_retries(
+                    llm_with_tools,
+                    prompt,
+                    subject_id=subject_id,
+                    schema=schema,
+                    version=version,
+                )
         except TimeoutError:
             # Both the per-call and the whole-request limits raise TimeoutError; only the
             # request one marks its own context as expired.
@@ -412,7 +509,7 @@ class IntentAgent:
                     self.settings.llm_timeout_seconds,
                     prompt,
                 )
-            return json.dumps(llm_timeout_error(prompt), indent=2, ensure_ascii=False)
+            return ExtractionResult.failed(Outcome.ERROR, llm_timeout_error(prompt), schema_version=version)
 
     async def _invoke_llm(self, llm: Runnable[Any, BaseMessage], messages: list[BaseMessage]) -> BaseMessage:
         """One LLM call, bounded by LLM_TIMEOUT_SECONDS - raises TimeoutError past it."""
@@ -451,7 +548,8 @@ class IntentAgent:
         *,
         subject_id: str | None,
         schema: dict[str, Any],
-    ) -> str:
+        version: str,
+    ) -> ExtractionResult:
         """Run the tool-call loop, validate the extraction, and retry with feedback (TDD 4.9).
 
         A validation failure (IntentValidationError: not JSON, or off-schema subject.type /
@@ -469,6 +567,7 @@ class IntentAgent:
         activated_extract_intent = False
         max_retries = self.settings.validation_max_retries
         for attempt in range(1, max_retries + 2):
+            retries = attempt - 1
             response, activated_extract_intent = await self._run_tool_call_loop(
                 llm,
                 messages,
@@ -476,18 +575,23 @@ class IntentAgent:
             )
             if response is None:
                 if not activated_extract_intent:
-                    return _NO_RESPONSE_TEXT
+                    return ExtractionResult.free_text("", schema_version=version)
                 logger.error(
                     "Tool-call budget (%d) exhausted without an extraction answer; giving up on prompt %r",
                     self.settings.tool_call_max_iterations,
                     prompt,
                 )
-                return json.dumps(no_intent_error(prompt), indent=2, ensure_ascii=False)
+                return ExtractionResult.failed(
+                    Outcome.ERROR,
+                    no_intent_error(prompt),
+                    schema_version=version,
+                    validation_retries=retries,
+                )
             final_text = self._response_text(response)
             if not activated_extract_intent:
-                return final_text or _NO_RESPONSE_TEXT
+                return ExtractionResult.free_text(final_text, schema_version=version)
             try:
-                return normalize_intent_response(
+                normalized = normalize_intent_response(
                     final_text,
                     prompt,
                     schema=schema,
@@ -502,21 +606,125 @@ class IntentAgent:
                     prompt,
                     exc,
                 )
-                feedback = json.dumps(validation_feedback_error(prompt, exc.errors), indent=2, ensure_ascii=False)
+                feedback = _dump(validation_feedback_error(prompt, exc.errors))
                 messages.extend((response, HumanMessage(content=feedback)))
+            else:
+                return ExtractionResult.from_normalized(normalized, schema_version=version, validation_retries=retries)
         logger.error("Extraction still off-schema after %d retries; giving up on prompt %r", max_retries, prompt)
-        return json.dumps(no_intent_error(prompt), indent=2, ensure_ascii=False)
+        return ExtractionResult.failed(
+            Outcome.VALIDATION_FAILED,
+            no_intent_error(prompt),
+            schema_version=version,
+            validation_retries=max_retries,
+        )
+
+
+def _prompt_from_context(context: RequestContext) -> str:
+    """Concatenate the text parts of the incoming A2A message."""
+    raw_text = ""
+    if context.message:
+        for part in context.message.parts or []:
+            text = getattr(part, "text", None)
+            if text:
+                raw_text += text
+    return raw_text
+
+
+def _llm_provider(model: str) -> str:
+    """The provider family of a configured model name: the segment before the first `-` of
+    its last path component, so "gemini-3.5-flash-lite" (or "models/gemini-3.5-flash-lite")
+    audits as "gemini". Derived from GEMINI_MODEL rather than hard-coded, so the record can't
+    disagree with what is actually configured.
+    """
+    return model.rsplit("/", 1)[-1].split("-", 1)[0]
+
+
+class _RequestAudit:
+    """Accumulates the per-request audit fields as the request progresses, the way the IAG's
+    token service builds up its `attempt` before sending - so every exit path (rejected
+    token, extraction, unexpected failure) turns into one record through the same
+    `record()`. Every request produces exactly one record (TDD 4.9).
+    """
+
+    def __init__(self, settings: Settings, context: RequestContext) -> None:
+        """Capture what's known before authentication: ids, prompt, and the start time."""
+        self._settings = settings
+        self._started = time.perf_counter()
+        headers = context.call_context.state.get("headers") if context.call_context else None
+        self.request_id = request_id_from_headers(headers or {})
+        self.context_id = context.context_id or ""
+        self.prompt = _prompt_from_context(context)
+        self.subject_id = ""
+
+    def record(self, result: ExtractionResult) -> AuditMessage:
+        """Build the audit record for this request from what the pipeline produced."""
+        latency_ms = round((time.perf_counter() - self._started) * _MILLISECONDS_PER_SECOND)
+        return AuditMessage(
+            timestamp=utc_timestamp(),
+            request_id=self.request_id,
+            subject_id=self.subject_id,
+            subject_type=self._settings.subject_type,
+            # v1.1: the ik_token actor claim (see auth.validate_ik_token) - no ITS yet.
+            requesting_agent_id="",
+            context_id=self.context_id,
+            prompt=self.prompt,
+            evaluations=result.evaluations,
+            schema_version=result.schema_version,
+            llm_provider=_llm_provider(self._settings.gemini_model),
+            llm_model=self._settings.gemini_model,
+            latency_ms=latency_ms,
+            validation_retries=result.validation_retries,
+            outcome=result.outcome,
+            message=result.message,
+        )
 
 
 class IntentExecutor(AgentExecutor):
     """AgentExecutor that extracts intent from incoming text using an LLM."""
 
-    def __init__(self, agent: IntentAgent) -> None:
-        """Wrap the given IntentAgent as an A2A AgentExecutor."""
+    def __init__(self, agent: IntentAgent, audit_sender: Sender) -> None:
+        """Wrap the given IntentAgent as an A2A AgentExecutor, auditing every request."""
         self._agent = agent
+        self._audit_sender = audit_sender
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
-        """Handle one A2A task: extract intent, emit the result artifact."""
+        """Handle one A2A task: extract intent, emit the result artifact, audit the outcome.
+
+        A rejected token is audited too, like the IAG audits every rejection - as
+        `outcome = error` with the same reason the caller gets (TDD owner's decision) - and so
+        is an unexpected exception, so a request can't slip through unrecorded. Auditing never
+        changes the request's own outcome: see _audit.
+        """
+        audit_record = _RequestAudit(self._agent.settings, context)
+        try:
+            audit_record.subject_id = await self._authenticate(context)
+            result = await self._extract(context, event_queue, audit_record.prompt, audit_record.subject_id)
+        except HTTPException as exc:
+            await self._audit(audit_record, ExtractionResult(text="", outcome=Outcome.ERROR, message=str(exc.detail)))
+            raise
+        except Exception as exc:
+            await self._audit(
+                audit_record,
+                ExtractionResult(text="", outcome=Outcome.ERROR, message=f"{type(exc).__name__}: {exc}"),
+            )
+            raise
+        await self._audit(audit_record, result)
+
+    async def _audit(self, audit_record: _RequestAudit, result: ExtractionResult) -> None:
+        """Record the request's outcome; never raises.
+
+        The sender contract is already "log, don't raise", but building the record or a
+        misbehaving sender could still fail - and that must not override what the request
+        itself produced: the 401 / exception being re-raised in `execute`, or a result whose
+        artifact the caller already has. An audit failure is logged with the request id instead.
+        """
+        try:
+            await self._audit_sender.send(audit_record.record(result))
+        except Exception:
+            logger.exception("Failed to audit request %s (outcome %s)", audit_record.request_id, result.outcome)
+
+    async def _authenticate(self, context: RequestContext) -> str:
+        """Validate the Bearer access_token and return its subject; 401 (HTTPException) otherwise."""
         access_token = auth.get_access_token_from_context(context)
         if not access_token:
             raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="Authorization required")
@@ -532,15 +740,16 @@ class IntentExecutor(AgentExecutor):
             )
         except auth.TokenValidationError as exc:
             raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+        return claims["sub"]
 
-        subject_id_from_token = claims["sub"]
-
-        raw_text = ""
-        if context.message:
-            for part in context.message.parts or []:
-                text = getattr(part, "text", None)
-                if text:
-                    raw_text += text
+    async def _extract(
+        self,
+        context: RequestContext,
+        event_queue: EventQueue,
+        raw_text: str,
+        subject_id_from_token: str,
+    ) -> ExtractionResult:
+        """Run the extraction for an authenticated request, emitting the A2A task events."""
         logger.info(
             "Received message for %s: %s",
             self._agent.settings.intent_agent_name,
@@ -563,13 +772,13 @@ class IntentExecutor(AgentExecutor):
             ),
         )
 
-        final_text = await self._agent.run_extraction(prompt, subject_id_from_token)
+        result = await self._agent.run_extraction(prompt, subject_id_from_token)
 
         await event_queue.enqueue_event(
             TaskArtifactUpdateEvent(
                 task_id=context.task_id,
                 context_id=context.context_id,
-                artifact=new_text_artifact(name="result", text=final_text),
+                artifact=new_text_artifact(name="result", text=result.text),
             ),
         )
         await event_queue.enqueue_event(
@@ -582,8 +791,9 @@ class IntentExecutor(AgentExecutor):
         logger.info(
             "Intent extracted for %s: %s",
             self._agent.settings.intent_agent_name,
-            final_text,
+            result.text,
         )
+        return result
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         """Handle task cancellation by emitting a CANCELED status event."""
@@ -601,21 +811,37 @@ def build_app(
     *,
     llm: BaseChatModel | None = None,
     schema_client: SchemaClient | None = None,
+    audit_sender: Sender | None = None,
 ) -> tuple[Starlette, IntentAgent]:
-    """Construct the Starlette app and its backing IntentAgent for these settings."""
+    """Construct the Starlette app and its backing IntentAgent for these settings.
+
+    The audit sender is built from AUDIT_DELIVERY here (or injected, for tests) and closed by
+    the app's lifespan on shutdown - which is what drains a buffered (AUDIT_ASYNC) queue
+    before the process exits, the same guarantee the IAG's sender gives on stop.
+    """
     agent = IntentAgent(settings, llm=llm, schema_client=schema_client)
     agent.preload_schema()
+    sender = audit_sender or build_sender(settings)
 
     agent_card = agent.build_agent_card()
     handler = DefaultRequestHandler(
-        agent_executor=IntentExecutor(agent),
+        agent_executor=IntentExecutor(agent, sender),
         task_store=InMemoryTaskStore(),
         agent_card=agent_card,
     )
+
+    @contextlib.asynccontextmanager
+    async def _lifespan(_app: Starlette) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            await sender.close()
+
     app = Starlette(
         routes=[
             *create_agent_card_routes(agent_card=agent_card),
             *create_jsonrpc_routes(request_handler=handler, rpc_url=DEFAULT_RPC_URL),
         ],
+        lifespan=_lifespan,
     )
     return app, agent

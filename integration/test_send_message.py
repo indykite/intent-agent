@@ -10,8 +10,10 @@ from indykite.intent_agent.config import Settings
 from integration.schema_fixtures import schema_with_stocks
 
 
-def test_gemini_send_message_end_to_end(monkeypatch, mocker):
-    """Drive a SendMessage JSON-RPC request through the ASGI app, LLM mocked."""
+def test_gemini_send_message_end_to_end(monkeypatch, mocker, tmp_path):
+    """Drive a SendMessage JSON-RPC request through the ASGI app, LLM mocked, and check the
+    request left exactly one TDD 4.9 audit record behind through the real file sender.
+    """
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("INTROSPECT_URL", "https://idp.example.com/introspect")
     monkeypatch.setenv("INTROSPECT_CLIENT_ID", "client-id")
@@ -19,6 +21,10 @@ def test_gemini_send_message_end_to_end(monkeypatch, mocker):
     monkeypatch.setenv("SUBJECT_TYPE", "Customer")
     monkeypatch.setenv("INDYKITE_BASE_URL", "https://ikg.example.com")
     monkeypatch.setenv("IK_APP_AGENT_KEY", "test-app-agent-key")
+    monkeypatch.setenv("AUDIT_DELIVERY", "file")
+    monkeypatch.setenv("AUDIT_FILE_STORAGE_PATH", str(tmp_path / "audit"))
+    monkeypatch.setenv("AUDIT_FILE_FORMAT", "json")
+    monkeypatch.setenv("AUDIT_FILE_ROTATION_STRATEGY", "time")
     mocker.patch(
         "indykite.intent_agent.agent.auth.validate_access_token",
         return_value={"active": True, "sub": "test-subject"},
@@ -78,3 +84,17 @@ def test_gemini_send_message_end_to_end(monkeypatch, mocker):
 
     result_data = json.loads(result_text)
     assert result_data["evaluations"][0]["subject"] == {"type": "Customer", "id": "test-subject"}
+
+    audit_files = list((tmp_path / "audit").glob("audit-intent_agent-*.json"))
+    assert len(audit_files) == 1
+    audit_lines = audit_files[0].read_text(encoding="utf-8").splitlines()
+    assert len(audit_lines) == 1
+    record = json.loads(audit_lines[0])
+    assert record["outcome"] == "success"
+    assert record["subject_id"] == "test-subject"
+    assert record["subject_type"] == "Customer"
+    assert record["prompt"] == "Can I buy 50 shares of AAPL?"
+    assert record["evaluations"] == result_data["evaluations"]
+    assert record["llm_provider"] == "gemini"
+    assert record["message"] == ""
+    assert record["latency_ms"] >= 0
