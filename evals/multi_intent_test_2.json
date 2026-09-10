@@ -1,0 +1,37 @@
+{
+  "prompt": "What department do I work in and what decisions have I made?",
+  "jwt_sub": "leslie",
+  "expected": {
+    "prompt": "What department do I work in and what decisions have I made?",
+    "evaluations": [
+      {
+        "action": {
+          "name": "WORKS_IN"
+        },
+        "resource": {
+          "type": "Department"
+        },
+        "context": {},
+        "subject": {
+          "type": "User",
+          "id": "leslie"
+        }
+      },
+      {
+        "action": {
+          "name": "MADE"
+        },
+        "resource": {
+          "type": "Decision"
+        },
+        "context": {},
+        "subject": {
+          "type": "User",
+          "id": "leslie"
+        }
+      }
+    ]
+  },
+  "category": "multi intent",
+  "data_model": "user_model"
+}

@@ -1,0 +1,24 @@
+{
+  "prompt": "What accounts do I own?",
+  "jwt_sub": "bob",
+  "expected": {
+    "prompt": "What accounts do I own?",
+    "evaluations": [
+      {
+        "action": {
+          "name": "OWNS"
+        },
+        "resource": {
+          "type": "Account"
+        },
+        "context": {},
+        "subject": {
+          "type": "Customer",
+          "id": "bob"
+        }
+      }
+    ]
+  },
+  "category": "resource search",
+  "data_model": "customer_model"
+}

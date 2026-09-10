@@ -1,0 +1,2932 @@
+{
+  "graph": {
+    "nodes": {
+      "Account": {
+        "metadata": {
+          "properties": {
+            "account_type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 9
+                }
+              ],
+              "count": 9
+            },
+            "balance": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 9
+                }
+              ],
+              "count": 9
+            },
+            "external_id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 9
+                }
+              ],
+              "count": 9
+            },
+            "holdings": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            },
+            "interest_rate": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "provider": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "status": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 6
+                }
+              ],
+              "count": 6
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 9
+                }
+              ],
+              "count": 9
+            }
+          },
+          "system_labels": [
+            {
+              "name": "Resource",
+              "count": 9
+            }
+          ],
+          "user_defined_labels": [
+            {
+              "name": "Account",
+              "count": 9
+            }
+          ],
+          "node_count": 9
+        }
+      },
+      "AccountTier": {
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 4
+                }
+              ],
+              "count": 4
+            },
+            "external_id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 4
+                }
+              ],
+              "count": 4
+            },
+            "name": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 4
+                }
+              ],
+              "count": 4
+            },
+            "threshold_amount": {
+              "types": [
+                {
+                  "type": "FLOAT NOT NULL",
+                  "count": 4
+                }
+              ],
+              "count": 4
+            },
+            "tier": {
+              "types": [
+                {
+                  "type": "FLOAT NOT NULL",
+                  "count": 4
+                }
+              ],
+              "count": 4
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 4
+                }
+              ],
+              "count": 4
+            }
+          },
+          "system_labels": [
+            {
+              "name": "Resource",
+              "count": 4
+            }
+          ],
+          "user_defined_labels": [
+            {
+              "name": "AccountTier",
+              "count": 4
+            }
+          ],
+          "node_count": 4
+        }
+      },
+      "Container": {
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "external_id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "name": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            }
+          },
+          "system_labels": [
+            {
+              "name": "Resource",
+              "count": 1
+            }
+          ],
+          "user_defined_labels": [
+            {
+              "name": "Container",
+              "count": 1
+            }
+          ],
+          "node_count": 1
+        }
+      },
+      "Customer": {
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 5
+                }
+              ],
+              "count": 5
+            },
+            "email": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 5
+                }
+              ],
+              "count": 5
+            },
+            "external_id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 5
+                }
+              ],
+              "count": 5
+            },
+            "name": {
+              "metadata": {
+                "is_verified": {
+                  "types": [
+                    {
+                      "type": "BOOLEAN NOT NULL",
+                      "count": 5
+                    }
+                  ],
+                  "count": 5
+                },
+                "source": {
+                  "types": [
+                    {
+                      "type": "STRING NOT NULL",
+                      "count": 5
+                    }
+                  ],
+                  "count": 5
+                }
+              },
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 5
+                }
+              ],
+              "count": 5
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 5
+                }
+              ],
+              "count": 5
+            }
+          },
+          "system_labels": [
+            {
+              "name": "DigitalTwin",
+              "count": 5
+            },
+            {
+              "name": "Resource",
+              "count": 5
+            }
+          ],
+          "user_defined_labels": [
+            {
+              "name": "Customer",
+              "count": 5
+            }
+          ],
+          "node_count": 5
+        }
+      },
+      "Decision": {
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "description": {
+              "metadata": {
+                "is_verified": {
+                  "types": [
+                    {
+                      "type": "BOOLEAN NOT NULL",
+                      "count": 1
+                    }
+                  ],
+                  "count": 1
+                },
+                "source": {
+                  "types": [
+                    {
+                      "type": "STRING NOT NULL",
+                      "count": 1
+                    }
+                  ],
+                  "count": 1
+                }
+              },
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "external_id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "name": {
+              "metadata": {
+                "is_verified": {
+                  "types": [
+                    {
+                      "type": "BOOLEAN NOT NULL",
+                      "count": 1
+                    }
+                  ],
+                  "count": 1
+                },
+                "source": {
+                  "types": [
+                    {
+                      "type": "STRING NOT NULL",
+                      "count": 1
+                    }
+                  ],
+                  "count": 1
+                }
+              },
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            }
+          },
+          "system_labels": [
+            {
+              "name": "Resource",
+              "count": 1
+            }
+          ],
+          "user_defined_labels": [
+            {
+              "name": "Decision",
+              "count": 1
+            }
+          ],
+          "node_count": 1
+        }
+      },
+      "Department": {
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 17
+                }
+              ],
+              "count": 17
+            },
+            "external_id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 17
+                }
+              ],
+              "count": 17
+            },
+            "name": {
+              "metadata": {
+                "is_verified": {
+                  "types": [
+                    {
+                      "type": "BOOLEAN NOT NULL",
+                      "count": 17
+                    }
+                  ],
+                  "count": 17
+                },
+                "source": {
+                  "types": [
+                    {
+                      "type": "STRING NOT NULL",
+                      "count": 17
+                    }
+                  ],
+                  "count": 17
+                }
+              },
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 17
+                }
+              ],
+              "count": 17
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 17
+                }
+              ],
+              "count": 17
+            }
+          },
+          "system_labels": [
+            {
+              "name": "Resource",
+              "count": 17
+            }
+          ],
+          "user_defined_labels": [
+            {
+              "name": "Department",
+              "count": 17
+            }
+          ],
+          "node_count": 17
+        }
+      },
+      "Document": {
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 18
+                }
+              ],
+              "count": 18
+            },
+            "description": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "external_id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 18
+                }
+              ],
+              "count": 18
+            },
+            "name": {
+              "metadata": {
+                "is_verified": {
+                  "types": [
+                    {
+                      "type": "BOOLEAN NOT NULL",
+                      "count": 3
+                    }
+                  ],
+                  "count": 3
+                },
+                "source": {
+                  "types": [
+                    {
+                      "type": "STRING NOT NULL",
+                      "count": 3
+                    }
+                  ],
+                  "count": 3
+                }
+              },
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 18
+                }
+              ],
+              "count": 18
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 18
+                }
+              ],
+              "count": 18
+            },
+            "url": {
+              "metadata": {
+                "is_verified": {
+                  "types": [
+                    {
+                      "type": "BOOLEAN NOT NULL",
+                      "count": 3
+                    }
+                  ],
+                  "count": 3
+                },
+                "source": {
+                  "types": [
+                    {
+                      "type": "STRING NOT NULL",
+                      "count": 3
+                    }
+                  ],
+                  "count": 3
+                }
+              },
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            }
+          },
+          "system_labels": [
+            {
+              "name": "Resource",
+              "count": 18
+            }
+          ],
+          "user_defined_labels": [
+            {
+              "name": "Document",
+              "count": 18
+            }
+          ],
+          "node_count": 18
+        }
+      },
+      "Entity": {
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "external_id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "name": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            }
+          },
+          "system_labels": [
+            {
+              "name": "Resource",
+              "count": 1
+            }
+          ],
+          "user_defined_labels": [
+            {
+              "name": "Entity",
+              "count": 1
+            }
+          ],
+          "node_count": 1
+        }
+      },
+      "Folder": {
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            },
+            "external_id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            },
+            "name": {
+              "metadata": {
+                "is_verified": {
+                  "types": [
+                    {
+                      "type": "BOOLEAN NOT NULL",
+                      "count": 1
+                    }
+                  ],
+                  "count": 1
+                },
+                "source": {
+                  "types": [
+                    {
+                      "type": "STRING NOT NULL",
+                      "count": 1
+                    }
+                  ],
+                  "count": 1
+                }
+              },
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            }
+          },
+          "system_labels": [
+            {
+              "name": "Resource",
+              "count": 2
+            }
+          ],
+          "user_defined_labels": [
+            {
+              "name": "Folder",
+              "count": 2
+            }
+          ],
+          "node_count": 2
+        }
+      },
+      "InvestmentCategory": {
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 9
+                }
+              ],
+              "count": 9
+            },
+            "external_id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 9
+                }
+              ],
+              "count": 9
+            },
+            "name": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 9
+                }
+              ],
+              "count": 9
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 9
+                }
+              ],
+              "count": 9
+            }
+          },
+          "system_labels": [
+            {
+              "name": "Resource",
+              "count": 9
+            }
+          ],
+          "user_defined_labels": [
+            {
+              "name": "InvestmentCategory",
+              "count": 9
+            }
+          ],
+          "node_count": 9
+        }
+      },
+      "Invoice": {
+        "metadata": {
+          "properties": {
+            "amount": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 9
+                }
+              ],
+              "count": 9
+            },
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 9
+                }
+              ],
+              "count": 9
+            },
+            "due_date": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 9
+                }
+              ],
+              "count": 9
+            },
+            "external_id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 9
+                }
+              ],
+              "count": 9
+            },
+            "invoice_number": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 9
+                }
+              ],
+              "count": 9
+            },
+            "status": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 9
+                }
+              ],
+              "count": 9
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 9
+                }
+              ],
+              "count": 9
+            }
+          },
+          "system_labels": [
+            {
+              "name": "Resource",
+              "count": 9
+            }
+          ],
+          "user_defined_labels": [
+            {
+              "name": "Invoice",
+              "count": 9
+            }
+          ],
+          "node_count": 9
+        }
+      },
+      "Jurisdiction": {
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 4
+                }
+              ],
+              "count": 4
+            },
+            "external_id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 4
+                }
+              ],
+              "count": 4
+            },
+            "iso_3166_2": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            },
+            "name": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 4
+                }
+              ],
+              "count": 4
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 4
+                }
+              ],
+              "count": 4
+            }
+          },
+          "system_labels": [
+            {
+              "name": "Resource",
+              "count": 4
+            }
+          ],
+          "user_defined_labels": [
+            {
+              "name": "Jurisdiction",
+              "count": 4
+            }
+          ],
+          "node_count": 4
+        }
+      },
+      "Quote": {
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "external_id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            }
+          },
+          "system_labels": [
+            {
+              "name": "Resource",
+              "count": 1
+            }
+          ],
+          "user_defined_labels": [
+            {
+              "name": "Quote",
+              "count": 1
+            }
+          ],
+          "node_count": 1
+        }
+      },
+      "RegulatoryAgreement": {
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 11
+                }
+              ],
+              "count": 11
+            },
+            "description": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 11
+                }
+              ],
+              "count": 11
+            },
+            "external_id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 11
+                }
+              ],
+              "count": 11
+            },
+            "name": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 11
+                }
+              ],
+              "count": 11
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 11
+                }
+              ],
+              "count": 11
+            }
+          },
+          "system_labels": [
+            {
+              "name": "Resource",
+              "count": 11
+            }
+          ],
+          "user_defined_labels": [
+            {
+              "name": "RegulatoryAgreement",
+              "count": 11
+            }
+          ],
+          "node_count": 11
+        }
+      },
+      "Site": {
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "external_id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "name": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            }
+          },
+          "system_labels": [
+            {
+              "name": "Resource",
+              "count": 1
+            }
+          ],
+          "user_defined_labels": [
+            {
+              "name": "Site",
+              "count": 1
+            }
+          ],
+          "node_count": 1
+        }
+      },
+      "System": {
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "external_id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "name": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            }
+          },
+          "system_labels": [
+            {
+              "name": "Resource",
+              "count": 1
+            }
+          ],
+          "user_defined_labels": [
+            {
+              "name": "System",
+              "count": 1
+            }
+          ],
+          "node_count": 1
+        }
+      },
+      "Taxonomy": {
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "description": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "external_id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "name": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            }
+          },
+          "system_labels": [
+            {
+              "name": "Resource",
+              "count": 1
+            }
+          ],
+          "user_defined_labels": [
+            {
+              "name": "Taxonomy",
+              "count": 1
+            }
+          ],
+          "node_count": 1
+        }
+      },
+      "Ticket": {
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            },
+            "description": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            },
+            "external_id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            },
+            "name": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            }
+          },
+          "system_labels": [
+            {
+              "name": "Resource",
+              "count": 2
+            }
+          ],
+          "user_defined_labels": [
+            {
+              "name": "Ticket",
+              "count": 2
+            }
+          ],
+          "node_count": 2
+        }
+      },
+      "User": {
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "email": {
+              "metadata": {
+                "assurance_level": {
+                  "types": [
+                    {
+                      "type": "INTEGER NOT NULL",
+                      "count": 3
+                    }
+                  ],
+                  "count": 3
+                },
+                "is_verified": {
+                  "types": [
+                    {
+                      "type": "BOOLEAN NOT NULL",
+                      "count": 3
+                    }
+                  ],
+                  "count": 3
+                },
+                "source": {
+                  "types": [
+                    {
+                      "type": "STRING NOT NULL",
+                      "count": 3
+                    }
+                  ],
+                  "count": 3
+                },
+                "verified_time": {
+                  "types": [
+                    {
+                      "type": "ZONED DATETIME NOT NULL",
+                      "count": 3
+                    }
+                  ],
+                  "count": 3
+                }
+              },
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "external_id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "name": {
+              "metadata": {
+                "assurance_level": {
+                  "types": [
+                    {
+                      "type": "INTEGER NOT NULL",
+                      "count": 3
+                    }
+                  ],
+                  "count": 3
+                },
+                "is_verified": {
+                  "types": [
+                    {
+                      "type": "BOOLEAN NOT NULL",
+                      "count": 3
+                    }
+                  ],
+                  "count": 3
+                },
+                "source": {
+                  "types": [
+                    {
+                      "type": "STRING NOT NULL",
+                      "count": 3
+                    }
+                  ],
+                  "count": 3
+                },
+                "verified_time": {
+                  "types": [
+                    {
+                      "type": "ZONED DATETIME NOT NULL",
+                      "count": 3
+                    }
+                  ],
+                  "count": 3
+                }
+              },
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "title": {
+              "metadata": {
+                "assurance_level": {
+                  "types": [
+                    {
+                      "type": "INTEGER NOT NULL",
+                      "count": 3
+                    }
+                  ],
+                  "count": 3
+                },
+                "is_verified": {
+                  "types": [
+                    {
+                      "type": "BOOLEAN NOT NULL",
+                      "count": 3
+                    }
+                  ],
+                  "count": 3
+                },
+                "source": {
+                  "types": [
+                    {
+                      "type": "STRING NOT NULL",
+                      "count": 3
+                    }
+                  ],
+                  "count": 3
+                },
+                "verified_time": {
+                  "types": [
+                    {
+                      "type": "ZONED DATETIME NOT NULL",
+                      "count": 3
+                    }
+                  ],
+                  "count": 3
+                }
+              },
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            }
+          },
+          "system_labels": [
+            {
+              "name": "DigitalTwin",
+              "count": 3
+            },
+            {
+              "name": "Resource",
+              "count": 3
+            }
+          ],
+          "user_defined_labels": [
+            {
+              "name": "Employee",
+              "count": 3
+            },
+            {
+              "name": "User",
+              "count": 3
+            }
+          ],
+          "node_count": 3
+        }
+      },
+      "Weather": {
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "external_id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "latitude": {
+              "types": [
+                {
+                  "type": "FLOAT NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "location": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "longitude": {
+              "types": [
+                {
+                  "type": "FLOAT NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            }
+          },
+          "system_labels": [
+            {
+              "name": "Resource",
+              "count": 1
+            }
+          ],
+          "user_defined_labels": [
+            {
+              "name": "Weather",
+              "count": 1
+            }
+          ],
+          "node_count": 1
+        }
+      },
+      "Workflow": {
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "external_id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            }
+          },
+          "system_labels": [
+            {
+              "name": "Resource",
+              "count": 1
+            }
+          ],
+          "user_defined_labels": [
+            {
+              "name": "Workflow",
+              "count": 1
+            }
+          ],
+          "node_count": 1
+        }
+      },
+      "_Application": {
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "external_id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            }
+          },
+          "system_labels": [
+            {
+              "name": "DigitalTwin",
+              "count": 1
+            },
+            {
+              "name": "Resource",
+              "count": 1
+            },
+            {
+              "name": "_Application",
+              "count": 1
+            }
+          ],
+          "user_defined_labels": null,
+          "node_count": 1
+        }
+      }
+    },
+    "metadata": {
+      "created_at": "2026-09-11T21:34:47Z",
+      "updated_at": "2026-09-11T21:41:58Z"
+    },
+    "edges": [
+      {
+        "source": "Entity",
+        "relation": "CONTAINS",
+        "target": "Container",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            }
+          },
+          "count": 1
+        },
+        "directed": true
+      },
+      {
+        "source": "Container",
+        "relation": "CONTAINS",
+        "target": "Department",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            }
+          },
+          "count": 1
+        },
+        "directed": true
+      },
+      {
+        "source": "Department",
+        "relation": "CONTAINS",
+        "target": "Department",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 11
+                }
+              ],
+              "count": 11
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 11
+                }
+              ],
+              "count": 11
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 11
+                }
+              ],
+              "count": 11
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 11
+                }
+              ],
+              "count": 11
+            }
+          },
+          "count": 11
+        },
+        "directed": true
+      },
+      {
+        "source": "Folder",
+        "relation": "CONTAINS",
+        "target": "Document",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            }
+          },
+          "count": 3
+        },
+        "directed": true
+      },
+      {
+        "source": "User",
+        "relation": "WORKS_IN",
+        "target": "Department",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            }
+          },
+          "count": 3
+        },
+        "directed": true
+      },
+      {
+        "source": "User",
+        "relation": "REPORTS_TO",
+        "target": "User",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            }
+          },
+          "count": 1
+        },
+        "directed": true
+      },
+      {
+        "source": "Department",
+        "relation": "CAN_RETRIEVE",
+        "target": "Quote",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            }
+          },
+          "count": 1
+        },
+        "directed": true
+      },
+      {
+        "source": "Department",
+        "relation": "CAN_ACCESS",
+        "target": "Folder",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            }
+          },
+          "count": 1
+        },
+        "directed": true
+      },
+      {
+        "source": "Document",
+        "relation": "IS_TYPE",
+        "target": "Taxonomy",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 3
+                }
+              ],
+              "count": 3
+            }
+          },
+          "count": 3
+        },
+        "directed": true
+      },
+      {
+        "source": "Ticket",
+        "relation": "CLOSED_BY",
+        "target": "Decision",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            }
+          },
+          "count": 1
+        },
+        "directed": true
+      },
+      {
+        "source": "Decision",
+        "relation": "EXCEPTION_TO",
+        "target": "Document",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            }
+          },
+          "count": 1
+        },
+        "directed": true
+      },
+      {
+        "source": "User",
+        "relation": "MADE",
+        "target": "Decision",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            }
+          },
+          "count": 1
+        },
+        "directed": true
+      },
+      {
+        "source": "Department",
+        "relation": "INVOKES",
+        "target": "Workflow",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            }
+          },
+          "count": 2
+        },
+        "directed": true
+      },
+      {
+        "source": "Department",
+        "relation": "CAN_ACCESS",
+        "target": "System",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            }
+          },
+          "count": 1
+        },
+        "directed": true
+      },
+      {
+        "source": "Ticket",
+        "relation": "CREATED_BY",
+        "target": "Customer",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            }
+          },
+          "count": 2
+        },
+        "directed": true
+      },
+      {
+        "source": "Ticket",
+        "relation": "REGARDING",
+        "target": "Account",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 2
+                }
+              ],
+              "count": 2
+            }
+          },
+          "count": 2
+        },
+        "directed": true
+      },
+      {
+        "source": "Site",
+        "relation": "CONTAINS",
+        "target": "Folder",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            }
+          },
+          "count": 1
+        },
+        "directed": true
+      },
+      {
+        "source": "Folder",
+        "relation": "CONTAINS",
+        "target": "InvestmentCategory",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 8
+                }
+              ],
+              "count": 8
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 8
+                }
+              ],
+              "count": 8
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 8
+                }
+              ],
+              "count": 8
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 8
+                }
+              ],
+              "count": 8
+            }
+          },
+          "count": 8
+        },
+        "directed": true
+      },
+      {
+        "source": "Document",
+        "relation": "CLASSIFIED_AS",
+        "target": "InvestmentCategory",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 17
+                }
+              ],
+              "count": 17
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 17
+                }
+              ],
+              "count": 17
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 17
+                }
+              ],
+              "count": 17
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 17
+                }
+              ],
+              "count": 17
+            }
+          },
+          "count": 17
+        },
+        "directed": true
+      },
+      {
+        "source": "Document",
+        "relation": "SUBJECT_TO",
+        "target": "RegulatoryAgreement",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 17
+                }
+              ],
+              "count": 17
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 17
+                }
+              ],
+              "count": 17
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 17
+                }
+              ],
+              "count": 17
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 17
+                }
+              ],
+              "count": 17
+            }
+          },
+          "count": 17
+        },
+        "directed": true
+      },
+      {
+        "source": "RegulatoryAgreement",
+        "relation": "ENFORCED_IN",
+        "target": "Jurisdiction",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 10
+                }
+              ],
+              "count": 10
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 10
+                }
+              ],
+              "count": 10
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 10
+                }
+              ],
+              "count": 10
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 10
+                }
+              ],
+              "count": 10
+            }
+          },
+          "count": 10
+        },
+        "directed": true
+      },
+      {
+        "source": "System",
+        "relation": "CONTAINS",
+        "target": "Customer",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 5
+                }
+              ],
+              "count": 5
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 5
+                }
+              ],
+              "count": 5
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 5
+                }
+              ],
+              "count": 5
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 5
+                }
+              ],
+              "count": 5
+            }
+          },
+          "count": 5
+        },
+        "directed": true
+      },
+      {
+        "source": "Account",
+        "relation": "IS_TYPE",
+        "target": "InvestmentCategory",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 4
+                }
+              ],
+              "count": 4
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 4
+                }
+              ],
+              "count": 4
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 4
+                }
+              ],
+              "count": 4
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 4
+                }
+              ],
+              "count": 4
+            }
+          },
+          "count": 4
+        },
+        "directed": true
+      },
+      {
+        "source": "Customer",
+        "relation": "OWNS",
+        "target": "Account",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 7
+                }
+              ],
+              "count": 7
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 7
+                }
+              ],
+              "count": 7
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 7
+                }
+              ],
+              "count": 7
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 7
+                }
+              ],
+              "count": 7
+            }
+          },
+          "count": 7
+        },
+        "directed": true
+      },
+      {
+        "source": "Account",
+        "relation": "IS_TIER",
+        "target": "AccountTier",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 6
+                }
+              ],
+              "count": 6
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 6
+                }
+              ],
+              "count": 6
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 6
+                }
+              ],
+              "count": 6
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 6
+                }
+              ],
+              "count": 6
+            }
+          },
+          "count": 6
+        },
+        "directed": true
+      },
+      {
+        "source": "Customer",
+        "relation": "HAS_INVOICE",
+        "target": "Invoice",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 9
+                }
+              ],
+              "count": 9
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 9
+                }
+              ],
+              "count": 9
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 9
+                }
+              ],
+              "count": 9
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 9
+                }
+              ],
+              "count": 9
+            }
+          },
+          "count": 9
+        },
+        "directed": true
+      },
+      {
+        "source": "Department",
+        "relation": "SERVES",
+        "target": "Customer",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 5
+                }
+              ],
+              "count": 5
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 5
+                }
+              ],
+              "count": 5
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 5
+                }
+              ],
+              "count": 5
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 5
+                }
+              ],
+              "count": 5
+            }
+          },
+          "count": 5
+        },
+        "directed": true
+      }
+    ],
+    "directed": true
+  }
+}

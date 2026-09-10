@@ -1,0 +1,47 @@
+{
+  "prompt": "Can user roy access the document doc123?",
+  "jwt_sub": "leslie",
+  "expected": {
+    "prompt": "Can user roy access the document doc123?",
+    "evaluations": [
+      {
+        "action": {
+          "name": "CAN_ACCESS"
+        },
+        "resource": {
+          "type": "User",
+          "id": "roy"
+        },
+        "context": {
+          "parameters": {
+            "action_derivation_rule": "policy_based"
+          }
+        },
+        "subject": {
+          "type": "User",
+          "id": "leslie"
+        }
+      },
+      {
+        "action": {
+          "name": "CAN_ACCESS"
+        },
+        "resource": {
+          "type": "Document",
+          "id": "doc123"
+        },
+        "context": {
+          "parameters": {
+            "action_derivation_rule": "policy_based"
+          }
+        },
+        "subject": {
+          "type": "User",
+          "id": "roy"
+        }
+      }
+    ]
+  },
+  "category": "adversarial subject spoof",
+  "data_model": "user_model"
+}

@@ -1,0 +1,29 @@
+{
+  "prompt": "Do I, a User, directly report to user with id=flo?",
+  "jwt_sub": "leslie",
+  "expected": {
+    "prompt": "Do I, a User, directly report to user with id=flo?",
+    "evaluations": [
+      {
+        "action": {
+          "name": "REPORTS_TO"
+        },
+        "resource": {
+          "type": "User",
+          "id": "flo"
+        },
+        "context": {
+          "parameters": {
+            "direct": true
+          }
+        },
+        "subject": {
+          "type": "User",
+          "id": "leslie"
+        }
+      }
+    ]
+  },
+  "category": "single intent",
+  "data_model": "user_model"
+}

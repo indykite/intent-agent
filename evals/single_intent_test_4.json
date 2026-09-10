@@ -1,0 +1,30 @@
+{
+  "prompt": "Is the department I work in, under the crm department?",
+  "jwt_sub": "leslie",
+  "expected": {
+    "prompt": "Is the department I work in, under the crm department?",
+    "evaluations": [
+      {
+        "action": {
+          "name": "WORKS_IN_PARENT_DEPT"
+        },
+        "resource": {
+          "type": "Department",
+          "id": "crm"
+        },
+        "context": {
+          "parameters": {
+            "direct": false,
+            "action_derivation_rule": "policy_based"
+          }
+        },
+        "subject": {
+          "type": "User",
+          "id": "leslie"
+        }
+      }
+    ]
+  },
+  "category": "single intent",
+  "data_model": "user_model"
+}

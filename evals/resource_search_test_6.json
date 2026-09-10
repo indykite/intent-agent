@@ -1,0 +1,65 @@
+{
+  "prompt": "What Users and Customers are part of the system sys123?",
+  "jwt_sub": "leslie",
+  "expected": {
+    "prompt": "What Users and Customers are part of the system sys123?",
+    "evaluations": [
+      {
+        "action": {
+          "name": "CAN_ACCESS"
+        },
+        "resource": {
+          "type": "System",
+          "id": "sys123"
+        },
+        "context": {
+          "parameters": {
+            "action_derivation_rule": "policy_based"
+          }
+        },
+        "subject": {
+          "type": "User",
+          "id": "leslie"
+        }
+      },
+      {
+        "action": {
+          "name": "CHECK_MEMBERSHIP"
+        },
+        "resource": {
+          "type": "User"
+        },
+        "context": {
+          "parameters": {
+            "depends_on_previous_evaluations": true,
+            "action_derivation_rule": "policy_based"
+          }
+        },
+        "subject": {
+          "type": "User",
+          "id": "leslie"
+        }
+      },
+      {
+        "action": {
+          "name": "CHECK_MEMBERSHIP"
+        },
+        "resource": {
+          "type": "Customer"
+        },
+        "context": {
+          "parameters": {
+            "depends_on_previous_evaluations": true,
+            "action_derivation_rule": "policy_based"
+          }
+        },
+        "subject": {
+          "type": "User",
+          "id": "leslie"
+        }
+      }
+    ]
+  },
+  "category": "resource search",
+  "data_model": "combined_model"
+}

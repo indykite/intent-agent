@@ -1,0 +1,42 @@
+{
+  "prompt": "What account tiers do my account span?",
+  "jwt_sub": "bob",
+  "expected": {
+    "prompt": "What account tiers do my account span?",
+    "evaluations": [
+      {
+        "action": {
+          "name": "OWNS"
+        },
+        "resource": {
+          "type": "Account"
+        },
+        "context": {},
+        "subject": {
+          "type": "Customer",
+          "id": "bob"
+        }
+      },
+      {
+        "action": {
+          "name": "CAN_ACCESS"
+        },
+        "resource": {
+          "type": "AccountTier"
+        },
+        "context": {
+          "parameters": {
+            "depends_on_previous_evaluations": true,
+            "action_derivation_rule": "policy_based"
+          }
+        },
+        "subject": {
+          "type": "Customer",
+          "id": "bob"
+        }
+      }
+    ]
+  },
+  "category": "resource search",
+  "data_model": "customer_model"
+}
