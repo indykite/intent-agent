@@ -55,9 +55,9 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
             - name: INTENT_PORT
-              value: {{ .Values.app.intentPort | quote }}
+              value: {{ .Values.app.intentPort | int64 | quote }}
             - name: HEALTH_PORT
-              value: {{ .Values.app.healthPort | quote }}
+              value: {{ .Values.app.healthPort | int64 | quote }}
             - name: ADVERTISED_HOST
               value: {{ .Values.app.advertisedHost | default (include "service.fullname" .) | quote }}
             - name: INTENT_AGENT_NAME
@@ -67,15 +67,15 @@ spec:
             - name: GEMINI_MODEL
               value: {{ .Values.app.geminiModel | quote }}
             - name: TOOL_CALL_MAX_ITERATIONS
-              value: {{ .Values.app.toolCallMaxIterations | quote }}
+              value: {{ .Values.app.toolCallMaxIterations | int64 | quote }}
             - name: SCHEMA_PREVIEW_CHARS
-              value: {{ .Values.app.schemaPreviewChars | quote }}
+              value: {{ .Values.app.schemaPreviewChars | int64 | quote }}
             - name: LLM_TIMEOUT_SECONDS
               value: {{ .Values.app.llmTimeoutSeconds | quote }}
             - name: REQUEST_TIMEOUT_SECONDS
               value: {{ .Values.app.requestTimeoutSeconds | quote }}
             - name: VALIDATION_MAX_RETRIES
-              value: {{ .Values.app.validationMaxRetries | quote }}
+              value: {{ .Values.app.validationMaxRetries | int64 | quote }}
             - name: INDYKITE_BASE_URL
               value: {{ .Values.app.indykiteBaseUrl | quote }}
             - name: SCHEMA_FETCH_TIMEOUT_SECONDS
@@ -107,7 +107,7 @@ spec:
             - name: AUDIT_ASYNC
               value: {{ .Values.app.auditAsync | quote }}
             - name: AUDIT_ASYNC_BUFFER_SIZE
-              value: {{ .Values.app.auditAsyncBufferSize | quote }}
+              value: {{ .Values.app.auditAsyncBufferSize | int64 | quote }}
             {{- if eq .Values.app.auditDelivery "file" }}
             - name: AUDIT_FILE_STORAGE_PATH
               value: {{ .Values.app.auditFileStoragePath | quote }}
@@ -118,7 +118,7 @@ spec:
             - name: AUDIT_FILE_ROTATION_INTERVAL_SECONDS
               value: {{ .Values.app.auditFileRotationIntervalSeconds | quote }}
             - name: AUDIT_FILE_ROTATION_MAX_BYTES
-              value: {{ .Values.app.auditFileRotationMaxBytes | quote }}
+              value: {{ .Values.app.auditFileRotationMaxBytes | int64 | quote }}
             {{- else }}
             - name: AUDIT_HTTP_URL
               value: {{ .Values.app.auditHttpUrl | quote }}
