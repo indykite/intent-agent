@@ -629,11 +629,15 @@ class _RequestAudit:
     def record(self, result: ExtractionResult) -> AuditMessage:
         """Build the audit record for this request from what the pipeline produced."""
         latency_ms = round((time.perf_counter() - self._started) * _MILLISECONDS_PER_SECOND)
+        # subject.type is no longer a static setting - the LLM decides it per evaluation
+        # (see subject_binding.py) - so the audit record's single subject_type field takes
+        # the first evaluation's, empty when there are none (e.g. no_intent_error).
+        subject_type = result.evaluations[0].get("subject", {}).get("type", "") if result.evaluations else ""
         return AuditMessage(
             timestamp=utc_timestamp(),
             request_id=self.request_id,
             subject_id=self.subject_id,
-            subject_type=self._settings.subject_type,
+            subject_type=subject_type,
             # v1.1: the ik_token actor claim (see auth.validate_ik_token) - no ITS yet.
             requesting_agent_id="",
             context_id=self.context_id,

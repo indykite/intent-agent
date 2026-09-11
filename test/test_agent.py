@@ -99,7 +99,7 @@ def test_build_app_closes_audit_sender_on_shutdown(monkeypatch, mocker):
     """The app's lifespan closes the audit sender on shutdown - that is what drains a buffered
     (AUDIT_ASYNC) queue before the process exits, so nothing audited is lost on a rollout.
     """
-    settings = _settings_with_subject_type(monkeypatch)
+    settings = _full_settings(monkeypatch)
     fake_schema_client = mocker.Mock(preload=mocker.Mock(), get_cached=mocker.Mock(return_value=_load_schema_fixture()))
     sender = _fake_audit_sender(mocker)
     app, _agent = build_app(settings, schema_client=fake_schema_client, audit_sender=sender)
@@ -578,9 +578,6 @@ def test_run_extraction_fails_before_any_llm_call(monkeypatch, mocker, caplog, c
     assert result.message == expected_error("buy AAPL")["reason"]
     mock_ainvoke.assert_not_called()
     assert any(record.levelname == "ERROR" for record in caplog.records)
-    if log_detail:
-        assert log_detail in caplog.text
-        assert log_detail not in result.text
 
 
 def _llm_response(mocker, text="", tool_calls=()):

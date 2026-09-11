@@ -18,7 +18,9 @@ from indykite.intent_agent.audit.message import Outcome
 from indykite.intent_agent.config import Settings
 
 _PROMPT = "rent kitt"
-_EVALUATIONS = [{"action": {"name": "RENT"}, "resource": {"type": "Car", "id": "kitt"}}]
+_EVALUATIONS = [
+    {"subject": {"type": "Customer"}, "action": {"name": "RENT"}, "resource": {"type": "Car", "id": "kitt"}}
+]
 _UUID_PATTERN = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 _MAX_RECORDS_PER_REQUEST = 1
 
