@@ -33,7 +33,7 @@ jobs:
           repositories: ops-common
 
       - name: pre-commit
-        uses: indykite/ops-common/.github/actions/pre-commit@8ab0cd1f15d223f877f2978c23be2420844f58ae # master
+        uses: indykite/ops-common/.github/actions/pre-commit@fab8561ba189cabf8cb64a8b8f128d868d102e8e # master
         with:
           # shared workflow; required for 'ops-common/pre-commit-autoupdate' to do ssh://git@github.com... from another repos
           github_token: ${{ steps.code_reader_token.outputs.token }}
@@ -47,6 +47,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: trivy
-        uses: indykite/ops-common/.github/actions/trivy@8ab0cd1f15d223f877f2978c23be2420844f58ae # master
+        uses: indykite/ops-common/.github/actions/trivy@fab8561ba189cabf8cb64a8b8f128d868d102e8e # master
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
