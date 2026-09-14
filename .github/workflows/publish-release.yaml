@@ -44,7 +44,7 @@ jobs:
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0 - https://github.com/astral-sh/setup-uv/releases
 
       - name: Build project using composite action
-        uses: indykite/ops-common/.github/actions/python-build@8ab0cd1f15d223f877f2978c23be2420844f58ae # master
+        uses: indykite/ops-common/.github/actions/python-build@fab8561ba189cabf8cb64a8b8f128d868d102e8e # master
         id: build_python
         with:
           codecov-token: ${{ secrets.CODECOV_TOKEN }}

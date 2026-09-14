@@ -44,7 +44,7 @@ jobs:
         run: helm dependency build chart/
 
       - name: Publish to Artifact Registry
-        uses: indykite/ops-common/.github/actions/chart-publish@8ab0cd1f15d223f877f2978c23be2420844f58ae # master
+        uses: indykite/ops-common/.github/actions/chart-publish@fab8561ba189cabf8cb64a8b8f128d868d102e8e # master
         with:
           workload-identity-provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER_MGMT }}
           gcp-service-account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
