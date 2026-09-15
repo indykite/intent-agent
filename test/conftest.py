@@ -49,7 +49,6 @@ def baseline_env(monkeypatch):
         monkeypatch.setenv("INTROSPECT_URL", "https://idp.example.com/introspect")
         monkeypatch.setenv("INTROSPECT_CLIENT_ID", "client-id")
         monkeypatch.setenv("INTROSPECT_CLIENT_SECRET", "client-secret")
-        monkeypatch.setenv("SUBJECT_TYPE", "Customer")
         monkeypatch.setenv("IK_APP_AGENT_KEY", "test-app-agent-key")
         monkeypatch.setenv("INDYKITE_BASE_URL", "https://ikg.example.com")
         monkeypatch.setenv("AUDIT_DELIVERY", "file")

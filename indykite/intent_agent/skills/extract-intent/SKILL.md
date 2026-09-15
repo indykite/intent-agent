@@ -1,6 +1,6 @@
 ---
 name: extract-intent
-description: Extract intent from a prompt as AuthZEN-compliant evaluation or search requests. Uses the data schema to map entities, thus DigitalTwin nodes may be Subjects, any node type can be a Resource, and edges are Actions (or context) - never Resources. Subject id comes from the access token's sub claim (except Subject Search). Context carries parameters (object), filters (CEL string), and qualifiers (object). Returns a JSON object holding the evaluations array; the system adds the original prompt.
+description: Extract intent from a prompt as AuthZEN-compliant evaluation or search requests. Uses the data schema to map entities, thus DigitalTwin nodes may be Subjects, any node type can be a Resource, and edges are Actions (or context) - never Resources. Subject id comes from the access token's sub claim (except Subject Search and a second, named subject identified in the prompt). Context carries parameters (object), filters (CEL string), and qualifiers (object). Returns a JSON object holding the evaluations array; the system adds the original prompt.
 tags:
   - intent
   - authzen
@@ -30,6 +30,14 @@ Intent is expressed as a **Subject** desiring to perform an **Action** (or set o
 Omit the `subject` key entirely for Access Evaluation, Resource Search, and Action Search - the system fills it in automatically after extraction, from the validated access token and the deployment's configured subject type. Any value you provide is ignored.
 
 **Exception**: For **Subject Search** ("Who can do Y on Z?"), you must still determine `subject.type` yourself (the DigitalTwin node label of the type being searched for) and omit `subject.id` (leave it blank)—the search discovers subjects, so there's no caller identity to bind.
+
+**Exception**: For an evaluation about a **second, specific subject you identified in the prompt**
+(someone other than the caller—see Second Subject below), set both `subject.type` and `subject.id`
+yourself to that subject's own identity, and mark the evaluation with
+`"context": {"parameters": {"subject_source": "prompt"}}`—only then is your value trusted instead
+of overridden. Never set this marker on an evaluation that is actually about the caller; the
+system still enforces the caller's identity on every evaluation you don't mark this way,
+regardless of what you write there.
 
 ## Context field
 
@@ -198,6 +206,45 @@ When the prompt asks "What can X do on Z?" omit the `action` key entirely:
   "context": {}
 }
 ```
+
+### Second Subject (a different, specific person named in the prompt)
+
+When the prompt asks about a **specific, named subject other than the caller**—e.g. "Can user Rebecca purchase GOOG stock?"—produce **two or more** evaluations instead of one:
+
+1. **Always first**: a caller-anchored gate evaluation, shaped like Access Evaluation (omit
+   `subject`—the system fills in the caller, as always): `action` is the schema's edge label
+   that best represents the caller being allowed to reference/access that other subject;
+   `resource` is the other subject itself (type = their entity type, id = their identifier).
+   **The system always overrides `subject` on this first evaluation regardless of anything you
+   write there—never put the marker below on it, it has no effect there.**
+2. One evaluation per action the prompt actually asks about, with `subject.type`/`subject.id`
+   set explicitly to the other subject's own identity (not the caller's), and
+   `context.parameters.subject_source` set to `"prompt"` (see the Subject binding exception
+   above)—otherwise the system overrides it with the caller's identity like any other
+   evaluation. The marker only ever has effect on evaluations after the first.
+
+Example—prompt: *"Can user Rebecca purchase GOOG stock?"*
+
+```json
+{
+  "prompt": "Can user Rebecca purchase GOOG stock?",
+  "evaluations": [
+    {
+      "action": { "name": "CAN_ACCESS" },
+      "resource": { "type": "User", "id": "Rebecca" },
+      "context": {}
+    },
+    {
+      "subject": { "type": "User", "id": "rebecca" },
+      "action": { "name": "CAN_PURCHASE" },
+      "resource": { "type": "Stock", "id": "GOOG" },
+      "context": { "parameters": { "subject_source": "prompt" } }
+    }
+  ]
+}
+```
+
+(`CAN_ACCESS`/`CAN_PURCHASE` above are illustrative—use whatever edge label the actual schema defines, the same rule as any other `action.name`.) Only use this pattern when the prompt names a specific, distinct subject—a prompt about the caller's own actions, even multiple of them, never needs the marker; every unmarked evaluation still gets the caller's identity, no matter how many there are.
 
 ## Subtle prompts
 

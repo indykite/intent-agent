@@ -40,7 +40,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
-from starlette.status import HTTP_401_UNAUTHORIZED
+from starlette.status import HTTP_400_BAD_REQUEST, HTTP_401_UNAUTHORIZED
 
 from indykite.intent_agent import auth, skills
 from indykite.intent_agent.audit.message import (
@@ -113,6 +113,18 @@ class _ActivateSkillArgs(BaseModel):
 def _dump(payload: dict[str, Any]) -> str:
     """Render a response payload the way every response text is rendered."""
     return json.dumps(payload, indent=2, ensure_ascii=False)
+
+
+@dataclass(frozen=True, slots=True)
+class RequestSubject:
+    """The caller-supplied subject identity for one request (TDD 4.7) - resolved and sent by
+    IAG itself (see IntentExecutor._subject_params), not derived from the Bearer token, which
+    now authenticates the calling client rather than any subject. `id` may be blank (the
+    Subject-Search exception); `type` may not.
+    """
+
+    id: str | None
+    type: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,12 +243,10 @@ class IntentAgent:
         get_cached_schema() on every request until the schema is populated. A schema that
         fetches successfully but has no node types beyond the platform's own bootstrap node
         (data model not populated - see schema_has_no_node_types) gets the same "keep
-        retrying" treatment, logged distinctly from an actual fetch failure. If the schema
-        *is* available and populated at cold start, SUBJECT_TYPE is checked here too - purely
-        for an early signal in the startup logs, since otherwise a misconfigured SUBJECT_TYPE
-        would go unnoticed until the first real request hits it (run_extraction re-checks it
-        per request regardless, so this is a diagnostic convenience, not the enforcement
-        point).
+        retrying" treatment, logged distinctly from an actual fetch failure. subject_type is no
+        longer static config - it arrives per-request from the caller (see
+        IntentExecutor._subject_params) - so there is nothing to check against the schema at
+        cold start any more; run_extraction validates it on every request instead.
         """
         self._schema_client.preload()
         schema = self.get_cached_schema()
@@ -250,11 +260,6 @@ class IntentAgent:
                 "Data schema fetched but the data model isn't populated yet at cold start - "
                 "will keep retrying on every request until it's populated",
             )
-            return
-        try:
-            validate_subject_type(schema, self.settings.subject_type)
-        except SubjectTypeMismatchError:
-            logger.exception("SUBJECT_TYPE %r invalid for the schema fetched at cold start", self.settings.subject_type)
 
     def get_cached_schema(self) -> dict[str, Any] | None:
         """Return the cached schema, fetching it once if not already cached."""
@@ -424,11 +429,15 @@ class IntentAgent:
         messages.append(ToolMessage(content=str(result), tool_call_id=call_id))
         return activated_extract_intent
 
-    async def run_extraction(self, prompt: str, subject_id: str | None) -> ExtractionResult:
+    async def run_extraction(self, prompt: str, subject: RequestSubject) -> ExtractionResult:
         """Run the LLM tool-call loop for one prompt, return the final response and its audit
         classification (ExtractionResult).
 
-        Checks schema availability and SUBJECT_TYPE validity upfront, before any LLM call -
+        subject is supplied by the caller (IAG) per request - see
+        IntentExecutor._subject_params - not read from static config or the Bearer token, which
+        now authenticates the calling client rather than any subject.
+
+        Checks schema availability and subject_type validity upfront, before any LLM call -
         neither can be verified without the schema, so there's no point spending an LLM call
         (or several, across tool-call iterations) on a result that would just be discarded
         afterward. A schema-unavailable request never populates the cache as a side effect of
@@ -436,7 +445,7 @@ class IntentAgent:
         empty, so the next request tries again on its own. A schema that fetches successfully
         but has no node types beyond the platform's own _Application node (data model not
         populated - see schema_has_no_node_types) is a distinct third state from both that and
-        an actual SUBJECT_TYPE mismatch: there's nothing yet to validate SUBJECT_TYPE against,
+        an actual subject_type mismatch: there's nothing yet to validate subject_type against,
         so it isn't a misconfiguration, but the schema itself isn't unreachable either. Both
         the unavailable and not-populated states self-heal without a restart, the same way any
         cached schema does, once a refresh (per-request retry, or the next request after
@@ -455,7 +464,7 @@ class IntentAgent:
         if schema is None:
             logger.error(
                 "Schema unavailable - cannot verify subject_type %r; skipping extraction for prompt %r",
-                self.settings.subject_type,
+                subject.type,
                 prompt,
             )
             return ExtractionResult.failed(Outcome.ERROR, schema_unavailable_error(prompt))
@@ -464,17 +473,17 @@ class IntentAgent:
             logger.error(
                 "Schema fetched but the data model isn't populated yet - cannot verify "
                 "subject_type %r; skipping extraction for prompt %r",
-                self.settings.subject_type,
+                subject.type,
                 prompt,
             )
             return ExtractionResult.failed(Outcome.ERROR, schema_not_populated_error(prompt), schema_version=version)
 
         try:
-            validate_subject_type(schema, self.settings.subject_type)
+            validate_subject_type(schema, subject.type)
         except SubjectTypeMismatchError as exc:
             logger.error(  # noqa: TRY400
-                "SUBJECT_TYPE %r invalid for the current schema; skipping extraction for prompt %r: %s",
-                self.settings.subject_type,
+                "subject_type %r invalid for the current schema; skipping extraction for prompt %r: %s",
+                subject.type,
                 prompt,
                 exc,
             )
@@ -490,7 +499,7 @@ class IntentAgent:
                 return await self._extract_with_retries(
                     llm_with_tools,
                     prompt,
-                    subject_id=subject_id,
+                    subject=subject,
                     schema=schema,
                     version=version,
                 )
@@ -546,7 +555,7 @@ class IntentAgent:
         llm: Runnable[Any, BaseMessage],
         prompt: str,
         *,
-        subject_id: str | None,
+        subject: RequestSubject,
         schema: dict[str, Any],
         version: str,
     ) -> ExtractionResult:
@@ -595,8 +604,8 @@ class IntentAgent:
                     final_text,
                     prompt,
                     schema=schema,
-                    subject_id=subject_id,
-                    subject_type=self.settings.subject_type,
+                    subject_id=subject.id,
+                    subject_type=subject.type,
                 )
             except IntentValidationError as exc:
                 logger.warning(
@@ -655,6 +664,7 @@ class _RequestAudit:
         self.context_id = context.context_id or ""
         self.prompt = _prompt_from_context(context)
         self.subject_id = ""
+        self.subject_type = ""
 
     def record(self, result: ExtractionResult) -> AuditMessage:
         """Build the audit record for this request from what the pipeline produced."""
@@ -663,7 +673,7 @@ class _RequestAudit:
             timestamp=utc_timestamp(),
             request_id=self.request_id,
             subject_id=self.subject_id,
-            subject_type=self._settings.subject_type,
+            subject_type=self.subject_type,
             # v1.1: the ik_token actor claim (see auth.validate_ik_token) - no ITS yet.
             requesting_agent_id="",
             context_id=self.context_id,
@@ -697,8 +707,15 @@ class IntentExecutor(AgentExecutor):
         """
         audit_record = _RequestAudit(self._agent.settings, context)
         try:
-            audit_record.subject_id = await self._authenticate(context)
-            result = await self._extract(context, event_queue, audit_record.prompt, audit_record.subject_id)
+            await self._authenticate(context)
+            audit_record.subject_type, audit_record.subject_id = self._subject_params(context)
+            result = await self._extract(
+                context,
+                event_queue,
+                audit_record.prompt,
+                subject_id=audit_record.subject_id,
+                subject_type=audit_record.subject_type,
+            )
         except HTTPException as exc:
             await self._audit(audit_record, ExtractionResult(text="", outcome=Outcome.ERROR, message=str(exc.detail)))
             raise
@@ -723,15 +740,19 @@ class IntentExecutor(AgentExecutor):
         except Exception:
             logger.exception("Failed to audit request %s (outcome %s)", audit_record.request_id, result.outcome)
 
-    async def _authenticate(self, context: RequestContext) -> str:
-        """Validate the Bearer access_token and return its subject; 401 (HTTPException) otherwise."""
+    async def _authenticate(self, context: RequestContext) -> None:
+        """Validate the Bearer token identifying the calling client; 401 (HTTPException)
+        otherwise. This token authenticates the caller (IAG), not any subject - it no longer
+        supplies subject_id/subject_type, which now come from the caller-supplied message
+        metadata instead (see _subject_params).
+        """
         access_token = auth.get_access_token_from_context(context)
         if not access_token:
             raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="Authorization required")
 
         settings = self._agent.settings
         try:
-            claims = await auth.validate_access_token(
+            await auth.validate_access_token(
                 access_token,
                 introspect_url=str(settings.introspect_url),
                 client_id=settings.introspect_client_id,
@@ -740,14 +761,31 @@ class IntentExecutor(AgentExecutor):
             )
         except auth.TokenValidationError as exc:
             raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
-        return claims["sub"]
+
+    def _subject_params(self, context: RequestContext) -> tuple[str, str]:
+        """Read subject_type/subject_id from the caller-supplied message metadata - IAG
+        resolves the caller's own identity itself and supplies both per request, instead of
+        subject_id coming from a token's `sub` claim and subject_type from static config.
+
+        subject_type is required - 400 (HTTPException) if missing or blank, since every
+        evaluation needs one. subject_id may be blank (the Subject-Search exception, TDD 4.7),
+        so it isn't required here.
+        """
+        metadata = dict(context.message.metadata) if context.message else {}
+        subject_type = str(metadata.get("subject_type") or "")
+        subject_id = str(metadata.get("subject_id") or "")
+        if not subject_type:
+            raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail="subject_type is required")
+        return subject_type, subject_id
 
     async def _extract(
         self,
         context: RequestContext,
         event_queue: EventQueue,
         raw_text: str,
-        subject_id_from_token: str,
+        *,
+        subject_id: str,
+        subject_type: str,
     ) -> ExtractionResult:
         """Run the extraction for an authenticated request, emitting the A2A task events."""
         logger.info(
@@ -772,7 +810,7 @@ class IntentExecutor(AgentExecutor):
             ),
         )
 
-        result = await self._agent.run_extraction(prompt, subject_id_from_token)
+        result = await self._agent.run_extraction(prompt, RequestSubject(id=subject_id, type=subject_type))
 
         await event_queue.enqueue_event(
             TaskArtifactUpdateEvent(

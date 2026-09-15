@@ -30,7 +30,6 @@ def _set_baseline_env(monkeypatch):
     monkeypatch.setenv("INTROSPECT_URL", "https://idp.example.com/introspect")
     monkeypatch.setenv("INTROSPECT_CLIENT_ID", "client-id")
     monkeypatch.setenv("INTROSPECT_CLIENT_SECRET", "client-secret")
-    monkeypatch.setenv("SUBJECT_TYPE", "Customer")
     monkeypatch.setenv("IK_APP_AGENT_KEY", "test-app-agent-key")
     monkeypatch.setenv("INDYKITE_BASE_URL", "https://ikg.example.com")
     # AUDIT_DELIVERY is required (TDD 4.9: every request produces a record); Settings never
@@ -214,23 +213,6 @@ def test_introspect_client_secret_does_not_leak_in_repr(monkeypatch):
     settings = Settings(_env_file=None)
     assert "client-secret" not in repr(settings)
     assert settings.introspect_client_secret.get_secret_value() == "client-secret"
-
-
-def test_requires_subject_type(monkeypatch):
-    """Settings must fail fast when SUBJECT_TYPE is missing, not default to blank."""
-    # Question: What about Subject search? ENG-9069
-    _set_baseline_env(monkeypatch)
-    monkeypatch.delenv("SUBJECT_TYPE", raising=False)
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
-
-
-def test_rejects_blank_subject_type(monkeypatch):
-    """A whitespace-only SUBJECT_TYPE must fail validation, not be treated as set."""
-    _set_baseline_env(monkeypatch)
-    monkeypatch.setenv("SUBJECT_TYPE", "   ")
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
 
 
 @pytest.mark.parametrize(

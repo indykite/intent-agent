@@ -97,13 +97,14 @@ the steps below.
    tail -n1 .private/audit/audit-intent_agent-*.json | jq .
    ```
 
-   Expect `outcome: success`, the bound `evaluations`, `subject_id` from the mock IdP, a UUID
-   `request_id` and a small `latency_ms`.
+   Expect `outcome: success`, the bound `evaluations`, `subject_id` from `message.metadata`, a
+   UUID `request_id` and a small `latency_ms`.
 2. **Failures are audited with the caller's message.** Send the request without the
    `Authorization` header (401, `outcome: error`, `message: Authorization required`); stop the
    mock IdP and call again (`Token introspection request failed` - restart it afterwards); send
-   an unrelated prompt (`outcome: unmatched`); set `SUBJECT_TYPE` to a type the schema doesn't
-   have (`outcome: error` with the subject-type reason).
+   an unrelated prompt (`outcome: unmatched`); send a request with no `subject_type` in
+   `message.metadata` (400, `subject_type is required`); send one with a `subject_type` the
+   schema doesn't have (`outcome: error` with the subject-type reason).
 3. **Request id propagation.** Add `-H "X-Request-ID: my-trace-1"` to the curl: `request_id`
    becomes `my-trace-1`. A value over 40 characters falls back to a generated UUID.
 4. **File formats and rotation.** `AUDIT_FILE_FORMAT=csv` (or `txt`) writes new records to a
@@ -144,7 +145,7 @@ the steps below.
 
 `.env.example` leaves several settings blank that `Settings` requires at startup - set at least
 `GEMINI_API_KEY`, `INDYKITE_BASE_URL`, `IK_APP_AGENT_KEY`, `INTROSPECT_URL`,
-`INTROSPECT_CLIENT_ID`, `INTROSPECT_CLIENT_SECRET`, and `SUBJECT_TYPE` before starting (see
+`INTROSPECT_CLIENT_ID`, and `INTROSPECT_CLIENT_SECRET` before starting (see
 "Testing end-to-end against real RC + Redis + Gemini" below for where to get real values, or a
 local introspection stub, for the introspection/schema settings):
 
@@ -163,8 +164,11 @@ curl http://localhost:8001/health
 curl http://localhost:6003/.well-known/agent-card.json
 ```
 
-Send it a test prompt (note the required `A2A-Version` header, the `SendMessage` method name, and
-`ROLE_USER` role — this is the A2A JSON-RPC transport, not a REST API):
+Send it a test prompt (note the required `A2A-Version` header, the `SendMessage` method name, the
+`ROLE_USER` role, and the `subject_type`/`subject_id` in `message.metadata` — the caller (IAG)
+resolves and supplies the subject's identity itself; the Bearer token authenticates the caller,
+not any subject, and no longer supplies either. This is the A2A JSON-RPC transport, not a REST
+API):
 
 ```sh
 curl -X POST http://localhost:6003/ \
@@ -179,7 +183,11 @@ curl -X POST http://localhost:6003/ \
       "message": {
         "role": "ROLE_USER",
         "parts": [{"text": "Can I buy 50 shares of AAPL?"}],
-        "messageId": "test-msg-1"
+        "messageId": "test-msg-1",
+        "metadata": {
+          "subject_type": "Customer",
+          "subject_id": "test-subject"
+        }
       }
     }
   }'
@@ -235,8 +243,9 @@ cache, and real Gemini calls:
    Run it, then set `INTROSPECT_URL=http://127.0.0.1:9001/introspect` with any
    `INTROSPECT_CLIENT_ID`/`INTROSPECT_CLIENT_SECRET`.
 4. Send a prompt that actually matches your graph's schema. `intent-agent`'s subject
-   is always auto-bound to the caller (from the introspection `sub` claim, per
-   `SUBJECT_TYPE`), never from prompt text - a third-person prompt like "what can
+   is always auto-bound to the caller (from `subject_type`/`subject_id` in the request's
+   `message.metadata`, supplied by the caller itself), never from prompt text - a
+   third-person prompt like "what can
    user X buy" doesn't test what it looks like it tests. Prefer first-person prompts,
    and check the platform schema for resource types that actually exist before
    assuming an entity is graph-modeled (e.g. an individual stock ticker usually

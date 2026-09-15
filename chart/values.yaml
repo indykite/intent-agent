@@ -41,8 +41,6 @@ app:
   introspectClientId: "placeholder" # INTROSPECT_CLIENT_ID
   introspectTimeoutSeconds: 5.0 # INTROSPECT_TIMEOUT_SECONDS
 
-  subjectType: "placeholder" # SUBJECT_TYPE
-
   # Audit log (TDD 4.9) - AUDIT_DELIVERY is required by Settings ("file" or "webhook", the Agent
   # Gateway's two delivery types); every request produces one record. With "file" the chart mounts
   # an emptyDir at auditFileStoragePath (the container root filesystem is read-only), so records

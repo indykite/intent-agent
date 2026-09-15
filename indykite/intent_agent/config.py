@@ -76,8 +76,6 @@ class Settings(BaseSettings):
     introspect_client_secret: SecretStr = Field(min_length=1)
     introspect_timeout_seconds: PositiveFloat = 5.0
 
-    subject_type: str = Field(min_length=1)
-
     # Audit log delivery (TDD 4.9 record, IAG-shaped delivery - see audit/). The keys mirror the
     # Agent Gateway's `audit.` config section one to one, flattened to AUDIT_* env vars. Unlike
     # the IAG, where omitting the section disables auditing, AUDIT_DELIVERY has no default:

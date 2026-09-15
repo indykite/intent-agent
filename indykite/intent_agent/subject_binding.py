@@ -245,16 +245,54 @@ def _normalize_contexts(data: dict[str, Any]) -> None:
         evaluation["context"] = context
 
 
+# SKILL.md's marker for "this evaluation's subject refers to a second subject the LLM
+# identified in the prompt, not the caller" - set in context.parameters, the one part of an
+# evaluation already documented as free-form prompt-derived data. Its absence is the default
+# and safe fallback: override, exactly as when there is no second subject at all.
+_SUBJECT_SOURCE_KEY = "subject_source"
+_SUBJECT_SOURCE_PROMPT = "prompt"
+
+
+def _subject_from_prompt(evaluation: dict[str, Any]) -> bool:
+    """True if the LLM marked this evaluation's subject as the second subject it identified
+    in the prompt (see SKILL.md), rather than the caller - the one case _bind_subject must
+    leave alone instead of overriding.
+    """
+    context = evaluation.get("context")
+    if not isinstance(context, dict):
+        return False
+    parameters = context.get("parameters")
+    if not isinstance(parameters, dict):
+        return False
+    return parameters.get(_SUBJECT_SOURCE_KEY) == _SUBJECT_SOURCE_PROMPT
+
+
 def _bind_subject(data: dict[str, Any], *, subject_id: str | None, subject_type: str) -> None:
     """Force subject.id/subject.type on every evaluation from the validated token and
-    deployment config, not whatever the LLM produced - closes the prompt-injection
-    surface where the LLM could otherwise set the subject itself.
+    deployment config, not whatever the LLM produced - closes the prompt-injection surface
+    where the LLM could otherwise set the subject itself.
+
+    The one exception: an evaluation *after the first* that the LLM explicitly marked as being
+    about a second subject it identified in the prompt (_subject_from_prompt) keeps the subject
+    it produced - trusted for its type (still schema-validated by validate_evaluations) and its
+    id (free text, like resource.id), gated by the caller-bound evaluation SKILL.md pairs it
+    with (e.g. a CAN_ACCESS-style check) that IBAC evaluates downstream. Every other evaluation -
+    the normal single-subject case, any evaluation the LLM didn't mark, and evaluations[0] no
+    matter what - gets the override regardless of what the LLM put there, same as before.
+
+    evaluations[0] is deliberately *never* eligible for the exception, marked or not: it is the
+    caller-anchored evaluation the whole pattern hinges on, so a response with only one
+    evaluation (no second subject at all) must always come back bound to the caller, and can
+    never be trusted on the LLM's say-so alone.
 
     TODO: Subject Search evaluations use subject.type as a search parameter, not the
-    caller's own identity, and must not get this override - deferred to a later task.
+    caller's own identity, and must not get this override either - deferred to a later task
+    (possibly the same marker, possibly its own).
     """
-    for evaluation in data.get("evaluations", []):
+    for index, evaluation in enumerate(data.get("evaluations", [])):
         if not isinstance(evaluation, dict):
+            continue
+        if index > 0 and _subject_from_prompt(evaluation):
             continue
         subject = evaluation.get("subject")
         if not isinstance(subject, dict):
