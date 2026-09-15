@@ -1,8 +1,9 @@
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args, get_origin
 
-from indykite.intent_agent.input_schema import build_input_schema
+from indykite.intent_agent.input_schema import _Context, build_input_schema
+from indykite.intent_agent.subject_binding import _CONTEXT_KEY_TYPES
 
 _SCHEMA_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mock_ikg_schema.json"
 
@@ -65,13 +66,27 @@ def test_build_input_schema_context_has_exactly_the_tdd_keys():
     _variant(context_properties["qualifiers"], "object")
 
 
-def test_build_input_schema_top_level_requires_prompt_and_evaluations():
-    """The LLM's output shape is deliberately just {prompt, evaluations} - no error shape;
-    our own code is solely responsible for building an error response (subject_binding.py).
+def test_build_input_schema_top_level_requires_only_evaluations():
+    """The LLM's output shape is deliberately just {evaluations} - no error shape (our own code
+    builds the error response, subject_binding.py) and no prompt echo (normalize_intent_response
+    sets it from the incoming prompt; asking the model for it only costs output tokens).
     """
     schema = build_input_schema(_load_schema_fixture())
-    assert schema["required"] == ["prompt", "evaluations"]
-    assert set(schema["properties"].keys()) == {"prompt", "evaluations"}
+    assert schema["required"] == ["evaluations"]
+    assert set(schema["properties"].keys()) == {"evaluations"}
+
+
+def test_context_shape_check_covers_every_structured_output_context_key():
+    """subject_binding's post-assembly context check is the belt-and-braces behind the
+    structured output's _Context (the enum/types are a hint to Gemini, not a guarantee), so
+    the two must list the same keys with the same expected types - a key added to one and not
+    the other would silently go unchecked.
+    """
+    assert set(_CONTEXT_KEY_TYPES) == set(_Context.model_fields)
+    for key, expected in _CONTEXT_KEY_TYPES.items():
+        annotation = _Context.model_fields[key].annotation
+        declared = {get_origin(variant) or variant for variant in get_args(annotation)}
+        assert expected in declared, f"{key}: validator expects {expected}, structured output declares {annotation}"
 
 
 def test_build_input_schema_tolerates_missing_graph_sections():

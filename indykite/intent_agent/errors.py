@@ -11,8 +11,9 @@ class SubjectTypeMismatchError(Exception):
 
 
 class IntentValidationError(Exception):
-    """Raised when the LLM's extraction output can't be accepted as-is: not JSON, or a
-    subject.type / action.name / resource.type that isn't in the cached schema (TDD 4.8).
+    """Raised when the LLM's extraction output can't be accepted as-is: not JSON, a
+    subject.type / action.name / resource.type that isn't in the cached schema (TDD 4.8),
+    or a context whose filters / parameters / qualifiers have the wrong type.
 
     Caught per-attempt in IntentAgent.run_extraction(), which feeds `errors` back to the LLM
     as validation_feedback_error() and retries (TDD 4.9) - up to VALIDATION_MAX_RETRIES times -
@@ -101,10 +102,18 @@ def no_intent_error(prompt: str) -> dict[str, str]:
     )
 
 
+# The two ways subject_binding._vocabulary_reason reports a value it couldn't match to the data
+# schema (off-schema, or left blank because nothing matched) - shared so validation_feedback_error
+# can tell those apart from shape problems without guessing at the wording.
+SCHEMA_MEMBERSHIP_SUFFIX = "is not defined in the data schema"
+SCHEMA_BLANK_SUFFIX = "is missing or blank"
+SCHEMA_VALUE_SUFFIXES = (SCHEMA_MEMBERSHIP_SUFFIX, SCHEMA_BLANK_SUFFIX)
+
 _FEEDBACK_OBLIGATION = (
-    'Return a corrected JSON object with the same {"prompt", "evaluations"} shape, using only '
-    "subject types, action names and resource types defined in the data schema. If the prompt "
-    "can't be mapped onto the schema, return an empty evaluations array instead."
+    'Return a corrected JSON object with the same {"evaluations"} shape, using only subject types, '
+    "action names and resource types defined in the data schema, with context.filters as a string "
+    "and context.parameters / context.qualifiers as objects. If the prompt can't be mapped onto the "
+    "schema, return an empty evaluations array instead."
 )
 
 
@@ -113,12 +122,24 @@ def validation_feedback_error(prompt: str, errors: list[str]) -> dict[str, str]:
     (TDD 4.9). `reason` lists what was wrong (every error, one per line - not just the first,
     or the LLM can only fix one thing per retry), not the schema's valid values: the LLM
     already holds the full schema from activate_skill, and the structured-output enum
-    re-constrains the retry. `obligation` tells it what to return instead.
+    re-constrains the retry. The errors are split into two headed groups, values it couldn't
+    match to the data schema (off-schema or left blank) and malformed shape (not JSON, a missing
+    key, a mis-typed context), so the LLM isn't told to change a type when it's the shape that's
+    wrong, or vice versa. `obligation` tells it what to return instead.
     """
+    schema_errors = [error for error in errors if error.endswith(SCHEMA_VALUE_SUFFIXES)]
+    shape_errors = [error for error in errors if not error.endswith(SCHEMA_VALUE_SUFFIXES)]
+    groups = (
+        ("Values not matched to the data schema:", schema_errors),
+        ("Malformed shape:", shape_errors),
+    )
+    sections = [
+        f"{heading}\n" + "\n".join(f"- {error}" for error in group_errors)
+        for heading, group_errors in groups
+        if group_errors
+    ]
     return error_response(
-        prompt,
-        "The previous response doesn't conform to the data schema:\n" + "\n".join(f"- {error}" for error in errors),
-        _FEEDBACK_OBLIGATION,
+        prompt, "The previous response can't be accepted.\n" + "\n".join(sections), _FEEDBACK_OBLIGATION
     )
 
 

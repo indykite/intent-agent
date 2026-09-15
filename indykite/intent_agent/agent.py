@@ -78,7 +78,7 @@ _NO_RESPONSE_TEXT = "(No response generated)"
 _SKILL_ALREADY_ACTIVE = (
     "Skill 'extract-intent' is already active in this conversation - its instructions and the "
     "data schema are in the earlier tool result. Do not call activate_skill again; answer now "
-    'with the {"prompt", "evaluations"} JSON object.'
+    'with the {"evaluations"} JSON object.'
 )
 
 
@@ -270,9 +270,9 @@ class IntentAgent:
             JSON Graph Format (JGF).
 
             Describes all Node types and Edge types with their properties. Node labels
-            are entity types. Edge labels can be Actions or context. All entities can be
-            Resources. Nodes with system_labels containing DigitalTwin can also be
-            Subjects.
+            are entity types. Edge labels can be Actions or context, never Resources. Any
+            node type can be a Resource. Nodes with system_labels containing DigitalTwin
+            can also be Subjects.
             """
             schema = agent.get_cached_schema()
             return json.dumps(schema, separators=(",", ":"), ensure_ascii=False)

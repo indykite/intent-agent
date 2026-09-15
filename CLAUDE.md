@@ -159,7 +159,10 @@ keeps the stale schema instead of losing it.
 **Validation loop (TDD 4.8/4.9).** After the LLM's final answer, `subject_binding.py`'s
 `normalize_intent_response` checks every evaluation's `subject.type` / `action.name` /
 `resource.type` against the cached schema (`validate_evaluations`) - belt-and-braces on top of
-the structured-output enum, since Gemini treats the enum as a strong hint, not a guarantee. An
+the structured-output enum, since Gemini treats the enum as a strong hint, not a guarantee - and
+checks `context`'s shape the same way (`filters` a string - a CEL expression by the skill's
+contract, not parsed here - `parameters`/`qualifiers` objects; null keys and a blank `filters`
+are dropped afterwards, everything else passes through verbatim as untrusted data). An
 off-schema value (or non-JSON output) raises `IntentValidationError`; `IntentAgent` feeds the
 errors back to the LLM as a follow-up message (`validation_feedback_error`) in the same
 conversation and asks again, up to `VALIDATION_MAX_RETRIES` extra times (default 1, `0`

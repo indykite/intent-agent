@@ -51,3 +51,6 @@ chart/charts/
 
 # Local audit log files (AUDIT_DELIVERY=file with the .env.example default path)
 .private/
+
+# Local-only manual-testing scripts and prompt sets (kept out of the repo on purpose)
+local_testing/
