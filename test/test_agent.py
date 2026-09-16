@@ -223,84 +223,44 @@ def test_bind_subject_second_subject_case_only_overrides_the_caller_evaluation()
     assert data["evaluations"][1]["subject"] == {"type": "User", "id": "Rebecca"}
 
 
-def test_bind_subject_marker_alone_is_not_enough_without_a_matching_gate():
-    """A marked evaluation whose subject does *not* match evaluations[0]'s gate resource must
-    still be overridden - the marker only defers to the LLM when it also matches the one
-    subject the caller actually gated in evaluations[0]. Without this check, the marker alone
-    would let the LLM vouch for an arbitrary schema-valid subject with no real gate behind it,
-    e.g. a gate evaluation about an unrelated entity paired with a marked evaluation naming
-    someone else entirely.
-    """
-    data = {
-        "evaluations": [
-            {
-                "action": {"name": "CAN_ACCESS"},
-                "resource": {"type": "User", "id": "Rebecca"},
-                "context": {},
-            },
-            {
-                "subject": {"type": "User", "id": "someone-else-entirely"},
-                "action": {"name": "CAN_PURCHASE"},
-                "resource": {"type": "Stock", "id": "GOOG"},
-                "context": {"parameters": {"subject_source": "prompt"}},
-            },
-        ],
-    }
-    _bind_subject(data, subject_id="roy", subject_type="User")
-    assert data["evaluations"][1]["subject"] == {"type": "User", "id": "roy"}
-
-
-def test_bind_subject_marker_alone_is_not_enough_without_any_gate():
-    """A marked evaluation is overridden when evaluations[0] isn't shaped like a gate at all
-    (no resource, or a non-dict one) - there is nothing to match against, so the safe default
-    applies, same as a mismatched or absent gate.
-    """
-    data = {
-        "evaluations": [
+@pytest.mark.parametrize(
+    ("gate_evaluation", "marked_subject"),
+    [
+        pytest.param(
+            {"action": {"name": "CAN_ACCESS"}, "resource": {"type": "User", "id": "Rebecca"}, "context": {}},
+            {"type": "User", "id": "someone-else-entirely"},
+            id="gate_does_not_match_the_marked_subject",
+        ),
+        pytest.param(
             {"action": {"name": "CAN_RETRIEVE"}, "context": {}},
-            {
-                "subject": {"type": "User", "id": "Rebecca"},
-                "action": {"name": "CAN_PURCHASE"},
-                "resource": {"type": "Stock", "id": "GOOG"},
-                "context": {"parameters": {"subject_source": "prompt"}},
-            },
-        ],
-    }
-    _bind_subject(data, subject_id="roy", subject_type="User")
-    assert data["evaluations"][1]["subject"] == {"type": "User", "id": "roy"}
-
-
-def test_bind_subject_marker_alone_is_not_enough_when_the_gate_has_no_action():
-    """A gate evaluation with no action at all (action-search-shaped, not a real access check)
-    must not count as a gate, even if its resource matches the marked subject exactly - there
-    is no specific permission being checked, so nothing was actually gated.
-    """
-    data = {
-        "evaluations": [
+            {"type": "User", "id": "Rebecca"},
+            id="gate_has_no_resource_at_all",
+        ),
+        pytest.param(
             {"resource": {"type": "Admin", "id": "root"}, "context": {}},
-            {
-                "subject": {"type": "Admin", "id": "root"},
-                "action": {"name": "DELETE_EVERYTHING"},
-                "resource": {"type": "Stock", "id": "GOOG"},
-                "context": {"parameters": {"subject_source": "prompt"}},
-            },
-        ],
-    }
-    _bind_subject(data, subject_id="roy", subject_type="User")
-    assert data["evaluations"][1]["subject"] == {"type": "User", "id": "roy"}
-
-
-def test_bind_subject_marker_alone_is_not_enough_when_the_gate_resource_id_is_blank():
-    """A gate evaluation with a blank resource.id (resource-search-shaped, not a specific
-    identified entity) must not count as a gate, even when paired with a marked evaluation
-    whose subject.id is equally blank - matching two blanks isn't matching a real identity.
+            {"type": "Admin", "id": "root"},
+            id="gate_has_no_action",
+        ),
+        pytest.param(
+            {"action": {"name": "CAN_ACCESS"}, "resource": {"type": "Admin", "id": ""}, "context": {}},
+            {"type": "Admin", "id": ""},
+            id="gate_resource_id_is_blank_even_when_matched",
+        ),
+    ],
+)
+def test_bind_subject_marker_alone_is_not_enough(gate_evaluation, marked_subject):
+    """A marked evaluation is overridden whenever evaluations[0] isn't a real, matching gate:
+    mismatched, missing entirely, action-search-shaped (no action), or resource-search-shaped
+    (blank id, even when that blank happens to equal the marked subject's own blank id - matching
+    two blanks isn't matching a real identity). Without this check, the marker alone would let
+    the LLM vouch for an arbitrary schema-valid subject with no real gate behind it.
     """
     data = {
         "evaluations": [
-            {"action": {"name": "CAN_ACCESS"}, "resource": {"type": "Admin", "id": ""}, "context": {}},
+            gate_evaluation,
             {
-                "subject": {"type": "Admin", "id": ""},
-                "action": {"name": "DELETE_EVERYTHING"},
+                "subject": marked_subject,
+                "action": {"name": "CAN_PURCHASE"},
                 "resource": {"type": "Stock", "id": "GOOG"},
                 "context": {"parameters": {"subject_source": "prompt"}},
             },
