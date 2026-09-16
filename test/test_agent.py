@@ -270,6 +270,46 @@ def test_bind_subject_marker_alone_is_not_enough_without_any_gate():
     assert data["evaluations"][1]["subject"] == {"type": "User", "id": "roy"}
 
 
+def test_bind_subject_marker_alone_is_not_enough_when_the_gate_has_no_action():
+    """A gate evaluation with no action at all (action-search-shaped, not a real access check)
+    must not count as a gate, even if its resource matches the marked subject exactly - there
+    is no specific permission being checked, so nothing was actually gated.
+    """
+    data = {
+        "evaluations": [
+            {"resource": {"type": "Admin", "id": "root"}, "context": {}},
+            {
+                "subject": {"type": "Admin", "id": "root"},
+                "action": {"name": "DELETE_EVERYTHING"},
+                "resource": {"type": "Stock", "id": "GOOG"},
+                "context": {"parameters": {"subject_source": "prompt"}},
+            },
+        ],
+    }
+    _bind_subject(data, subject_id="roy", subject_type="User")
+    assert data["evaluations"][1]["subject"] == {"type": "User", "id": "roy"}
+
+
+def test_bind_subject_marker_alone_is_not_enough_when_the_gate_resource_id_is_blank():
+    """A gate evaluation with a blank resource.id (resource-search-shaped, not a specific
+    identified entity) must not count as a gate, even when paired with a marked evaluation
+    whose subject.id is equally blank - matching two blanks isn't matching a real identity.
+    """
+    data = {
+        "evaluations": [
+            {"action": {"name": "CAN_ACCESS"}, "resource": {"type": "Admin", "id": ""}, "context": {}},
+            {
+                "subject": {"type": "Admin", "id": ""},
+                "action": {"name": "DELETE_EVERYTHING"},
+                "resource": {"type": "Stock", "id": "GOOG"},
+                "context": {"parameters": {"subject_source": "prompt"}},
+            },
+        ],
+    }
+    _bind_subject(data, subject_id="roy", subject_type="User")
+    assert data["evaluations"][1]["subject"] == {"type": "User", "id": "roy"}
+
+
 @pytest.mark.parametrize(
     "evaluation",
     [

@@ -255,19 +255,25 @@ _SUBJECT_SOURCE_PROMPT = "prompt"
 
 def _gate_resource(data: dict[str, Any]) -> tuple[str, str] | None:
     """Return (type, id) of evaluations[0]'s resource - the caller-anchored gate evaluation the
-    second-subject pattern hinges on (SKILL.md: "resource is the other subject itself") - or
-    None if evaluations[0] isn't shaped that way. The marker alone (_subject_from_prompt) is
-    never enough to trust a claimed subject; it must also match the one entity the caller
-    actually gated in evaluations[0], not just claim to.
+    second-subject pattern hinges on (SKILL.md: shaped like Access Evaluation, "resource is the
+    other subject itself") - or None if evaluations[0] isn't shaped that way. The marker alone
+    (_subject_from_prompt) is never enough to trust a claimed subject; it must also match a real
+    gate: a specific action against a specific, identified resource - not a resource-search-shaped
+    entry (blank id) or an action-search-shaped one (no action at all), neither of which checks
+    anything specific enough to gate on.
     """
     evaluations = data.get("evaluations", [])
     if not evaluations or not isinstance(evaluations[0], dict):
         return None
-    resource = evaluations[0].get("resource")
+    gate = evaluations[0]
+    action = gate.get("action")
+    if not isinstance(action, dict) or _blank(action.get("name")):
+        return None
+    resource = gate.get("resource")
     if not isinstance(resource, dict):
         return None
     resource_type, resource_id = resource.get("type"), resource.get("id")
-    if not isinstance(resource_type, str) or not isinstance(resource_id, str):
+    if _blank(resource_type) or _blank(resource_id):
         return None
     return resource_type, resource_id
 
