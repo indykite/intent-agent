@@ -85,7 +85,9 @@ Use `filters` when the prompt describes resources by their own properties instea
 
 A filter only constrains properties of the resource itself, using the property names the data
 schema lists for that type - never a relationship to another entity, and never a query in SQL or
-Cypher.
+Cypher. The expression is checked: it must parse as CEL, `resource` is the only variable it may
+reference, the `dyn()` / `type()` functions are not allowed, and it must stay under 1000
+characters - anything else is sent back to you to correct.
 
 User prompt: *"Which stocks priced under 100 dollars can I purchase?"*
 

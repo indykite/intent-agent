@@ -112,9 +112,10 @@ SCHEMA_VALUE_SUFFIXES = (SCHEMA_MEMBERSHIP_SUFFIX, SCHEMA_BLANK_SUFFIX)
 
 _FEEDBACK_OBLIGATION = (
     'Return a corrected JSON object with the same {"evaluations"} shape, using only subject types, '
-    "action names and resource types defined in the data schema, with context.filters as a string "
-    "and context.parameters / context.qualifiers as objects. If the prompt can't be mapped onto the "
-    "schema, return an empty evaluations array instead."
+    "action names and resource types defined in the data schema, with context.filters a valid CEL "
+    "expression over resource.<property> only, under 1000 characters, and context.parameters / "
+    "context.qualifiers objects. "
+    "If the prompt can't be mapped onto the schema, return an empty evaluations array instead."
 )
 
 
