@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from indykite.intent_agent.agent import IntentAgent
+from indykite.intent_agent.agent import IntentAgent, RequestSubject
 from indykite.intent_agent.audit.message import Outcome
 from indykite.intent_agent.config import Settings
 from indykite.intent_agent.errors import no_intent_error
@@ -51,12 +51,11 @@ def _llm_response(mocker, text="", tool_calls=()):
     return mocker.Mock(text=text, content=text, tool_calls=list(tool_calls))
 
 
-def _agent(monkeypatch, mocker, baseline_env, subject_type, answers):
+def _agent(monkeypatch, mocker, baseline_env, answers):
     """An IntentAgent over the CanBank schema whose LLM activates extract-intent and then
     answers with `answers` (dicts, serialized) in order.
     """
     baseline_env()
-    monkeypatch.setenv("SUBJECT_TYPE", subject_type)
     responses = [
         _llm_response(mocker, tool_calls=[_ACTIVATE_EXTRACT_INTENT_CALL]),
         *(_llm_response(mocker, json.dumps(answer)) for answer in answers),
@@ -261,9 +260,10 @@ def test_golden_scenario_extracts_context_sub_shapes(monkeypatch, mocker, baseli
     the caller must get).
     """
     prompt, subject, llm_evaluations, expected = scenario
-    agent, mock_ainvoke = _agent(monkeypatch, mocker, baseline_env, subject["type"], [_answer(*llm_evaluations)])
+    agent, mock_ainvoke = _agent(monkeypatch, mocker, baseline_env, [_answer(*llm_evaluations)])
 
-    result = asyncio.run(agent.run_extraction(prompt, subject["id"]))
+    request_subject = RequestSubject(id=subject["id"], type=subject["type"])
+    result = asyncio.run(agent.run_extraction(prompt, request_subject))
 
     data = json.loads(result.text)
     assert data["prompt"] == prompt
@@ -293,9 +293,9 @@ def test_golden_scenario_without_intent_is_the_no_intent_error(monkeypatch, mock
     """
     # A model that adds a `prompt` anyway (here: shortened) is tolerated - the value is ignored.
     rewritten = {"prompt": "Create an AuthZEN request.", "evaluations": []}
-    agent, _ = _agent(monkeypatch, mocker, baseline_env, "User", [rewritten])
+    agent, _ = _agent(monkeypatch, mocker, baseline_env, [rewritten])
 
-    result = asyncio.run(agent.run_extraction(prompt, "millicent"))
+    result = asyncio.run(agent.run_extraction(prompt, RequestSubject(id="millicent", type="User")))
 
     assert json.loads(result.text) == no_intent_error(prompt)
     assert result.outcome == Outcome.UNMATCHED
@@ -318,9 +318,9 @@ def test_golden_scenario_mis_typed_filters_is_retried_with_shape_feedback(monkey
         "resource": {"type": "Invoice"},
         "context": {"filters": "resource.status in ['open', 'pending']"},
     }
-    agent, mock_ainvoke = _agent(monkeypatch, mocker, baseline_env, "Customer", [_answer(wrong), _answer(right)])
+    agent, mock_ainvoke = _agent(monkeypatch, mocker, baseline_env, [_answer(wrong), _answer(right)])
 
-    result = asyncio.run(agent.run_extraction(prompt, "rebecca"))
+    result = asyncio.run(agent.run_extraction(prompt, RequestSubject(id="rebecca", type="Customer")))
 
     assert result.outcome == Outcome.SUCCESS
     assert result.validation_retries == 1
