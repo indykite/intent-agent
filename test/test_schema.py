@@ -1,5 +1,7 @@
 """Tests for SchemaClient: fetching, caching, and TTL-driven on-demand refresh."""
 
+import json
+
 import httpx2
 import jwt
 import pytest
@@ -41,8 +43,13 @@ def _mock_sync_client(mocker, *, response=None, side_effect=None):
 
 
 def _mock_response(mocker, schema=_SCHEMA):
-    """Build a fake httpx2 response returning schema from .json(), never raising on .raise_for_status()."""
+    """Build a fake httpx2 response returning schema from .json(), never raising on
+    .raise_for_status(). status_code/text are real values (not further Mocks) since load()
+    logs both verbatim, including a slice of .text - a bare Mock isn't subscriptable.
+    """
     response = mocker.Mock(json=mocker.Mock(return_value=schema))
+    response.status_code = 200
+    response.text = json.dumps(schema)
     response.raise_for_status = mocker.Mock()
     return response
 

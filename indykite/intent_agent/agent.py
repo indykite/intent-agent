@@ -470,7 +470,7 @@ class IntentAgent:
             return ExtractionResult.failed(Outcome.ERROR, schema_unavailable_error(prompt))
         version = schema_version(schema)
         if schema_has_no_node_types(schema):
-            logger.error(
+            logger.warning(
                 "Schema fetched but the data model isn't populated yet - cannot verify "
                 "subject_type %r; skipping extraction for prompt %r",
                 subject.type,
