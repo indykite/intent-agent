@@ -1,6 +1,8 @@
 import json
 import logging
+import logging.config
 import sys
+import warnings
 
 from indykite.intent_agent.logging_config import JsonFormatter, build_logging_config
 
@@ -74,3 +76,34 @@ def test_build_logging_config_routes_everything_to_stdout():
     for logger_name in ("uvicorn", "uvicorn.access"):
         assert config["loggers"][logger_name]["handlers"] == ["default"]
         assert config["loggers"][logger_name]["propagate"] is False
+
+
+def test_captured_warnings_reach_the_json_stdout_handler(capsys):
+    """logging.captureWarnings(capture=True) (see __main__.main()) must route warnings.warn()
+    through the same JSON stdout handler every other log line uses, at WARNING severity - not
+    just that captureWarnings gets called (main()'s own test mocks it out), but that a real
+    warning actually becomes one JSON line on stdout. dictConfig mutates the root/uvicorn
+    loggers process-wide, so this snapshots and restores them afterward instead of leaking
+    into every other test in the suite.
+    """
+    affected_loggers = [logging.getLogger(name) for name in (None, "uvicorn", "uvicorn.access", "uvicorn.error")]
+    snapshot = [(logger, list(logger.handlers), logger.level, logger.propagate) for logger in affected_loggers]
+    try:
+        logging.config.dictConfig(build_logging_config("INFO"))
+        logging.captureWarnings(capture=True)
+        with warnings.catch_warnings():
+            warnings.simplefilter("always")
+            warnings.warn("test warning message", UserWarning, stacklevel=2)
+    finally:
+        logging.captureWarnings(capture=False)
+        for logger, handlers, level, propagate in snapshot:
+            logger.handlers = handlers
+            logger.level = level
+            logger.propagate = propagate
+
+    lines = [line for line in capsys.readouterr().out.splitlines() if line]
+    assert len(lines) == 1
+    payload = json.loads(lines[0])
+    assert payload["level"] == "WARNING"
+    assert payload["logger"] == "py.warnings"
+    assert "test warning message" in payload["message"]
