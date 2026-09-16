@@ -48,12 +48,14 @@ def test_build_input_schema_enumerates_all_node_types_as_subject_types():
     assert _variant(subject_type, "string")["enum"] == ["Car", "Company", "Customer", "_Application"]
 
 
-def test_build_input_schema_omits_subject_id_entirely():
-    """subject.id must never be part of the LLM's output schema - it's always assigned
-    deterministically post-LLM from the validated access token (TDD 4.7), never LLM-supplied.
+def test_build_input_schema_allows_subject_id_for_the_second_subject_case():
+    """subject.id must be part of the LLM's output schema - the second-subject case
+    (SKILL.md) requires the LLM to set it explicitly for a marked evaluation.
+    subject_binding._bind_subject still overrides it on every other evaluation regardless
+    of what the LLM puts here (TDD 4.7).
     """
     schema = build_input_schema(_load_schema_fixture())
-    assert "id" not in schema["$defs"]["_Subject"]["properties"]
+    assert "id" in schema["$defs"]["_Subject"]["properties"]
 
 
 def test_build_input_schema_context_has_exactly_the_tdd_keys():

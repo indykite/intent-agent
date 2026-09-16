@@ -18,7 +18,6 @@ def test_gemini_send_message_end_to_end(monkeypatch, mocker, tmp_path):
     monkeypatch.setenv("INTROSPECT_URL", "https://idp.example.com/introspect")
     monkeypatch.setenv("INTROSPECT_CLIENT_ID", "client-id")
     monkeypatch.setenv("INTROSPECT_CLIENT_SECRET", "client-secret")
-    monkeypatch.setenv("SUBJECT_TYPE", "Customer")
     monkeypatch.setenv("INDYKITE_BASE_URL", "https://ikg.example.com")
     monkeypatch.setenv("IK_APP_AGENT_KEY", "test-app-agent-key")
     monkeypatch.setenv("AUDIT_DELIVERY", "file")
@@ -75,6 +74,7 @@ def test_gemini_send_message_end_to_end(monkeypatch, mocker, tmp_path):
                     "role": "ROLE_USER",
                     "parts": [{"text": "Can I buy 50 shares of AAPL?"}],
                     "messageId": "integration-test-1",
+                    "metadata": {"subject_type": "Customer", "subject_id": "test-subject"},
                 },
             },
         },

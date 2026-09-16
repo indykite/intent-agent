@@ -245,16 +245,88 @@ def _normalize_contexts(data: dict[str, Any]) -> None:
         evaluation["context"] = context
 
 
+# SKILL.md's marker for "this evaluation's subject refers to a second subject the LLM
+# identified in the prompt, not the caller" - set in context.parameters, the one part of an
+# evaluation already documented as free-form prompt-derived data. Its absence is the default
+# and safe fallback: override, exactly as when there is no second subject at all.
+_SUBJECT_SOURCE_KEY = "subject_source"
+_SUBJECT_SOURCE_PROMPT = "prompt"
+
+
+def _gate_resource(data: dict[str, Any]) -> tuple[str, str] | None:
+    """Return (type, id) of evaluations[0]'s resource - the caller-anchored gate evaluation the
+    second-subject pattern hinges on (SKILL.md: shaped like Access Evaluation, "resource is the
+    other subject itself") - or None if evaluations[0] isn't shaped that way. The marker alone
+    (_subject_from_prompt) is never enough to trust a claimed subject; it must also match a real
+    gate: a specific action against a specific, identified resource - not a resource-search-shaped
+    entry (blank id) or an action-search-shaped one (no action at all), neither of which checks
+    anything specific enough to gate on.
+    """
+    evaluations = data.get("evaluations", [])
+    if not evaluations or not isinstance(evaluations[0], dict):
+        return None
+    gate = evaluations[0]
+    action = gate.get("action")
+    if not isinstance(action, dict) or _blank(action.get("name")):
+        return None
+    resource = gate.get("resource")
+    if not isinstance(resource, dict):
+        return None
+    resource_type, resource_id = resource.get("type"), resource.get("id")
+    if _blank(resource_type) or _blank(resource_id):
+        return None
+    return resource_type, resource_id
+
+
+def _subject_from_prompt(evaluation: dict[str, Any], gate_resource: tuple[str, str] | None) -> bool:
+    """True if the LLM marked this evaluation's subject as the second subject it identified
+    in the prompt (see SKILL.md), rather than the caller, *and* that subject matches
+    evaluations[0]'s gate resource - the one case _bind_subject must leave alone instead of
+    overriding. The marker by itself is not enough: an evaluation marked for a subject the
+    caller never actually gated in evaluations[0] falls back to the safe default (override),
+    same as an absent or malformed marker - otherwise the marker alone would let the LLM vouch
+    for an arbitrary schema-valid subject with no real gate behind it at all.
+    """
+    context = evaluation.get("context")
+    if not isinstance(context, dict):
+        return False
+    parameters = context.get("parameters")
+    if not isinstance(parameters, dict):
+        return False
+    if parameters.get(_SUBJECT_SOURCE_KEY) != _SUBJECT_SOURCE_PROMPT:
+        return False
+    if gate_resource is None:
+        return False
+    subject = evaluation.get("subject")
+    if not isinstance(subject, dict):
+        return False
+    return (subject.get("type"), subject.get("id")) == gate_resource
+
+
 def _bind_subject(data: dict[str, Any], *, subject_id: str | None, subject_type: str) -> None:
-    """Force subject.id/subject.type on every evaluation from the validated token and
-    deployment config, not whatever the LLM produced - closes the prompt-injection
+    """Force subject.id/subject.type on every evaluation from the caller-supplied subject
+    params (IntentExecutor._subject_params - resolved by IAG per request, not a token claim
+    or static deployment config), not whatever the LLM produced - closes the prompt-injection
     surface where the LLM could otherwise set the subject itself.
 
-    TODO: Subject Search evaluations use subject.type as a search parameter, not the
-    caller's own identity, and must not get this override - deferred to a later task.
+    The one exception: an evaluation *after the first* that the LLM explicitly marked as being
+    about a second subject it identified in the prompt, and whose subject matches evaluations[0]'s
+    gate resource (_subject_from_prompt), keeps the subject it produced - trusted for its type
+    (still schema-validated by validate_evaluations) and its id (free text, like resource.id).
+    Every other evaluation - the normal single-subject case, any evaluation the LLM didn't mark
+    or marked for a subject the gate doesn't cover, and evaluations[0] no matter what - gets the
+    override regardless of what the LLM put there, same as before.
+
+    evaluations[0] is deliberately *never* eligible for the exception, marked or not: it is the
+    caller-anchored evaluation the whole pattern hinges on, so a response with only one
+    evaluation (no second subject at all) must always come back bound to the caller, and can
+    never be trusted on the LLM's say-so alone.
     """
-    for evaluation in data.get("evaluations", []):
+    gate_resource = _gate_resource(data)
+    for index, evaluation in enumerate(data.get("evaluations", [])):
         if not isinstance(evaluation, dict):
+            continue
+        if index > 0 and _subject_from_prompt(evaluation, gate_resource):
             continue
         subject = evaluation.get("subject")
         if not isinstance(subject, dict):

@@ -100,8 +100,6 @@ spec:
               value: {{ .Values.app.introspectClientId | quote }}
             - name: INTROSPECT_TIMEOUT_SECONDS
               value: {{ .Values.app.introspectTimeoutSeconds | quote }}
-            - name: SUBJECT_TYPE
-              value: {{ .Values.app.subjectType | quote }}
             - name: AUDIT_DELIVERY
               value: {{ .Values.app.auditDelivery | quote }}
             - name: AUDIT_ASYNC

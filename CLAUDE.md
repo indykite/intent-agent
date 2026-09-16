@@ -136,7 +136,7 @@ Six modules carry whole service:
 discovered by `skills.discover_skills()` relative to `skills.py`'s own directory, at `IntentAgent`
 construction time. System prompt only lists skill names/descriptions; LLM calls `activate_skill`
 to fetch skill's full body on demand, and for `extract-intent` specifically, cached IndyKite
-schema + token's subject id get injected into that response. Currently one skill ships:
+schema + the caller-supplied subject id get injected into that response. Currently one skill ships:
 `extract-intent` — deliberately no separate `get-data-schema` skill; schema fetching = internal
 infrastructure (`SchemaClient`, wired through `IntentAgent.load_data_schema`/
 `get_cached_schema`), not LLM-facing capability. A `get_data_schema` tool is exposed to the LLM
@@ -149,10 +149,10 @@ and `IK_APP_AGENT_KEY` are required (`Settings` fails fast at startup if either 
 fetch itself failing (network/HTTP error, or the platform not being up yet) does **not** prevent
 cold start - the process keeps serving, and `run_extraction()` retries the fetch (via
 `get_cached_schema()`) on every request until the schema is populated, returning
-`schema_unavailable_error` for requests in the meantime. Once a schema is available,
-`SUBJECT_TYPE` is validated against it on every request too (`validate_subject_type`) - a
-mismatch fails that request with `subject_type_mismatch_error` rather than crashing the process.
-`SCHEMA_REFRESH_TTL_MINUTES` controls how long a cached schema is served
+`schema_unavailable_error` for requests in the meantime. Once a schema is available, the
+caller-supplied `subject_type` (see below) is validated against it on every request too
+(`validate_subject_type`) - a mismatch fails that request with `subject_type_mismatch_error`
+rather than crashing the process. `SCHEMA_REFRESH_TTL_MINUTES` controls how long a cached schema is served
 before the next request triggers a refresh; a failed refresh after a cached schema has expired
 keeps the stale schema instead of losing it.
 
@@ -209,8 +209,11 @@ entry (see the pre-merge multi-instance validation below).
 test): JSON-RPC method name is `SendMessage`, not `message/send`; requests need
 `A2A-Version: 1.0` header; message `role` must be literal `ROLE_USER`; `Authorization: Bearer
 <token>` required and validated via RFC 7662 introspection against the external IdP (real network
-call - a valid-looking-but-fake token, like the old JWT-decode design accepted, is now rejected);
-`subject_id` comes from the introspection response's `sub` claim, not a locally-decoded one.
+call - a valid-looking-but-fake token, like the old JWT-decode design accepted, is now rejected) -
+this authenticates the calling client, not any subject, so `subject_type`/`subject_id` are no
+longer derived from it. Both are required in the request's `message.metadata` instead (`subject_type`
+missing/blank is a 400; `subject_id` may be blank, the Subject-Search exception) - see
+`IntentExecutor._subject_params`.
 
 ## Docker
 

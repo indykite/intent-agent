@@ -10,7 +10,7 @@ from dogpile.cache.backends.redis import RedisBackend
 from langchain_core.messages import HumanMessage, ToolMessage
 from starlette.testclient import TestClient
 
-from indykite.intent_agent.agent import IntentAgent, _build_schema_cache, build_app
+from indykite.intent_agent.agent import IntentAgent, RequestSubject, _build_schema_cache, build_app
 from indykite.intent_agent.audit.message import Outcome, schema_version
 from indykite.intent_agent.config import Settings
 from indykite.intent_agent.errors import (
@@ -86,7 +86,7 @@ def test_discovers_extract_intent_skill():
 
 def test_build_app_registers_routes(monkeypatch, mocker):
     """build_app must wire up the agent-card and JSON-RPC routes on the app."""
-    settings = _settings_with_subject_type(monkeypatch)
+    settings = _full_settings(monkeypatch)
     fake_schema_client = mocker.Mock(
         preload=mocker.Mock(),
         get_cached=mocker.Mock(return_value=_load_schema_fixture()),
@@ -103,7 +103,7 @@ def test_build_app_closes_audit_sender_on_shutdown(monkeypatch, mocker):
     """The app's lifespan closes the audit sender on shutdown - that is what drains a buffered
     (AUDIT_ASYNC) queue before the process exits, so nothing audited is lost on a rollout.
     """
-    settings = _settings_with_subject_type(monkeypatch)
+    settings = _full_settings(monkeypatch)
     fake_schema_client = mocker.Mock(preload=mocker.Mock(), get_cached=mocker.Mock(return_value=_load_schema_fixture()))
     sender = _fake_audit_sender(mocker)
     app, _agent = build_app(settings, schema_client=fake_schema_client, audit_sender=sender)
@@ -117,7 +117,7 @@ def test_build_app_starts_when_schema_unavailable_at_cold_start(monkeypatch, moc
     """A schema fetch failure at cold start must not abort startup - the platform may still be
     coming up, so the process keeps serving and retries the fetch on every request instead.
     """
-    settings = _settings_with_subject_type(monkeypatch)
+    settings = _full_settings(monkeypatch)
     # INDYKITE_BASE_URL is now mandatory, so simulate "schema unavailable" via a failed fetch
     # instead of an unset base URL - same client-patching approach as test_schema.py.
     failing_client = mocker.MagicMock()
@@ -175,6 +175,127 @@ def test_normalize_contexts_tolerates_non_dict_evaluation_entries():
     _normalize_contexts(data)
     assert data["evaluations"][0] == "not-a-dict"
     assert data["evaluations"][1]["context"] == {}
+
+
+def test_bind_subject_never_trusts_the_only_evaluation_even_if_marked():
+    """evaluations[0] must be overridden unconditionally - marked or not. A single-evaluation
+    response has no second subject at all by definition, so there is no caller-anchored gate
+    evaluation anywhere in the response; trusting the LLM here would reopen the injection
+    surface the override exists to close.
+    """
+    data = {
+        "evaluations": [
+            {
+                "subject": {"type": "User", "id": "rebecca"},
+                "action": {"name": "CAN_PURCHASE"},
+                "resource": {"type": "Stock", "id": "GOOG"},
+                "context": {"parameters": {"subject_source": "prompt"}},
+            },
+        ],
+    }
+    _bind_subject(data, subject_id="roy", subject_type="User")
+    assert data["evaluations"][0]["subject"] == {"type": "User", "id": "roy"}
+
+
+def test_bind_subject_second_subject_case_only_overrides_the_caller_evaluation():
+    """The full second-subject shape: the caller-anchored gate evaluation (unmarked) is
+    overridden as always, the marked one about the second subject - exactly matching the
+    gate's resource.type/id, as SKILL.md requires - is left alone.
+    """
+    data = {
+        "evaluations": [
+            {
+                "subject": {"type": "whatever-the-llm-guessed", "id": "attacker-controlled"},
+                "action": {"name": "CAN_ACCESS"},
+                "resource": {"type": "User", "id": "Rebecca"},
+                "context": {},
+            },
+            {
+                "subject": {"type": "User", "id": "Rebecca"},
+                "action": {"name": "CAN_PURCHASE"},
+                "resource": {"type": "Stock", "id": "GOOG"},
+                "context": {"parameters": {"subject_source": "prompt"}},
+            },
+        ],
+    }
+    _bind_subject(data, subject_id="roy", subject_type="User")
+    assert data["evaluations"][0]["subject"] == {"type": "User", "id": "roy"}
+    assert data["evaluations"][1]["subject"] == {"type": "User", "id": "Rebecca"}
+
+
+@pytest.mark.parametrize(
+    ("gate_evaluation", "marked_subject"),
+    [
+        pytest.param(
+            {"action": {"name": "CAN_ACCESS"}, "resource": {"type": "User", "id": "Rebecca"}, "context": {}},
+            {"type": "User", "id": "someone-else-entirely"},
+            id="gate_does_not_match_the_marked_subject",
+        ),
+        pytest.param(
+            {"action": {"name": "CAN_RETRIEVE"}, "context": {}},
+            {"type": "User", "id": "Rebecca"},
+            id="gate_has_no_resource_at_all",
+        ),
+        pytest.param(
+            {"resource": {"type": "Admin", "id": "root"}, "context": {}},
+            {"type": "Admin", "id": "root"},
+            id="gate_has_no_action",
+        ),
+        pytest.param(
+            {"action": {"name": "CAN_ACCESS"}, "resource": {"type": "Admin", "id": ""}, "context": {}},
+            {"type": "Admin", "id": ""},
+            id="gate_resource_id_is_blank_even_when_matched",
+        ),
+    ],
+)
+def test_bind_subject_marker_alone_is_not_enough(gate_evaluation, marked_subject):
+    """A marked evaluation is overridden whenever evaluations[0] isn't a real, matching gate:
+    mismatched, missing entirely, action-search-shaped (no action), or resource-search-shaped
+    (blank id, even when that blank happens to equal the marked subject's own blank id - matching
+    two blanks isn't matching a real identity). Without this check, the marker alone would let
+    the LLM vouch for an arbitrary schema-valid subject with no real gate behind it.
+    """
+    data = {
+        "evaluations": [
+            gate_evaluation,
+            {
+                "subject": marked_subject,
+                "action": {"name": "CAN_PURCHASE"},
+                "resource": {"type": "Stock", "id": "GOOG"},
+                "context": {"parameters": {"subject_source": "prompt"}},
+            },
+        ],
+    }
+    _bind_subject(data, subject_id="roy", subject_type="User")
+    assert data["evaluations"][1]["subject"] == {"type": "User", "id": "roy"}
+
+
+@pytest.mark.parametrize(
+    "evaluation",
+    [
+        pytest.param({"subject": {"type": "Admin", "id": "x"}}, id="no_context_at_all"),
+        pytest.param({"subject": {"type": "Admin", "id": "x"}, "context": "not-a-dict"}, id="context_not_a_dict"),
+        pytest.param(
+            {"subject": {"type": "Admin", "id": "x"}, "context": {"parameters": "not-a-dict"}},
+            id="parameters_not_a_dict",
+        ),
+        pytest.param(
+            {"subject": {"type": "Admin", "id": "x"}, "context": {"parameters": {"subject_source": "elsewhere"}}},
+            id="wrong_marker_value",
+        ),
+    ],
+)
+def test_bind_subject_overrides_when_marker_is_absent_or_malformed(evaluation):
+    """Anything short of the exact marker must fall back to the safe default: override - a
+    malformed context/parameters must not accidentally grant trust. Placed at index 1 (behind
+    a normal gate evaluation) so this actually exercises _subject_from_prompt's validation -
+    at index 0 every case would pass regardless, since index 0 is never trusted at all.
+    """
+    gate_evaluation = {"action": {"name": "CAN_ACCESS"}, "resource": {"type": "Car", "id": "kitt"}, "context": {}}
+    data = {"evaluations": [gate_evaluation, evaluation]}
+    _bind_subject(data, subject_id="user-1", subject_type="Customer")
+    assert data["evaluations"][0]["subject"] == {"type": "Customer", "id": "user-1"}
+    assert data["evaluations"][1]["subject"] == {"type": "Customer", "id": "user-1"}
 
 
 @pytest.mark.parametrize(
@@ -606,17 +727,18 @@ def test_normalize_intent_response_raises_on_malformed_json():
         _normalize("Sorry, I can't help with that.", "some prompt")
 
 
-def _settings_with_subject_type(monkeypatch, subject_type="Customer"):
+def _full_settings(monkeypatch):
     """Build a Settings with every required env var set, for run_extraction-level tests.
 
     AUDIT_DELIVERY is required too; the file path is never created here because these tests
     build an IntentAgent directly (no sender) or inject a fake sender into build_app.
+    subject_type/subject_id are no longer part of Settings - tests pass them directly to
+    run_extraction() instead.
     """
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("INTROSPECT_URL", "https://idp.example.com/introspect")
     monkeypatch.setenv("INTROSPECT_CLIENT_ID", "client-id")
     monkeypatch.setenv("INTROSPECT_CLIENT_SECRET", "client-secret")
-    monkeypatch.setenv("SUBJECT_TYPE", subject_type)
     monkeypatch.setenv("IK_APP_AGENT_KEY", _APP_AGENT_KEY)
     monkeypatch.setenv("INDYKITE_BASE_URL", "https://ikg.example.com")
     monkeypatch.setenv("AUDIT_DELIVERY", "file")
@@ -633,7 +755,7 @@ def _fake_audit_sender(mocker):
 
 def test_build_schema_cache_uses_memory_backend_by_default(monkeypatch):
     """CACHE_BACKEND defaults to memory - the in-process Memory cache - with no REDIS_URL set."""
-    settings = _settings_with_subject_type(monkeypatch)
+    settings = _full_settings(monkeypatch)
     assert isinstance(_build_schema_cache(settings).backend, MemoryBackend)
 
 
@@ -646,7 +768,7 @@ def test_build_schema_cache_uses_redis_backend_when_configured(monkeypatch):
     monkeypatch.setenv("CACHE_BACKEND", "redis")
     monkeypatch.setenv("REDIS_URL", redis_url)
     monkeypatch.setenv("SCHEMA_REFRESH_TTL_MINUTES", "2.0")
-    settings = _settings_with_subject_type(monkeypatch)
+    settings = _full_settings(monkeypatch)
     cache = _build_schema_cache(settings)
     assert isinstance(cache.backend, RedisBackend)
     assert cache.backend.url == redis_url
@@ -655,7 +777,7 @@ def test_build_schema_cache_uses_redis_backend_when_configured(monkeypatch):
 
 def test_get_data_schema_tool_returns_cached_schema(monkeypatch, mocker):
     """The get_data_schema tool must return the cached schema as minified JSON."""
-    settings = _settings_with_subject_type(monkeypatch)
+    settings = _full_settings(monkeypatch)
     schema = _load_schema_fixture()
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock()))
     fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=schema))
@@ -671,7 +793,7 @@ def test_run_extraction_binds_structured_output_schema_derived_from_current_sche
     """run_extraction must call bind_tools with a response_schema derived from the last
     successfully derived schema (via build_input_schema), not some other/unrelated schema.
     """
-    settings = _settings_with_subject_type(monkeypatch)
+    settings = _full_settings(monkeypatch)
     schema = _load_schema_fixture()
     fake_response = mocker.Mock(text="ok", content="ok", tool_calls=[])
     mock_ainvoke = mocker.AsyncMock(return_value=fake_response)
@@ -681,7 +803,7 @@ def test_run_extraction_binds_structured_output_schema_derived_from_current_sche
     fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=schema))
     agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client)
 
-    asyncio.run(agent.run_extraction("buy AAPL", "user-1"))
+    asyncio.run(agent.run_extraction("buy AAPL", RequestSubject(id="user-1", type="Customer")))
 
     mock_bind_tools.assert_called_once_with(
         agent.tools,
@@ -696,7 +818,7 @@ def test_run_extraction_rebuilds_schema_when_cached_schema_changes_between_reque
     return a DIFFERENT schema on the second call and checking bind_tools' second call reflects
     it; a schema fixed at construction time would bind the first schema both times.
     """
-    settings = _settings_with_subject_type(monkeypatch)
+    settings = _full_settings(monkeypatch)
     schema_v1 = _load_schema_fixture()
     schema_v2 = json.loads(json.dumps(schema_v1))  # deep copy, safe to mutate independently
     schema_v2["graph"]["nodes"]["Boat"] = schema_v2["graph"]["nodes"]["Car"]
@@ -709,8 +831,8 @@ def test_run_extraction_rebuilds_schema_when_cached_schema_changes_between_reque
     fake_schema_client = mocker.Mock(get_cached=mocker.Mock(side_effect=[schema_v1, schema_v2]))
     agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client)
 
-    asyncio.run(agent.run_extraction("buy AAPL", "user-1"))
-    asyncio.run(agent.run_extraction("rent a boat", "user-1"))
+    asyncio.run(agent.run_extraction("buy AAPL", RequestSubject(id="user-1", type="Customer")))
+    asyncio.run(agent.run_extraction("rent a boat", RequestSubject(id="user-1", type="Customer")))
 
     first_call_schema = mock_bind_tools.call_args_list[0].kwargs["response_schema"]
     second_call_schema = mock_bind_tools.call_args_list[1].kwargs["response_schema"]
@@ -734,7 +856,7 @@ def test_run_extraction_rebuilds_schema_when_cached_schema_changes_between_reque
     ],
 )
 def test_run_extraction_fails_before_any_llm_call(monkeypatch, mocker, caplog, case):
-    """Schema unavailability, an unpopulated data model, and a real SUBJECT_TYPE mismatch are
+    """Schema unavailability, an unpopulated data model, and a real subject_type mismatch are
     three distinct 4.7 error shapes, each checked and returned before any LLM call - not
     conflated with each other (see schema_has_no_node_types), and not wasting an LLM call on a
     result that would just be discarded. A mismatch's specific detail (log_detail) must reach
@@ -743,14 +865,14 @@ def test_run_extraction_fails_before_any_llm_call(monkeypatch, mocker, caplog, c
     """
     build_schema, subject_type, expected_error, log_detail = case
     caplog.set_level("ERROR")
-    settings = _settings_with_subject_type(monkeypatch, subject_type=subject_type)
+    settings = _full_settings(monkeypatch)
     mock_ainvoke = mocker.AsyncMock()
     fake_bound_llm = mocker.Mock(ainvoke=mock_ainvoke)
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=fake_bound_llm))
     fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=build_schema()))
     agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client)
 
-    result = asyncio.run(agent.run_extraction("buy AAPL", "user-1"))
+    result = asyncio.run(agent.run_extraction("buy AAPL", RequestSubject(id="user-1", type=subject_type)))
 
     assert json.loads(result.text) == expected_error("buy AAPL")
     assert result.outcome == Outcome.ERROR
@@ -775,7 +897,7 @@ def _agent_with_responses(monkeypatch, mocker, responses, **env):
     """
     for name, value in env.items():
         monkeypatch.setenv(name, str(value))
-    settings = _settings_with_subject_type(monkeypatch)
+    settings = _full_settings(monkeypatch)
     mock_ainvoke = mocker.AsyncMock(side_effect=responses)
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mock_ainvoke)))
     fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=_load_schema_fixture()))
@@ -790,7 +912,7 @@ def test_run_extraction_returns_bound_evaluations_when_first_answer_is_on_schema
         [_llm_response(mocker, tool_calls=[_ACTIVATE_EXTRACT_INTENT_CALL]), _llm_response(mocker, _ON_SCHEMA_ANSWER)],
     )
 
-    result = asyncio.run(agent.run_extraction("rent kitt", "user-1"))
+    result = asyncio.run(agent.run_extraction("rent kitt", RequestSubject(id="user-1", type="Customer")))
     data = json.loads(result.text)
 
     assert data["evaluations"][0]["subject"] == {"type": "Customer", "id": "user-1"}
@@ -819,7 +941,7 @@ def test_run_extraction_retries_with_feedback_when_answer_is_off_schema(monkeypa
         ],
     )
 
-    result = asyncio.run(agent.run_extraction("buy AAPL", "user-1"))
+    result = asyncio.run(agent.run_extraction("buy AAPL", RequestSubject(id="user-1", type="Customer")))
     data = json.loads(result.text)
 
     assert data["evaluations"][0] == {
@@ -859,7 +981,7 @@ def test_run_extraction_fails_after_retry_budget_when_answers_stay_off_schema(mo
         ],
     )
 
-    result = asyncio.run(agent.run_extraction("buy AAPL", "user-1"))
+    result = asyncio.run(agent.run_extraction("buy AAPL", RequestSubject(id="user-1", type="Customer")))
 
     assert json.loads(result.text) == no_intent_error("buy AAPL")
     assert "Stock" not in result.text
@@ -880,7 +1002,7 @@ def test_run_extraction_retry_budget_is_configurable(monkeypatch, mocker):
         VALIDATION_MAX_RETRIES=0,
     )
 
-    result = asyncio.run(agent.run_extraction("buy AAPL", "user-1"))
+    result = asyncio.run(agent.run_extraction("buy AAPL", RequestSubject(id="user-1", type="Customer")))
 
     assert json.loads(result.text) == no_intent_error("buy AAPL")
     assert result.outcome == Outcome.VALIDATION_FAILED
@@ -902,7 +1024,7 @@ def test_run_extraction_retries_malformed_json_too(monkeypatch, mocker):
         ],
     )
 
-    data = json.loads(asyncio.run(agent.run_extraction("rent kitt", "user-1")).text)
+    data = json.loads(asyncio.run(agent.run_extraction("rent kitt", RequestSubject(id="user-1", type="Customer"))).text)
 
     assert data["evaluations"][0]["subject"] == {"type": "Customer", "id": "user-1"}
     assert mock_ainvoke.call_count == _LLM_CALLS_WITH_ONE_RETRY
@@ -914,13 +1036,13 @@ def test_run_extraction_passes_free_text_through_when_skill_not_activated(monkey
     intent, so both audit as `unmatched` with the pass-through text as the message.
     """
     agent, _ = _agent_with_responses(monkeypatch, mocker, [_llm_response(mocker, "hello")])
-    result = asyncio.run(agent.run_extraction("hi", "user-1"))
+    result = asyncio.run(agent.run_extraction("hi", RequestSubject(id="user-1", type="Customer")))
     assert result.text == "hello"
     assert result.outcome == Outcome.UNMATCHED
     assert result.message == "hello"
 
     agent, _ = _agent_with_responses(monkeypatch, mocker, [_llm_response(mocker, "")])
-    result = asyncio.run(agent.run_extraction("hi", "user-1"))
+    result = asyncio.run(agent.run_extraction("hi", RequestSubject(id="user-1", type="Customer")))
     assert result.text == "(No response generated)"
     assert result.outcome == Outcome.UNMATCHED
 
@@ -939,7 +1061,7 @@ def test_run_extraction_gives_up_when_tool_call_budget_runs_out(monkeypatch, moc
         TOOL_CALL_MAX_ITERATIONS=1,
     )
 
-    result = asyncio.run(agent.run_extraction("rent kitt", "user-1"))
+    result = asyncio.run(agent.run_extraction("rent kitt", RequestSubject(id="user-1", type="Customer")))
 
     assert json.loads(result.text) == no_intent_error("rent kitt")
     assert result.outcome == Outcome.ERROR
@@ -959,7 +1081,10 @@ def test_run_extraction_keeps_placeholder_when_budget_runs_out_before_activation
         TOOL_CALL_MAX_ITERATIONS=1,
     )
 
-    assert asyncio.run(agent.run_extraction("hi", "user-1")).text == "(No response generated)"
+    assert (
+        asyncio.run(agent.run_extraction("hi", RequestSubject(id="user-1", type="Customer"))).text
+        == "(No response generated)"
+    )
     assert mock_ainvoke.call_count == 1
 
 
@@ -979,7 +1104,7 @@ def test_run_extraction_short_circuits_repeat_skill_activation(monkeypatch, mock
         ],
     )
 
-    data = json.loads(asyncio.run(agent.run_extraction("rent kitt", "user-1")).text)
+    data = json.loads(asyncio.run(agent.run_extraction("rent kitt", RequestSubject(id="user-1", type="Customer"))).text)
 
     assert data["evaluations"][0]["subject"] == {"type": "Customer", "id": "user-1"}
     assert mock_ainvoke.call_count == _LLM_CALLS_WITH_ONE_RETRY
@@ -1002,7 +1127,7 @@ def test_run_extraction_returns_timeout_error_when_llm_call_exceeds_limit(monkey
 
     agent, mock_ainvoke = _agent_with_responses(monkeypatch, mocker, _hang, LLM_TIMEOUT_SECONDS=0.01)
 
-    result = asyncio.run(agent.run_extraction("rent kitt", "user-1"))
+    result = asyncio.run(agent.run_extraction("rent kitt", RequestSubject(id="user-1", type="Customer")))
 
     assert json.loads(result.text) == llm_timeout_error("rent kitt")
     assert result.outcome == Outcome.ERROR
@@ -1031,7 +1156,7 @@ def test_run_extraction_enforces_request_deadline_across_calls(monkeypatch, mock
         TOOL_CALL_MAX_ITERATIONS=_UNREACHABLE_TOOL_BUDGET,
     )
 
-    result = asyncio.run(agent.run_extraction("rent kitt", "user-1"))
+    result = asyncio.run(agent.run_extraction("rent kitt", RequestSubject(id="user-1", type="Customer")))
 
     assert json.loads(result.text) == llm_timeout_error("rent kitt")
     # Several rounds got through before the deadline, but nowhere near the tool budget.
@@ -1058,7 +1183,7 @@ def test_run_extraction_times_out_during_retry_too(monkeypatch, mocker):
 
     agent, mock_ainvoke = _agent_with_responses(monkeypatch, mocker, _answer_then_hang, LLM_TIMEOUT_SECONDS=0.01)
 
-    result = asyncio.run(agent.run_extraction("buy AAPL", "user-1"))
+    result = asyncio.run(agent.run_extraction("buy AAPL", RequestSubject(id="user-1", type="Customer")))
 
     assert json.loads(result.text) == llm_timeout_error("buy AAPL")
     assert "Stock" not in result.text
@@ -1073,7 +1198,7 @@ def test_validate_subject_type_accepts_any_real_node_type(subject_type):
 
 
 def test_validate_subject_type_rejects_unknown_type():
-    """A SUBJECT_TYPE that doesn't match any node type at all must be rejected."""
+    """A subject_type that doesn't match any node type at all must be rejected."""
     schema = _load_schema_fixture()
     with pytest.raises(SubjectTypeMismatchError):
         validate_subject_type(schema, "NotARealType")
@@ -1106,18 +1231,17 @@ def test_validate_subject_type_skips_when_schema_unavailable():
 def test_schema_has_no_node_types(schema, expected):
     """Only _Application - the calling app's own node, always present even before any real
     data model is configured - doesn't count as populated; any other node type does, even if
-    SUBJECT_TYPE itself doesn't match it (that's a SubjectTypeMismatchError, not this).
+    the supplied subject_type doesn't match it (that's a SubjectTypeMismatchError, not this).
     """
     assert schema_has_no_node_types(schema) is expected
 
 
 def test_build_app_starts_when_schema_not_yet_populated_at_cold_start(monkeypatch, mocker, caplog):
-    """A schema that fetches successfully but is empty at cold start must not log a
-    SubjectTypeMismatchError - that would misleadingly suggest SUBJECT_TYPE is misconfigured
-    when the real cause is just an unpopulated data model.
+    """A schema that fetches successfully but is empty at cold start must log a WARNING, not an
+    ERROR - the real cause is just an unpopulated data model, not a misconfiguration.
     """
     caplog.set_level("WARNING")
-    settings = _settings_with_subject_type(monkeypatch)
+    settings = _full_settings(monkeypatch)
     empty_schema = _load_empty_schema_fixture()
     fake_schema_client = mocker.Mock(
         preload=mocker.Mock(),
@@ -1131,23 +1255,4 @@ def test_build_app_starts_when_schema_not_yet_populated_at_cold_start(monkeypatc
     assert any("isn't populated yet" in record.message for record in caplog.records)
     assert len(app.routes) >= _MIN_EXPECTED_ROUTES
 
-
-def test_build_app_starts_when_subject_type_mismatches_schema(monkeypatch, mocker, caplog):
-    """build_app must not raise/abort at startup when SUBJECT_TYPE doesn't match the schema -
-    the mismatch is instead surfaced per-request (see test_run_extraction_fails_before_any_llm_call
-    below), so a bad SUBJECT_TYPE doesn't take down an otherwise-healthy process. It must still
-    be logged at startup though - an early signal beats waiting for the first live request.
-    """
-    caplog.set_level("ERROR")
-    settings = _settings_with_subject_type(monkeypatch, subject_type="NotARealType")
-    fake_schema_client = mocker.Mock(
-        preload=mocker.Mock(),
-        get_cached=mocker.Mock(return_value=_load_schema_fixture()),
-    )
-
-    app, agent = build_app(settings, schema_client=fake_schema_client, audit_sender=_fake_audit_sender(mocker))
-
-    assert agent.get_cached_schema() is not None
-    assert any(record.levelname == "ERROR" for record in caplog.records)
-    assert "NotARealType" in caplog.text
     assert len(app.routes) >= _MIN_EXPECTED_ROUTES

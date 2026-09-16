@@ -69,7 +69,6 @@ def _build_test_app(monkeypatch, mocker, schema_server, tmp_path, *, mock_ainvok
     monkeypatch.setenv("INTROSPECT_URL", "https://idp.example.com/introspect")
     monkeypatch.setenv("INTROSPECT_CLIENT_ID", "client-id")
     monkeypatch.setenv("INTROSPECT_CLIENT_SECRET", "client-secret")
-    monkeypatch.setenv("SUBJECT_TYPE", "Customer")
     monkeypatch.setenv("IK_APP_AGENT_KEY", _APP_AGENT_KEY)
     monkeypatch.setenv("INDYKITE_BASE_URL", f"http://{schema_server.server_address[0]}:{schema_server.server_port}")
     monkeypatch.setenv("AUDIT_DELIVERY", "file")
@@ -102,6 +101,7 @@ def _send_message(client, text):
                     "role": "ROLE_USER",
                     "parts": [{"text": text}],
                     "messageId": "integration-test-1",
+                    "metadata": {"subject_type": "Customer", "subject_id": "test-subject"},
                 },
             },
         },
