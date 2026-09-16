@@ -767,16 +767,31 @@ class IntentExecutor(AgentExecutor):
         resolves the caller's own identity itself and supplies both per request, instead of
         subject_id coming from a token's `sub` claim and subject_type from static config.
 
-        subject_type is required - 400 (HTTPException) if missing or blank, since every
-        evaluation needs one. subject_id may be blank (the Subject-Search exception, TDD 4.7),
-        so it isn't required here.
+        subject_type is required - 400 (HTTPException) if missing or blank (whitespace-only
+        counts as blank), since every evaluation needs one. subject_id may be blank (the
+        Subject-Search exception, TDD 4.7), so it isn't required here. Either present but not a
+        string (e.g. a nested object) is also a 400 - str(some_dict) would otherwise silently
+        coerce it into a Python repr and bind that into every evaluation and audit record,
+        instead of surfacing the malformed request to the caller.
         """
         metadata = dict(context.message.metadata) if context.message and context.message.metadata else {}
-        subject_type = str(metadata.get("subject_type") or "")
-        subject_id = str(metadata.get("subject_id") or "")
+        subject_type = self._require_metadata_string(metadata, "subject_type")
+        subject_id = self._require_metadata_string(metadata, "subject_id")
         if not subject_type:
             raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail="subject_type is required")
         return subject_type, subject_id
+
+    @staticmethod
+    def _require_metadata_string(metadata: dict[str, Any], key: str) -> str:
+        """Return metadata[key] as a stripped string, or "" if absent/blank - raising 400 if
+        it's present but not a string at all (see _subject_params).
+        """
+        value = metadata.get(key)
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=f"{key} must be a string")
+        return value.strip()
 
     async def _extract(
         self,

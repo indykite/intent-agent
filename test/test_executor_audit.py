@@ -158,6 +158,46 @@ def test_missing_subject_type_is_audited_as_error_and_rejected(baseline_env, moc
     agent.run_extraction.assert_not_awaited()
 
 
+def test_whitespace_only_subject_type_is_audited_as_error_and_rejected(baseline_env, mocker):
+    """A whitespace-only subject_type must count as blank - the same 400 as a missing one, not
+    a value that happens to be truthy and slips past the check.
+    """
+    mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value={"active": True}))
+    executor, sender, agent = _executor(baseline_env, mocker)
+
+    context = _context({"authorization": "Bearer good-token"}, metadata={"subject_type": "   "})
+    with pytest.raises(HTTPException) as excinfo:
+        _execute(executor, context, mocker)
+
+    assert excinfo.value.status_code == HTTP_400_BAD_REQUEST
+    record = _sole_record(sender)
+    assert record.outcome == Outcome.ERROR
+    assert record.message == excinfo.value.detail == "subject_type is required"
+    agent.run_extraction.assert_not_awaited()
+
+
+@pytest.mark.parametrize("key", ["subject_type", "subject_id"])
+def test_non_string_metadata_value_is_audited_as_error_and_rejected(baseline_env, mocker, key):
+    """A non-string subject_type/subject_id (e.g. a nested object) must be rejected outright,
+    not silently str()-coerced into a Python repr and bound into every evaluation/audit record.
+    """
+    mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value={"active": True}))
+    executor, sender, agent = _executor(baseline_env, mocker)
+
+    context = _context(
+        {"authorization": "Bearer good-token"},
+        metadata={"subject_type": "Customer", "subject_id": "user-1", key: {"nested": "object"}},
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        _execute(executor, context, mocker)
+
+    assert excinfo.value.status_code == HTTP_400_BAD_REQUEST
+    record = _sole_record(sender)
+    assert record.outcome == Outcome.ERROR
+    assert record.message == excinfo.value.detail == f"{key} must be a string"
+    agent.run_extraction.assert_not_awaited()
+
+
 def test_missing_metadata_object_is_audited_as_error_and_rejected(baseline_env, mocker):
     """A message with no metadata object at all (metadata=None, not just an empty/incomplete
     one) must be the same 400 as a missing subject_type, not an unhandled TypeError from
