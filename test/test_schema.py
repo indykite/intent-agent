@@ -1,5 +1,7 @@
 """Tests for SchemaClient: fetching, caching, and TTL-driven on-demand refresh."""
 
+import json
+
 import httpx2
 import jwt
 import pytest
@@ -41,8 +43,13 @@ def _mock_sync_client(mocker, *, response=None, side_effect=None):
 
 
 def _mock_response(mocker, schema=_SCHEMA):
-    """Build a fake httpx2 response returning schema from .json(), never raising on .raise_for_status()."""
+    """Build a fake httpx2 response returning schema from .json(), never raising on
+    .raise_for_status(). status_code/text are real values (not further Mocks) since load()
+    logs both verbatim, including a slice of .text - a bare Mock isn't subscriptable.
+    """
     response = mocker.Mock(json=mocker.Mock(return_value=schema))
+    response.status_code = 200
+    response.text = json.dumps(schema)
     response.raise_for_status = mocker.Mock()
     return response
 
@@ -107,6 +114,29 @@ def test_load_returns_schema_on_success(mocker):
     _mock_sync_client(mocker, response=_mock_response(mocker))
     client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=_memory_cache())
     assert client.load() == _SCHEMA
+
+
+def test_load_logs_the_request_url_and_a_truncated_response_preview(mocker, caplog):
+    """load() must log the request URL, and the response status and a body[:500] preview, at
+    DEBUG level - diagnoses an unexpected/empty schema or a non-JSON error page directly from
+    the logs, without guessing from the parsed summary alone. A body longer than 500 characters
+    verifies the truncation actually happens, not just that some text got logged.
+    """
+    caplog.set_level("DEBUG")
+    large_schema = {"graph": {"nodes": {"Padding": {"description": "x" * 600}}, "edges": []}}
+    _mock_sync_client(mocker, response=_mock_response(mocker, schema=large_schema))
+    client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=_memory_cache())
+
+    assert client.load() == large_schema
+
+    assert "Requesting schema from https://ikg.example.com/data-schema/v1" in caplog.text
+    full_body = json.dumps(large_schema)
+    assert len(full_body) > len(full_body[:500])
+    assert f"Schema response: status=200 body[:500]={full_body[:500]!r}" in caplog.text
+    # The full (untruncated) body can't be a substring of a message that only ever logged its
+    # first 500 characters - a stronger check than looking for a specific missing fragment,
+    # which a uniform-character payload could satisfy by coincidence.
+    assert full_body not in caplog.text
 
 
 @pytest.mark.parametrize("backend", ["memory", "redis"])

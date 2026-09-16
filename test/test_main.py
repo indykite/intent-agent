@@ -8,7 +8,13 @@ from starlette.responses import PlainTextResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-from indykite.intent_agent.__main__ import MetricsMiddleware, _start_observability_server, build_observability_app
+from indykite.intent_agent.__main__ import (
+    MetricsMiddleware,
+    _start_observability_server,
+    build_observability_app,
+    main,
+)
+from indykite.intent_agent.config import Settings
 from indykite.intent_agent.logging_config import build_logging_config
 
 
@@ -84,3 +90,44 @@ def test_start_observability_server_runs_on_background_daemon_thread(mocker):
 
     thread_cls.assert_called_once_with(target=server.run, daemon=True)
     thread_cls.return_value.start.assert_called_once()
+
+
+def test_main_routes_warnings_through_logging_before_serving(monkeypatch, mocker, baseline_env):
+    """main() is the process entrypoint - never exercised end to end elsewhere in the unit
+    suite (it builds a real Settings, starts a background thread, and blocks on
+    uvicorn.run). Every collaborator is faked here so this only verifies main()'s own
+    wiring: warnings.warn() routed through logging (captureWarnings) before the app is
+    built, both servers started, and the middleware attached - not any real network binding
+    or blocking call.
+    """
+    baseline_env()
+    # Settings(_env_file=None), like every other test's fixed instance - main()'s own bare
+    # Settings() would otherwise pick up whatever .env file happens to sit in the developer's
+    # cwd (e.g. a local LOG_LEVEL=DEBUG), making this test's expectations non-deterministic.
+    settings = Settings(_env_file=None)
+    mocker.patch("indykite.intent_agent.__main__.Settings", return_value=settings)
+    # dictConfig is mocked too - calling it for real would reconfigure the actual root/uvicorn
+    # loggers process-wide (see test_logging_config.py's captureWarnings test, which has to
+    # snapshot and restore exactly that) and leak into every other test in the suite.
+    dict_config = mocker.patch("indykite.intent_agent.__main__.logging.config.dictConfig")
+    capture_warnings = mocker.patch("indykite.intent_agent.__main__.logging.captureWarnings")
+    fake_agent = mocker.Mock(get_cached_schema=mocker.Mock(return_value=None))
+    fake_app = mocker.Mock()
+    build_app_mock = mocker.patch("indykite.intent_agent.__main__.build_app", return_value=(fake_app, fake_agent))
+    start_observability_mock = mocker.patch("indykite.intent_agent.__main__._start_observability_server")
+    uvicorn_run_mock = mocker.patch("indykite.intent_agent.__main__.uvicorn.run")
+
+    main()
+
+    dict_config.assert_called_once_with(build_logging_config(settings.log_level))
+    capture_warnings.assert_called_once_with(capture=True)
+    build_app_mock.assert_called_once_with(settings)
+    fake_app.add_middleware.assert_called_once_with(MetricsMiddleware)
+    start_observability_mock.assert_called_once()
+    uvicorn_run_mock.assert_called_once_with(
+        fake_app,
+        host=str(settings.bind_host),
+        port=settings.intent_port,
+        log_level=settings.log_level.lower(),
+        log_config=mocker.ANY,
+    )

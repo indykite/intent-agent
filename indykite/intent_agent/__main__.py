@@ -88,6 +88,10 @@ def main() -> None:
     log_level = settings.log_level
     logging_config = build_logging_config(log_level)
     logging.config.dictConfig(logging_config)
+    # Route warnings.warn() (e.g. langchain_google_genai's sampling-parameter warnings) through
+    # the "py.warnings" logger - and so through our own JSON formatter/handler - instead of the
+    # warnings module's default of unstructured text straight to stderr.
+    logging.captureWarnings(capture=True)
 
     app, agent = build_app(settings)
     app.add_middleware(MetricsMiddleware)

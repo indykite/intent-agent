@@ -844,13 +844,13 @@ def test_run_extraction_rebuilds_schema_when_cached_schema_changes_between_reque
 @pytest.mark.parametrize(
     "case",
     [
-        pytest.param((lambda: None, "Customer", schema_unavailable_error, None), id="schema_unavailable"),
+        pytest.param((lambda: None, "Customer", schema_unavailable_error, None, "ERROR"), id="schema_unavailable"),
         pytest.param(
-            (_load_empty_schema_fixture, "Customer", schema_not_populated_error, None),
+            (_load_empty_schema_fixture, "Customer", schema_not_populated_error, None, "WARNING"),
             id="schema_not_populated",
         ),
         pytest.param(
-            (_load_schema_fixture, "NotARealType", subject_type_mismatch_error, "NotARealType"),
+            (_load_schema_fixture, "NotARealType", subject_type_mismatch_error, "NotARealType", "ERROR"),
             id="subject_type_mismatch",
         ),
     ],
@@ -859,12 +859,14 @@ def test_run_extraction_fails_before_any_llm_call(monkeypatch, mocker, caplog, c
     """Schema unavailability, an unpopulated data model, and a real subject_type mismatch are
     three distinct 4.7 error shapes, each checked and returned before any LLM call - not
     conflated with each other (see schema_has_no_node_types), and not wasting an LLM call on a
-    result that would just be discarded. A mismatch's specific detail (log_detail) must reach
-    the server-side log but never the caller-facing response - the other two have no such
+    result that would just be discarded. The unpopulated case logs at WARNING (self-healing,
+    not a misconfiguration - matches preload_schema()'s cold-start log for the same state); the
+    other two are real problems and log at ERROR. A mismatch's specific detail (log_detail) must
+    reach the server-side log but never the caller-facing response - the other two have no such
     detail to leak in the first place.
     """
-    build_schema, subject_type, expected_error, log_detail = case
-    caplog.set_level("ERROR")
+    build_schema, subject_type, expected_error, log_detail, expected_level = case
+    caplog.set_level("WARNING")
     settings = _full_settings(monkeypatch)
     mock_ainvoke = mocker.AsyncMock()
     fake_bound_llm = mocker.Mock(ainvoke=mock_ainvoke)
@@ -878,7 +880,7 @@ def test_run_extraction_fails_before_any_llm_call(monkeypatch, mocker, caplog, c
     assert result.outcome == Outcome.ERROR
     assert result.message == expected_error("buy AAPL")["reason"]
     mock_ainvoke.assert_not_called()
-    assert any(record.levelname == "ERROR" for record in caplog.records)
+    assert any(record.levelname == expected_level for record in caplog.records)
     if log_detail:
         assert log_detail in caplog.text
         assert log_detail not in result.text

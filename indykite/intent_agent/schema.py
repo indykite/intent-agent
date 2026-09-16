@@ -72,10 +72,15 @@ class SchemaClient:
             logger.warning("IK base URL/app-agent key not set - schema unavailable")
             return None
         url = f"{self._base_url.rstrip('/')}/data-schema/v1"
+        logger.debug("Requesting schema from %s", url)
         headers = {"X-IK-ClientKey": self._app_agent_key}
         try:
             with httpx2.Client(timeout=self._timeout_seconds) as client:
                 resp = client.get(url, headers=headers)
+                # A raw look at what the platform actually sent back, truncated like
+                # SCHEMA_PREVIEW_CHARS elsewhere - diagnoses an unexpected/empty schema (or a
+                # non-JSON error page) without guessing from the parsed summary line alone.
+                logger.debug("Schema response: status=%s body[:500]=%r", resp.status_code, resp.text[:500])
                 resp.raise_for_status()
         except httpx2.HTTPError:
             logger.exception("Failed to load data schema from %s", url)
