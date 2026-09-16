@@ -106,6 +106,10 @@ def test_main_routes_warnings_through_logging_before_serving(monkeypatch, mocker
     # cwd (e.g. a local LOG_LEVEL=DEBUG), making this test's expectations non-deterministic.
     settings = Settings(_env_file=None)
     mocker.patch("indykite.intent_agent.__main__.Settings", return_value=settings)
+    # dictConfig is mocked too - calling it for real would reconfigure the actual root/uvicorn
+    # loggers process-wide (see test_logging_config.py's captureWarnings test, which has to
+    # snapshot and restore exactly that) and leak into every other test in the suite.
+    dict_config = mocker.patch("indykite.intent_agent.__main__.logging.config.dictConfig")
     capture_warnings = mocker.patch("indykite.intent_agent.__main__.logging.captureWarnings")
     fake_agent = mocker.Mock(get_cached_schema=mocker.Mock(return_value=None))
     fake_app = mocker.Mock()
@@ -115,6 +119,7 @@ def test_main_routes_warnings_through_logging_before_serving(monkeypatch, mocker
 
     main()
 
+    dict_config.assert_called_once_with(build_logging_config(settings.log_level))
     capture_warnings.assert_called_once_with(capture=True)
     build_app_mock.assert_called_once_with(settings)
     fake_app.add_middleware.assert_called_once_with(MetricsMiddleware)
