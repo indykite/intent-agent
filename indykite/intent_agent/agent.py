@@ -771,7 +771,7 @@ class IntentExecutor(AgentExecutor):
         evaluation needs one. subject_id may be blank (the Subject-Search exception, TDD 4.7),
         so it isn't required here.
         """
-        metadata = dict(context.message.metadata) if context.message else {}
+        metadata = dict(context.message.metadata) if context.message and context.message.metadata else {}
         subject_type = str(metadata.get("subject_type") or "")
         subject_id = str(metadata.get("subject_id") or "")
         if not subject_type:

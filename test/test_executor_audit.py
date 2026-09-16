@@ -23,18 +23,22 @@ _UUID_PATTERN = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f
 _MAX_RECORDS_PER_REQUEST = 1
 
 
-def _context(headers, *, metadata=None):
+_DEFAULT_METADATA = object()
+
+
+def _context(headers, *, metadata=_DEFAULT_METADATA):
     """A RequestContext carrying `headers` and a one-part user message, as the A2A routes
     build it. subject_type/subject_id now come from the message's metadata (the caller
     resolves them, not a token) - defaults to a full pair so most tests don't need to specify
-    it; a test exercising the metadata itself (e.g. a missing subject_type) passes its own.
+    it; a test exercising the metadata itself (e.g. a missing subject_type, or no metadata
+    object at all - pass metadata=None for that) passes its own.
     """
     message = a2a_types.Message(
         role=a2a_types.Role.ROLE_USER,
         parts=[a2a_types.Part(text=_PROMPT)],
         message_id="msg-1",
         context_id="ctx-1",
-        metadata=metadata if metadata is not None else {"subject_type": "Customer", "subject_id": "user-1"},
+        metadata=({"subject_type": "Customer", "subject_id": "user-1"} if metadata is _DEFAULT_METADATA else metadata),
     )
     return RequestContext(
         call_context=ServerCallContext(state={"headers": headers}),
@@ -151,6 +155,25 @@ def test_missing_subject_type_is_audited_as_error_and_rejected(baseline_env, moc
     assert record.outcome == Outcome.ERROR
     assert record.message == excinfo.value.detail == "subject_type is required"
     assert record.subject_id == ""
+    agent.run_extraction.assert_not_awaited()
+
+
+def test_missing_metadata_object_is_audited_as_error_and_rejected(baseline_env, mocker):
+    """A message with no metadata object at all (metadata=None, not just an empty/incomplete
+    one) must be the same 400 as a missing subject_type, not an unhandled TypeError from
+    treating None as a mapping.
+    """
+    mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value={"active": True}))
+    executor, sender, agent = _executor(baseline_env, mocker)
+
+    context = _context({"authorization": "Bearer good-token"}, metadata=None)
+    with pytest.raises(HTTPException) as excinfo:
+        _execute(executor, context, mocker)
+
+    assert excinfo.value.status_code == HTTP_400_BAD_REQUEST
+    record = _sole_record(sender)
+    assert record.outcome == Outcome.ERROR
+    assert record.message == excinfo.value.detail == "subject_type is required"
     agent.run_extraction.assert_not_awaited()
 
 
