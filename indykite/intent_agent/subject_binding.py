@@ -4,7 +4,13 @@ import json
 import re
 from typing import Any
 
-from indykite.intent_agent.errors import IntentValidationError, SubjectTypeMismatchError, no_intent_error
+from indykite.intent_agent.errors import (
+    SCHEMA_BLANK_SUFFIX,
+    SCHEMA_MEMBERSHIP_SUFFIX,
+    IntentValidationError,
+    SubjectTypeMismatchError,
+    no_intent_error,
+)
 
 
 def _node_types(schema: dict[str, Any]) -> set[str]:
@@ -73,10 +79,35 @@ def _vocabulary_reason(field: str, value: object, allowed: set[str]) -> str | No
     action.name legitimately unconstrained.
     """
     if _blank(value):
-        return f"{field} is missing or blank"
+        return f"{field} {SCHEMA_BLANK_SUFFIX}"
     if allowed and value not in allowed:
-        return f"{field} {value!r} is not defined in the data schema"
+        return f"{field} {value!r} {SCHEMA_MEMBERSHIP_SUFFIX}"
     return None
+
+
+# The PRD's context sub-shapes (TDD 3.2) and what each must be when present - the same three
+# keys input_schema._Context declares for the structured output.
+_CONTEXT_KEY_TYPES: dict[str, type] = {"filters": str, "parameters": dict, "qualifiers": dict}
+_TYPE_NAMES = {str: "a string", dict: "an object"}
+
+
+def _context_errors(context: object) -> list[str]:
+    """Describe every way `context` departs from the PRD's shape (TDD 3.2): an object whose
+    keys have the types in _CONTEXT_KEY_TYPES. An absent or null context, or an absent/null
+    key, is fine - each is optional; any other key is passed through untouched (the PRD calls
+    context an open object). The structured output already types these, but like the
+    type/name enums that's a strong hint to Gemini, not a guarantee, so this is the same
+    belt-and-braces check as _vocabulary_reason.
+    """
+    if context is None:
+        return []
+    if not isinstance(context, dict):
+        return ["context is not an object"]
+    return [
+        f"context.{key} is not {_TYPE_NAMES[expected]}"
+        for key, expected in _CONTEXT_KEY_TYPES.items()
+        if (value := context.get(key)) is not None and not isinstance(value, expected)
+    ]
 
 
 def _evaluation_errors(evaluation: object, node_types: set[str], edge_relations: set[str]) -> list[str]:
@@ -88,7 +119,8 @@ def _evaluation_errors(evaluation: object, node_types: set[str], edge_relations:
     per-evaluation-kind omission, not a failure; a key present but malformed (wrong
     type, or a blank/off-schema type/name inside it) means the LLM tried and failed to
     correlate it. subject is exempt from the malformed-shape check (though not the
-    blank/off-schema one) since _bind_subject replaces it outright either way.
+    blank/off-schema one) since _bind_subject replaces it outright either way. context
+    has no schema vocabulary to check against, only a shape (_context_errors).
     """
     if not isinstance(evaluation, dict):
         return ["evaluation is not an object"]
@@ -107,15 +139,17 @@ def _evaluation_errors(evaluation: object, node_types: set[str], edge_relations:
     subject = evaluation.get("subject")
     if isinstance(subject, dict):
         errors.append(_vocabulary_reason("subject.type", subject.get("type"), node_types))
+    errors.extend(_context_errors(evaluation.get("context")))
     return [error for error in errors if error]
 
 
 def validate_evaluations(schema: dict[str, Any], evaluations: list[object]) -> list[str]:
     """Check every evaluation's subject.type / action.name / resource.type against the
-    schema's node types and edge relations (TDD 4.8 post-assembly check). Returns one
-    message per problem, prefixed with the evaluation's index so the LLM can tell which
-    entry to fix (they become the `reason` lines of errors.validation_feedback_error);
-    empty means the list is acceptable.
+    schema's node types and edge relations (TDD 4.8 post-assembly check), and its context
+    against the PRD's parameters/filters/qualifiers shape. Returns one message per problem,
+    prefixed with the evaluation's index so the LLM can tell which entry to fix (they
+    become the `reason` lines of errors.validation_feedback_error); empty means the list
+    is acceptable.
     """
     node_types = _node_types(schema)
     edge_relations = _edge_relations(schema)
@@ -147,25 +181,31 @@ def normalize_intent_response(
     subject_id: str | None,
     subject_type: str,
 ) -> str:
-    """Ensure the response is valid JSON with prompt/evaluations, wrap it if needed.
+    """Ensure the response is valid JSON with an evaluations list, wrap it if needed, and set
+    the prompt echo.
 
     Assumes the schema is available - run_extraction checks that upfront and never
     reaches this far (or the LLM) otherwise. The LLM's output is constrained to
-    {prompt, evaluations}; an empty evaluations list is the LLM's legitimate "nothing
-    coherent" signal (SKILL.md) and becomes no_intent_error without a retry. Anything
-    else that can't be accepted - not JSON, or an off-schema/blank subject.type /
-    action.name / resource.type - raises IntentValidationError so run_extraction can
-    feed the errors back to the LLM and retry (TDD 4.8, 4.9).
+    {evaluations} (a `prompt` it adds anyway is ignored); an empty evaluations list is the
+    LLM's legitimate "nothing coherent" signal (SKILL.md) and becomes no_intent_error
+    without a retry. Anything
+    else that can't be accepted - not JSON, an off-schema/blank subject.type /
+    action.name / resource.type, or a mis-shaped context - raises IntentValidationError
+    so run_extraction can feed the errors back to the LLM and retry (TDD 4.8, 4.9).
     """
     data = _parse_llm_json(llm_text)
     if isinstance(data, list):
-        # A bare JSON array is a plausible LLM mistake (forgetting the {"prompt", "evaluations"}
+        # A bare JSON array is a plausible LLM mistake (forgetting the {"evaluations"}
         # wrapper) - use its items as the evaluations directly instead of nesting the whole
         # array as a single non-dict "evaluation" that _bind_subject would then skip.
         data = {"prompt": original_prompt, "evaluations": data}
     if not isinstance(data, dict):
         raise IntentValidationError(["the response is not a JSON object"])
-    data.setdefault("prompt", original_prompt)
+    # `prompt` echoes the incoming prompt verbatim (TDD 3.2) - set here, never taken from the
+    # LLM (it isn't part of the structured output any more; when it was, an injection-style
+    # prompt came back "helpfully" shortened, minus the part carrying the injected values).
+    # Rebuilt rather than assigned so it leads the response the way the TDD shows it.
+    data = {"prompt": original_prompt, **{key: value for key, value in data.items() if key != "prompt"}}
     evaluations = data.get("evaluations")
     # Only an actual empty array is the "nothing coherent" signal - any other falsy or
     # non-list value ({}, 0, "", null, missing) is malformed output to retry, not a no-intent.
@@ -178,7 +218,31 @@ def normalize_intent_response(
         raise IntentValidationError(errors)
 
     _bind_subject(data, subject_id=subject_id, subject_type=subject_type)
+    _normalize_contexts(data)
     return json.dumps(data, indent=2, ensure_ascii=False)
+
+
+def _normalize_contexts(data: dict[str, Any]) -> None:
+    """Settle every evaluation's context into the PRD shape after validation: always an
+    object (`{}` when the LLM gave none), with the structured output's nullability
+    artefacts removed - a null key, or a blank `filters` string, both mean "not
+    applicable", and the caller shouldn't have to tell those apart from an absent key.
+    Everything else is passed through verbatim: context is user-controlled data, and it's
+    the downstream consumer's job to treat it as untrusted (TDD 9), not this agent's to
+    rewrite it.
+    """
+    for evaluation in data.get("evaluations", []):
+        if not isinstance(evaluation, dict):
+            continue
+        context = evaluation.get("context")
+        if not isinstance(context, dict):
+            context = {}
+        # Only the three contract keys are nullable in the structured output, so only their
+        # nulls are artefacts; any other key is passed through exactly as the model wrote it.
+        context = {key: value for key, value in context.items() if value is not None or key not in _CONTEXT_KEY_TYPES}
+        if "filters" in context and _blank(context["filters"]):
+            del context["filters"]
+        evaluation["context"] = context
 
 
 def _bind_subject(data: dict[str, Any], *, subject_id: str | None, subject_type: str) -> None:

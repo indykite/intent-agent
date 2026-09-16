@@ -50,7 +50,18 @@ class _Action(BaseModel):
 class _Resource(BaseModel):
     """AuthZEN resource."""
 
-    id: str | None = None
+    # Class docstrings and field descriptions reach Gemini as the schema's `description`s, so
+    # they're written for the model. The `id` description steers it toward filling the id in
+    # rather than restating the identifier as a context.filters term - seen live with flash-lite,
+    # which still prefers the filter form more often than not (test/test_golden_scenarios.py
+    # replays the answers it does give).
+    id: str | None = Field(
+        default=None,
+        description=(
+            "The identifier (external_id) of the one resource instance the prompt names, e.g. an "
+            "account number or document id. Omit only when the prompt is about many resources."
+        ),
+    )
     type: str | None = None
 
 
@@ -61,7 +72,13 @@ class _Context(BaseModel):
         default=None,
         description="Extra prompt-derived data that doesn't fit subject/action/resource.",
     )
-    filters: str | None = Field(default=None, description="Search criteria, e.g. \"resource.name contains 'refund'\".")
+    filters: str | None = Field(
+        default=None,
+        description=(
+            "Search criteria as a CEL expression over the resource's properties, "
+            "e.g. \"resource.name.contains('refund')\"."
+        ),
+    )
     qualifiers: dict[str, Any] | None = Field(default=None, description="Environmental info, e.g. time or location.")
 
 
@@ -75,13 +92,14 @@ class _Evaluation(BaseModel):
 
 
 class _IntentInput(BaseModel):
-    """The LLM's entire structured-output shape - deliberately just {prompt, evaluations}, no
+    """The LLM's entire structured-output shape - deliberately just {evaluations}, no
     LLM-authored error shape. When the model can't produce a coherent evaluation, it returns an
     empty evaluations array; our own code (subject_binding.no_intent_error) is solely
-    responsible for the error response.
+    responsible for the error response. The response's `prompt` echo (TDD 3.2) is not the
+    model's to produce either: subject_binding.normalize_intent_response sets it from the
+    incoming prompt, so asking the model for it only cost output tokens on every call.
     """
 
-    prompt: str
     evaluations: list[_Evaluation]
 
 

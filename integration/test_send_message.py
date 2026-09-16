@@ -44,10 +44,14 @@ def test_gemini_send_message_end_to_end(monkeypatch, mocker, tmp_path):
             }
         ],
     )
+    # The model's structured output is {evaluations} only - the prompt echo is added by the
+    # agent. context.parameters / filters / qualifiers are passed through verbatim (TDD 9); a
+    # null key (the structured output's nullable fields) is dropped rather than reaching the caller.
     final_response = AIMessage(
         content=(
-            '{"prompt": "Can I buy 50 shares of AAPL?", "evaluations": '
-            '[{"action": {"name": "buy"}, "resource": {"type": "Stock", "id": "AAPL"}}]}'
+            '{"evaluations": '
+            '[{"action": {"name": "buy"}, "resource": {"type": "Stock", "id": "AAPL"}, '
+            '"context": {"parameters": {"amount": 50}, "filters": null, "qualifiers": null}}]}'
         ),
         tool_calls=[],
     )
@@ -83,7 +87,10 @@ def test_gemini_send_message_end_to_end(monkeypatch, mocker, tmp_path):
     assert mock_ainvoke.await_count == 2  # noqa: PLR2004 - one tool-call round, one final answer
 
     result_data = json.loads(result_text)
+    assert list(result_data) == ["prompt", "evaluations"]
+    assert result_data["prompt"] == "Can I buy 50 shares of AAPL?"
     assert result_data["evaluations"][0]["subject"] == {"type": "Customer", "id": "test-subject"}
+    assert result_data["evaluations"][0]["context"] == {"parameters": {"amount": 50}}
 
     audit_files = list((tmp_path / "audit").glob("audit-intent_agent-*.json"))
     assert len(audit_files) == 1
