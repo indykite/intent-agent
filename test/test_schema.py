@@ -116,6 +116,28 @@ def test_load_returns_schema_on_success(mocker):
     assert client.load() == _SCHEMA
 
 
+def test_load_logs_a_truncated_preview_of_the_response_body(mocker, caplog):
+    """load() must log the response status and a body[:500] preview at DEBUG level -
+    diagnoses an unexpected/empty schema or a non-JSON error page directly from the logs,
+    without guessing from the parsed summary alone. A body longer than 500 characters verifies
+    the truncation actually happens, not just that some text got logged.
+    """
+    caplog.set_level("DEBUG")
+    large_schema = {"graph": {"nodes": {"Padding": {"description": "x" * 600}}, "edges": []}}
+    _mock_sync_client(mocker, response=_mock_response(mocker, schema=large_schema))
+    client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=_memory_cache())
+
+    assert client.load() == large_schema
+
+    full_body = json.dumps(large_schema)
+    assert len(full_body) > len(full_body[:500])
+    assert f"Schema response: status=200 body[:500]={full_body[:500]!r}" in caplog.text
+    # The full (untruncated) body can't be a substring of a message that only ever logged its
+    # first 500 characters - a stronger check than looking for a specific missing fragment,
+    # which a uniform-character payload could satisfy by coincidence.
+    assert full_body not in caplog.text
+
+
 @pytest.mark.parametrize("backend", ["memory", "redis"])
 def test_preload_and_get_cached_round_trip(mocker, caplog, backend):
     """preload() then get_cached() must return the same schema, on both the default in-process
