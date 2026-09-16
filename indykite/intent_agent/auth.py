@@ -100,15 +100,11 @@ def _validate_introspection_claims(payload: object) -> dict[str, Any]:
         message = "Token is not active"
         raise TokenValidationError(message)
 
-    # `sub` is OPTIONAL per RFC 7662, but this system's auth design relies on
-    # it as the subject identity for downstream authorization decisions - an
-    # active token missing it must be rejected outright, not silently
-    # forwarded as an anonymous/no-subject request.
-    if not payload.get("sub"):
-        logger.info("Token introspection: active token is missing required sub claim")
-        message = "Token is missing required sub claim"
-        raise TokenValidationError(message)
-
+    # This token authenticates the calling client, not any subject (see
+    # IntentExecutor._authenticate) - subject_type/subject_id come from the caller-supplied
+    # message metadata instead (IntentExecutor._subject_params), so a `sub` claim is neither
+    # read from this payload nor required here. Client-credentials-grant tokens - the expected
+    # case now that the caller is a client, not an end user - typically don't carry one at all.
     return payload
 
 
