@@ -331,6 +331,34 @@ def test_golden_scenario_mis_typed_filters_is_retried_with_shape_feedback(monkey
     assert "Values not matched to the data schema" not in feedback["reason"]
 
 
+def test_golden_scenario_non_cel_filter_is_retried_until_it_parses(monkeypatch, mocker, baseline_env):
+    """The pseudo-grammar the model used to produce (`contains` as an infix word) is not CEL;
+    the parser's verdict goes back under "Malformed shape" and the corrected CEL answer is
+    what the caller gets, with the retry counted.
+    """
+    prompt = "Which documents mention refunds?"
+    not_cel = {
+        "action": {"name": "CAN_ACCESS"},
+        "resource": {"type": "Document"},
+        "context": {"filters": "resource.name contains 'refund' OR resource.description contains 'refund'"},
+    }
+    cel = {
+        "action": {"name": "CAN_ACCESS"},
+        "resource": {"type": "Document"},
+        "context": {"filters": "resource.name.contains('refund') || resource.description.contains('refund')"},
+    }
+    agent, mock_ainvoke = _agent(monkeypatch, mocker, baseline_env, [_answer(not_cel), _answer(cel)])
+
+    result = asyncio.run(agent.run_extraction(prompt, RequestSubject(id="millicent", type="User")))
+
+    assert result.outcome == Outcome.SUCCESS
+    assert result.validation_retries == 1
+    assert result.evaluations[0]["context"] == cel["context"]
+    assert mock_ainvoke.call_count == _LLM_CALLS_WITH_ONE_RETRY
+    feedback = json.loads(mock_ainvoke.call_args_list[-1].args[0][-1].content)
+    assert "Malformed shape:\n- evaluations[0]: context.filters is not valid CEL (line 1, column" in feedback["reason"]
+
+
 def _skill_json_examples():
     """Every evaluation object shown in a ```json block of the extract-intent skill body."""
     skill = next(s for s in discover_skills() if s["name"] == "extract-intent")
@@ -350,10 +378,12 @@ def _skill_json_examples():
 def test_skill_examples_conform_to_the_context_shape_the_agent_enforces():
     """The skill's worked examples are what the model imitates, so every one of them must
     pass the same context check the pipeline applies to the model's answers - a `filters`
-    string, `parameters` / `qualifiers` objects, and a `context` on every evaluation.
+    string that parses as CEL over `resource`, `parameters` / `qualifiers` objects, and a
+    `context` on every evaluation.
     """
     examples = list(_skill_json_examples())
     assert examples, "no worked examples found in SKILL.md"
+    assert any(example["context"].get("filters") for example in examples), "no filters example in SKILL.md"
     for example in examples:
         assert "context" in example, example
         assert _context_errors(example["context"]) == [], example

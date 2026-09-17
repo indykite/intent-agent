@@ -4,6 +4,7 @@ import json
 import re
 from typing import Any
 
+from indykite.intent_agent.cel import filter_errors
 from indykite.intent_agent.errors import (
     SCHEMA_BLANK_SUFFIX,
     SCHEMA_MEMBERSHIP_SUFFIX,
@@ -103,11 +104,17 @@ def _context_errors(context: object) -> list[str]:
         return []
     if not isinstance(context, dict):
         return ["context is not an object"]
-    return [
+    errors = [
         f"context.{key} is not {_TYPE_NAMES[expected]}"
         for key, expected in _CONTEXT_KEY_TYPES.items()
         if (value := context.get(key)) is not None and not isinstance(value, expected)
     ]
+    filters = context.get("filters")
+    if not _blank(filters):
+        # A blank (or non-string, reported above) filter is not checked as CEL - a blank one
+        # means "no filter" and is dropped by _normalize_contexts.
+        errors.extend(filter_errors(filters))
+    return errors
 
 
 def _evaluation_errors(evaluation: object, node_types: set[str], edge_relations: set[str]) -> list[str]:

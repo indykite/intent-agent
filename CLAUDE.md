@@ -160,9 +160,12 @@ keeps the stale schema instead of losing it.
 `normalize_intent_response` checks every evaluation's `subject.type` / `action.name` /
 `resource.type` against the cached schema (`validate_evaluations`) - belt-and-braces on top of
 the structured-output enum, since Gemini treats the enum as a strong hint, not a guarantee - and
-checks `context`'s shape the same way (`filters` a string - a CEL expression by the skill's
-contract, not parsed here - `parameters`/`qualifiers` objects; null keys and a blank `filters`
-are dropped afterwards, everything else passes through verbatim as untrusted data). An
+checks `context`'s shape the same way (`filters` a string, `parameters`/`qualifiers` objects;
+null keys and a blank `filters` are dropped afterwards, everything else passes through verbatim
+as untrusted data) and enforces CEL on `filters` (`cel.py`, on `cel-python`): it must parse,
+may reference only the `resource` variable, and may not call `dyn()`/`type()` - the same
+posture as the platform's `jarvis/pkg/cel` (blocked reflection functions, size limit). The
+expression is never evaluated here; IBAC does that. An
 off-schema value (or non-JSON output) raises `IntentValidationError`; `IntentAgent` feeds the
 errors back to the LLM as a follow-up message (`validation_feedback_error`) in the same
 conversation and asks again, up to `VALIDATION_MAX_RETRIES` extra times (default 1, `0`

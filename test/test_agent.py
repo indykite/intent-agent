@@ -396,6 +396,20 @@ def test_bind_subject_overrides_when_marker_is_absent_or_malformed(evaluation):
             ["context.parameters is not an object", "context.qualifiers is not an object"],
             id="parameters_and_qualifiers_not_objects",
         ),
+        pytest.param(
+            {
+                "action": {"name": "RENT"},
+                "resource": {"type": "Car"},
+                "context": {"filters": "resource.colour = 'black'"},
+            },
+            ["context.filters is not valid CEL (line 1, column 17)"],
+            id="filters_not_cel",
+        ),
+        pytest.param(
+            {"action": {"name": "RENT"}, "resource": {"type": "Car"}, "context": {"filters": "   "}},
+            [],
+            id="blank_filters_is_not_checked_as_cel",
+        ),
     ],
 )
 def test_validate_evaluations(evaluation, expected_errors):
@@ -590,7 +604,9 @@ def test_normalize_intent_response_passes_context_through_verbatim():
     (TDD 9) - a filters expression, including one that looks like an injection attempt, must
     reach the caller unchanged; treating it as untrusted is the downstream consumer's job.
     """
-    filters = "resource.name.contains('refund policy'); DROP TABLE decisions"
+    # Valid CEL whose string literal carries injection-looking content: the parser accepts it,
+    # and the agent must pass it on untouched rather than sanitize it.
+    filters = 'resource.name.contains("refund\'); DROP TABLE decisions; --")'
     llm_text = json.dumps(
         {
             "prompt": "decisions about refunds",
