@@ -47,11 +47,15 @@ jobs:
       - name: Check out repo
         uses: indykite/ops-common/.github/actions/git-checkout@master # actions/checkout with dynamic fetch-depth resolution
 
+      # Base version mirrors chart/Chart.yaml's version - the same release-please-managed value
+      # the Helm chart uses (see release-please-config.json's extra-files), so a master build's
+      # image and its chart use the identical <base>-dev-<sha> scheme.
       - name: Generate image version based on sha commit hash
         id: image-tag-sha
         run: |
           SHORT_SHA=$(git rev-parse --short HEAD)
-          echo "image-tag=sha-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          CHART_VERSION=$(yq eval '.version' chart/Chart.yaml)
+          echo "image-tag=${CHART_VERSION}-dev-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Generate Docker meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0 - https://github.com/docker/metadata-action/releases
@@ -65,6 +69,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
+            type=raw,value=${{ steps.image-tag-sha.outputs.image-tag }},enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
 
       - name: Setup Docker
         uses: indykite/ops-common/.github/actions/docker-setup@4c4cb34f01107182013dd8fe8a9de28ba7958153 # master

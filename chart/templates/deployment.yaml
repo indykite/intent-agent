@@ -32,7 +32,7 @@ spec:
         {{- end }}
       labels:
         {{- include "service.selectorLabels" . | nindent 8 }}
-        version: {{ .Values.image.tag | quote }}
+        version: {{ .Values.image.tag | default .Chart.AppVersion | quote }}
         {{- with .Values.labels }}
         {{- /* Drop keys already emitted above - a custom label reusing one (e.g. "app") would
              desync the pod's actual label from what the Deployment/Service selector expects. */ -}}
@@ -52,7 +52,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: {{ include "service.fullname" . }}
-          image: "{{ .Values.image.repository }}/{{ .Values.image.name | default .Chart.Name }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}/{{ .Values.image.name | default .Chart.Name }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
             - name: INTENT_PORT

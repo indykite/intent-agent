@@ -5,7 +5,10 @@ image:
   repository: europe-west1-docker.pkg.dev/placeholder
   name: intent-agent
   pullPolicy: Always
-  tag: "0.0.0"
+  # Blank defaults to Chart.yaml's appVersion (see templates/deployment.yaml) - the
+  # release-please-managed version. Per-environment values files (values-dev.yaml,
+  # values-rc.yaml) override this explicitly with the actual deployed image tag.
+  tag: ""
 
 # app.* mirrors indykite/intent_agent/config.py's Settings fields 1:1 (env var names
 # in comments match .env.example). Keep the two in sync when Settings gains a field.
