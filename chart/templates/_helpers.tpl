@@ -34,10 +34,17 @@ Common labels
 {{- define "service.labels" -}}
 helm.sh/chart: {{ include "service.chart" . }}
 {{ include "service.selectorLabels" . }}
-{{- if .Chart.AppVersion }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
-{{- else }}
+{{- /* An explicit image.tag override (values-dev.yaml, values-rc.yaml, a PR/master package's
+     own suffixed tag) identifies the actually-deployed image more precisely than the chart's own
+     version - prefer it. Otherwise fall back to Chart.Version, not Chart.AppVersion: they're
+     equal for a stable release package, but for a PR/master package Version carries the
+     `helm package --version` suffix while AppVersion stays the base release version - the same
+     fallback templates/deployment.yaml uses for the image tag/pod label, so this label never
+     reports a different version than the image actually deployed. */}}
+{{- if .Values.image.tag }}
 app.kubernetes.io/version: {{ .Values.image.tag | quote }}
+{{- else }}
+app.kubernetes.io/version: {{ .Chart.Version | quote }}
 {{- end }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 owner: ai-ml

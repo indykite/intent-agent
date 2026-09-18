@@ -47,15 +47,22 @@ jobs:
       - name: Check out repo
         uses: indykite/ops-common/.github/actions/git-checkout@master # actions/checkout with dynamic fetch-depth resolution
 
-      # Base version mirrors chart/Chart.yaml's version - the same release-please-managed value
-      # the Helm chart uses (see release-please-config.json's extra-files), so a master build's
-      # image and its chart use the identical <base>-dev-<sha> scheme.
+      # Base version mirrors chart/Chart.yaml's version, and the pr-.../dev-... suffix scheme
+      # mirrors chart-publish.yaml's "Compute version suffix" step exactly (same base version,
+      # same commit sha) - so a chart package's default (blank) image.tag, which falls back to
+      # the packaged chart's own Chart.Version (see templates/_helpers.tpl and
+      # templates/deployment.yaml), always names an image this workflow actually publishes, for
+      # both PR and master builds.
       - name: Generate image version based on sha commit hash
         id: image-tag-sha
         run: |
           SHORT_SHA=$(git rev-parse --short HEAD)
           CHART_VERSION=$(yq eval '.version' chart/Chart.yaml)
-          echo "image-tag=${CHART_VERSION}-dev-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "image-tag=${CHART_VERSION}-pr-${{ github.event.pull_request.number }}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          else
+            echo "image-tag=${CHART_VERSION}-dev-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Generate Docker meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0 - https://github.com/docker/metadata-action/releases
@@ -69,7 +76,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            type=raw,value=${{ steps.image-tag-sha.outputs.image-tag }},enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+            type=raw,value=${{ steps.image-tag-sha.outputs.image-tag }},enable=${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/master') }}
 
       - name: Setup Docker
         uses: indykite/ops-common/.github/actions/docker-setup@4c4cb34f01107182013dd8fe8a9de28ba7958153 # master
