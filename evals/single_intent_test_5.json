@@ -1,0 +1,30 @@
+{
+  "prompt": "What is the price for the quote stock_quote?",
+  "jwt_sub": "leslie",
+  "expected": {
+    "prompt": "What is the price for the quote stock_quote?",
+    "evaluations": [
+      {
+        "action": {
+          "name": "CAN_RETRIEVE"
+        },
+        "resource": {
+          "type": "Quote",
+          "id": "stock_quote"
+        },
+        "context": {
+          "parameters": {
+            "attribute": "price",
+            "action_derivation_rule": "policy_based"
+          }
+        },
+        "subject": {
+          "type": "User",
+          "id": "leslie"
+        }
+      }
+    ]
+  },
+  "category": "single intent",
+  "data_model": "user_model"
+}

@@ -1,0 +1,28 @@
+{
+  "prompt": "What customers can I access?",
+  "jwt_sub": "leslie",
+  "expected": {
+    "prompt": "What customers can I access?",
+    "evaluations": [
+      {
+        "action": {
+          "name": "CAN_ACCESS"
+        },
+        "resource": {
+          "type": "Customer"
+        },
+        "context": {
+          "parameters": {
+            "action_derivation_rule": "policy_based"
+          }
+        },
+        "subject": {
+          "type": "User",
+          "id": "leslie"
+        }
+      }
+    ]
+  },
+  "category": "resource search",
+  "data_model": "combined_model"
+}

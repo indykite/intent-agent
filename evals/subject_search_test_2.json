@@ -1,0 +1,45 @@
+{
+  "prompt": "Who can access me, a customer?",
+  "jwt_sub": "bob",
+  "expected": {
+    "prompt": "Who can access me, a customer?",
+    "evaluations": [
+      {
+        "subject": {
+          "type": "User"
+        },
+        "action": {
+          "name": "CAN_ACCESS"
+        },
+        "resource": {
+          "type": "Customer",
+          "id": "bob"
+        },
+        "context": {
+          "parameters": {
+            "action_derivation_rule": "policy_based"
+          }
+        }
+      },
+      {
+        "subject": {
+          "type": "Customer"
+        },
+        "action": {
+          "name": "CAN_ACCESS"
+        },
+        "resource": {
+          "type": "Customer",
+          "id": "bob"
+        },
+        "context": {
+          "parameters": {
+            "action_derivation_rule": "policy_based"
+          }
+        }
+      }
+    ]
+  },
+  "category": "subject search",
+  "data_model": "combined_model"
+}

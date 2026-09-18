@@ -1,0 +1,42 @@
+{
+  "prompt": "What accounts have been affected by my decisions?",
+  "jwt_sub": "leslie",
+  "expected": {
+    "prompt": "What accounts have been affected by my decisions?",
+    "evaluations": [
+      {
+        "action": {
+          "name": "MADE"
+        },
+        "resource": {
+          "type": "Decision"
+        },
+        "context": {},
+        "subject": {
+          "type": "User",
+          "id": "leslie"
+        }
+      },
+      {
+        "action": {
+          "name": "AFFECTED"
+        },
+        "resource": {
+          "type": "Account"
+        },
+        "context": {
+          "parameters": {
+            "depends_on_previous_evaluations": true,
+            "action_derivation_rule": "policy_based"
+          }
+        },
+        "subject": {
+          "type": "User",
+          "id": "leslie"
+        }
+      }
+    ]
+  },
+  "category": "resource search",
+  "data_model": "user_model"
+}

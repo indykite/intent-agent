@@ -1,0 +1,43 @@
+{
+  "prompt": "What accounts with tier tier_2 do I own?",
+  "jwt_sub": "bob",
+  "expected": {
+    "prompt": "What accounts with tier tier_2 do I own?",
+    "evaluations": [
+      {
+        "action": {
+          "name": "OWNS"
+        },
+        "resource": {
+          "type": "Account"
+        },
+        "context": {},
+        "subject": {
+          "type": "Customer",
+          "id": "bob"
+        }
+      },
+      {
+        "action": {
+          "name": "CAN_ACCESS"
+        },
+        "resource": {
+          "type": "AccountTier",
+          "id": "tier_2"
+        },
+        "context": {
+          "parameters": {
+            "depends_on_previous_evaluations": true,
+            "action_derivation_rule": "policy_based"
+          }
+        },
+        "subject": {
+          "type": "Customer",
+          "id": "bob"
+        }
+      }
+    ]
+  },
+  "category": "resource search",
+  "data_model": "customer_model"
+}

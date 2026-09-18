@@ -1,0 +1,25 @@
+{
+  "prompt": "Do I, a User, work in Department with id=trading?",
+  "jwt_sub": "roy",
+  "expected": {
+    "prompt": "Do I, a User, work in Department with id=trading?",
+    "evaluations": [
+      {
+        "subject": {
+          "type": "User",
+          "id": "roy"
+        },
+        "resource": {
+          "type": "Department",
+          "id": "trading"
+        },
+        "action": {
+          "name": "WORKS_IN"
+        },
+        "context": {}
+      }
+    ]
+  },
+  "category": "single intent",
+  "data_model": "user_model"
+}
