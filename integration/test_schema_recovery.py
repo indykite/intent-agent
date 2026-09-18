@@ -9,7 +9,7 @@ from langchain_core.messages import AIMessage
 from starlette.status import HTTP_200_OK
 from starlette.testclient import TestClient
 
-from indykite.intent_agent.agent import build_app
+from indykite.intent_agent.app import build_app
 from indykite.intent_agent.config import Settings
 from integration.schema_fixtures import schema_with_stocks
 
@@ -76,7 +76,7 @@ def _build_test_app(monkeypatch, mocker, schema_server, tmp_path, *, mock_ainvok
     monkeypatch.setenv("AUDIT_FILE_FORMAT", "json")
     monkeypatch.setenv("AUDIT_FILE_ROTATION_STRATEGY", "time")
     mocker.patch(
-        "indykite.intent_agent.agent.auth.validate_access_token",
+        "indykite.intent_agent.executor.auth.validate_access_token",
         return_value={"active": True, "sub": "test-subject"},
     )
     fake_bound_llm = mocker.Mock(ainvoke=mock_ainvoke)

@@ -1,4 +1,5 @@
-"""A2A executor and Gemini-backed intent extraction pipeline.
+"""Gemini-backed intent extraction pipeline: the IntentAgent, its tools and tool-call loop, and
+the ExtractionResult it hands to the A2A executor (executor.py). build_app (app.py) wires it up.
 
 Ported from the ``iag-demo/intent_agent`` prototype (see the Intent Agent Technical
 Design Document). This is a structural port for this repository's package layout and
@@ -6,51 +7,22 @@ config model, not a rewrite of the extraction pipeline itself.
 """
 
 import asyncio
-import contextlib
 import json
 import logging
-import time
-from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from a2a.helpers import new_task_from_user_message, new_text_artifact, new_text_message
-from a2a.server.agent_execution import AgentExecutor, RequestContext
-from a2a.server.events import EventQueue
-from a2a.server.request_handlers import DefaultRequestHandler
-from a2a.server.routes import create_agent_card_routes, create_jsonrpc_routes
-from a2a.server.tasks import InMemoryTaskStore
-from a2a.types import (
-    AgentCapabilities,
-    AgentCard,
-    AgentInterface,
-    TaskArtifactUpdateEvent,
-    TaskState,
-    TaskStatus,
-    TaskStatusUpdateEvent,
-)
-from a2a.utils.constants import DEFAULT_RPC_URL
-from dogpile.cache.region import CacheRegion, make_region
+from a2a.types import AgentCapabilities, AgentCard, AgentInterface
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import StructuredTool, tool
 from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel
-from starlette.applications import Starlette
-from starlette.exceptions import HTTPException
-from starlette.status import HTTP_400_BAD_REQUEST, HTTP_401_UNAUTHORIZED
 
-from indykite.intent_agent import auth, skills
-from indykite.intent_agent.audit.message import (
-    AuditMessage,
-    Outcome,
-    request_id_from_headers,
-    schema_version,
-    utc_timestamp,
-)
-from indykite.intent_agent.audit.sender import Sender, build_sender
+from indykite.intent_agent import skills
+from indykite.intent_agent.audit.message import Outcome, schema_version
 from indykite.intent_agent.config import Settings
 from indykite.intent_agent.errors import (
     IntentValidationError,
@@ -63,7 +35,7 @@ from indykite.intent_agent.errors import (
     validation_feedback_error,
 )
 from indykite.intent_agent.input_schema import build_input_schema
-from indykite.intent_agent.schema import SchemaClient
+from indykite.intent_agent.schema import SchemaClient, build_schema_cache
 from indykite.intent_agent.subject_binding import (
     normalize_intent_response,
     schema_has_no_node_types,
@@ -72,36 +44,12 @@ from indykite.intent_agent.subject_binding import (
 
 logger = logging.getLogger(__name__)
 
-_SECONDS_PER_MINUTE = 60
-_MILLISECONDS_PER_SECOND = 1000
 _NO_RESPONSE_TEXT = "(No response generated)"
 _SKILL_ALREADY_ACTIVE = (
     "Skill 'extract-intent' is already active in this conversation - its instructions and the "
     "data schema are in the earlier tool result. Do not call activate_skill again; answer now "
     'with the {"evaluations"} JSON object.'
 )
-
-
-def _build_schema_cache(settings: Settings) -> CacheRegion:
-    """Pick the schema cache backend named by CACHE_BACKEND: Redis, or in-process memory
-    (the default) - single-instance deployments never need Redis running. Settings rejects
-    CACHE_BACKEND=redis with no REDIS_URL at startup, so redis_url is guaranteed set here.
-
-    Sets expiration_time from SCHEMA_REFRESH_TTL_MINUTES so SchemaClient.get_cached()
-    refreshes on-demand once an entry ages past it, instead of a per-instance background
-    timer - see get_cached()'s docstring for why that matters with multiple instances.
-    """
-    ttl_seconds = settings.schema_refresh_ttl_minutes * _SECONDS_PER_MINUTE
-    logger.info("Using cache backend %r with TTL %d seconds", settings.cache_backend, ttl_seconds)
-    if settings.cache_backend == "redis":
-        return make_region().configure(
-            "dogpile.cache.redis",
-            expiration_time=ttl_seconds,
-            # `url` (not host/port) so dogpile hands the DSN as-is to redis.StrictRedis.from_url,
-            # preserving username/password/db/TLS scheme instead of dropping them.
-            arguments={"url": str(settings.redis_url)},
-        )
-    return make_region().configure("dogpile.cache.memory", expiration_time=ttl_seconds)
 
 
 class _ActivateSkillArgs(BaseModel):
@@ -119,8 +67,9 @@ def _dump(payload: dict[str, Any]) -> str:
 class RequestSubject:
     """The caller-supplied subject identity for one request (TDD 4.7) - resolved and sent by
     IAG itself (see IntentExecutor._subject_params), not derived from the Bearer token, which
-    now authenticates the calling client rather than any subject. `id` may be blank (the
-    Subject-Search exception); `type` may not.
+    now authenticates the calling client rather than any subject. `id` may be blank (an
+    anonymous caller - a Subject Search is the LLM's per-evaluation marker instead, see
+    subject_binding._subject_search); `type` may not.
     """
 
     id: str | None
@@ -219,7 +168,7 @@ class IntentAgent:
             str(settings.indykite_base_url),
             settings.ik_app_agent_key.get_secret_value(),
             timeout_seconds=settings.schema_fetch_timeout_seconds,
-            cache=_build_schema_cache(settings),
+            cache=build_schema_cache(settings),
         )
         self.discovered_skills = skills.discover_skills()
         self.system_prompt = skills.build_skill_catalog_prompt(self.discovered_skills)
@@ -626,275 +575,3 @@ class IntentAgent:
             schema_version=version,
             validation_retries=max_retries,
         )
-
-
-def _prompt_from_context(context: RequestContext) -> str:
-    """Concatenate the text parts of the incoming A2A message."""
-    raw_text = ""
-    if context.message:
-        for part in context.message.parts or []:
-            text = getattr(part, "text", None)
-            if text:
-                raw_text += text
-    return raw_text
-
-
-def _llm_provider(model: str) -> str:
-    """The provider family of a configured model name: the segment before the first `-` of
-    its last path component, so "gemini-3.5-flash-lite" (or "models/gemini-3.5-flash-lite")
-    audits as "gemini". Derived from GEMINI_MODEL rather than hard-coded, so the record can't
-    disagree with what is actually configured.
-    """
-    return model.rsplit("/", 1)[-1].split("-", 1)[0]
-
-
-class _RequestAudit:
-    """Accumulates the per-request audit fields as the request progresses, the way the IAG's
-    token service builds up its `attempt` before sending - so every exit path (rejected
-    token, extraction, unexpected failure) turns into one record through the same
-    `record()`. Every request produces exactly one record (TDD 4.9).
-    """
-
-    def __init__(self, settings: Settings, context: RequestContext) -> None:
-        """Capture what's known before authentication: ids, prompt, and the start time."""
-        self._settings = settings
-        self._started = time.perf_counter()
-        headers = context.call_context.state.get("headers") if context.call_context else None
-        self.request_id = request_id_from_headers(headers or {})
-        self.context_id = context.context_id or ""
-        self.prompt = _prompt_from_context(context)
-        self.subject_id = ""
-        self.subject_type = ""
-
-    def record(self, result: ExtractionResult) -> AuditMessage:
-        """Build the audit record for this request from what the pipeline produced."""
-        latency_ms = round((time.perf_counter() - self._started) * _MILLISECONDS_PER_SECOND)
-        return AuditMessage(
-            timestamp=utc_timestamp(),
-            request_id=self.request_id,
-            subject_id=self.subject_id,
-            subject_type=self.subject_type,
-            # v1.1: the ik_token actor claim (see auth.validate_ik_token) - no ITS yet.
-            requesting_agent_id="",
-            context_id=self.context_id,
-            prompt=self.prompt,
-            evaluations=result.evaluations,
-            schema_version=result.schema_version,
-            llm_provider=_llm_provider(self._settings.gemini_model),
-            llm_model=self._settings.gemini_model,
-            latency_ms=latency_ms,
-            validation_retries=result.validation_retries,
-            outcome=result.outcome,
-            message=result.message,
-        )
-
-
-class IntentExecutor(AgentExecutor):
-    """AgentExecutor that extracts intent from incoming text using an LLM."""
-
-    def __init__(self, agent: IntentAgent, audit_sender: Sender) -> None:
-        """Wrap the given IntentAgent as an A2A AgentExecutor, auditing every request."""
-        self._agent = agent
-        self._audit_sender = audit_sender
-
-    async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
-        """Handle one A2A task: extract intent, emit the result artifact, audit the outcome.
-
-        A rejected token is audited too, like the IAG audits every rejection - as
-        `outcome = error` with the same reason the caller gets (TDD owner's decision) - and so
-        is an unexpected exception, so a request can't slip through unrecorded. Auditing never
-        changes the request's own outcome: see _audit.
-        """
-        audit_record = _RequestAudit(self._agent.settings, context)
-        try:
-            await self._authenticate(context)
-            audit_record.subject_type, audit_record.subject_id = self._subject_params(context)
-            result = await self._extract(
-                context,
-                event_queue,
-                audit_record.prompt,
-                subject_id=audit_record.subject_id,
-                subject_type=audit_record.subject_type,
-            )
-        except HTTPException as exc:
-            await self._audit(audit_record, ExtractionResult(text="", outcome=Outcome.ERROR, message=str(exc.detail)))
-            raise
-        except Exception as exc:
-            await self._audit(
-                audit_record,
-                ExtractionResult(text="", outcome=Outcome.ERROR, message=f"{type(exc).__name__}: {exc}"),
-            )
-            raise
-        await self._audit(audit_record, result)
-
-    async def _audit(self, audit_record: _RequestAudit, result: ExtractionResult) -> None:
-        """Record the request's outcome; never raises.
-
-        The sender contract is already "log, don't raise", but building the record or a
-        misbehaving sender could still fail - and that must not override what the request
-        itself produced: the 401 / exception being re-raised in `execute`, or a result whose
-        artifact the caller already has. An audit failure is logged with the request id instead.
-        """
-        try:
-            await self._audit_sender.send(audit_record.record(result))
-        except Exception:
-            logger.exception("Failed to audit request %s (outcome %s)", audit_record.request_id, result.outcome)
-
-    async def _authenticate(self, context: RequestContext) -> None:
-        """Validate the Bearer token identifying the calling client; 401 (HTTPException)
-        otherwise. This token authenticates the caller (IAG), not any subject - it no longer
-        supplies subject_id/subject_type, which now come from the caller-supplied message
-        metadata instead (see _subject_params).
-        """
-        access_token = auth.get_access_token_from_context(context)
-        if not access_token:
-            raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="Authorization required")
-
-        settings = self._agent.settings
-        try:
-            await auth.validate_access_token(
-                access_token,
-                introspect_url=str(settings.introspect_url),
-                client_id=settings.introspect_client_id,
-                client_secret=settings.introspect_client_secret.get_secret_value(),
-                timeout_seconds=settings.introspect_timeout_seconds,
-            )
-        except auth.TokenValidationError as exc:
-            raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
-
-    def _subject_params(self, context: RequestContext) -> tuple[str, str]:
-        """Read subject_type/subject_id from the caller-supplied message metadata - IAG
-        resolves the caller's own identity itself and supplies both per request, instead of
-        subject_id coming from a token's `sub` claim and subject_type from static config.
-
-        subject_type is required - 400 (HTTPException) if missing or blank (whitespace-only
-        counts as blank), since every evaluation needs one. subject_id may be blank (the
-        Subject-Search exception, TDD 4.7), so it isn't required here. Either present but not a
-        string (e.g. a nested object) is also a 400 - str(some_dict) would otherwise silently
-        coerce it into a Python repr and bind that into every evaluation and audit record,
-        instead of surfacing the malformed request to the caller.
-        """
-        metadata = dict(context.message.metadata) if context.message and context.message.metadata else {}
-        subject_type = self._require_metadata_string(metadata, "subject_type")
-        subject_id = self._require_metadata_string(metadata, "subject_id")
-        if not subject_type:
-            raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail="subject_type is required")
-        return subject_type, subject_id
-
-    @staticmethod
-    def _require_metadata_string(metadata: dict[str, Any], key: str) -> str:
-        """Return metadata[key] as a stripped string, or "" if absent/blank - raising 400 if
-        it's present but not a string at all (see _subject_params).
-        """
-        value = metadata.get(key)
-        if value is None:
-            return ""
-        if not isinstance(value, str):
-            raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=f"{key} must be a string")
-        return value.strip()
-
-    async def _extract(
-        self,
-        context: RequestContext,
-        event_queue: EventQueue,
-        raw_text: str,
-        *,
-        subject_id: str,
-        subject_type: str,
-    ) -> ExtractionResult:
-        """Run the extraction for an authenticated request, emitting the A2A task events."""
-        logger.info(
-            "Received message for %s: %s",
-            self._agent.settings.intent_agent_name,
-            raw_text,
-        )
-
-        prompt = raw_text or "(empty)"
-
-        task = context.current_task or new_task_from_user_message(context.message)
-        await event_queue.enqueue_event(task)
-
-        await event_queue.enqueue_event(
-            TaskStatusUpdateEvent(
-                task_id=context.task_id,
-                context_id=context.context_id,
-                status=TaskStatus(
-                    state=TaskState.TASK_STATE_WORKING,
-                    message=new_text_message("Extracting intent..."),
-                ),
-            ),
-        )
-
-        result = await self._agent.run_extraction(prompt, RequestSubject(id=subject_id, type=subject_type))
-
-        await event_queue.enqueue_event(
-            TaskArtifactUpdateEvent(
-                task_id=context.task_id,
-                context_id=context.context_id,
-                artifact=new_text_artifact(name="result", text=result.text),
-            ),
-        )
-        await event_queue.enqueue_event(
-            TaskStatusUpdateEvent(
-                task_id=context.task_id,
-                context_id=context.context_id,
-                status=TaskStatus(state=TaskState.TASK_STATE_COMPLETED),
-            ),
-        )
-        logger.info(
-            "Intent extracted for %s: %s",
-            self._agent.settings.intent_agent_name,
-            result.text,
-        )
-        return result
-
-    async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
-        """Handle task cancellation by emitting a CANCELED status event."""
-        await event_queue.enqueue_event(
-            TaskStatusUpdateEvent(
-                task_id=context.task_id,
-                context_id=context.context_id,
-                status=TaskStatus(state=TaskState.TASK_STATE_CANCELED),
-            ),
-        )
-
-
-def build_app(
-    settings: Settings,
-    *,
-    llm: BaseChatModel | None = None,
-    schema_client: SchemaClient | None = None,
-    audit_sender: Sender | None = None,
-) -> tuple[Starlette, IntentAgent]:
-    """Construct the Starlette app and its backing IntentAgent for these settings.
-
-    The audit sender is built from AUDIT_DELIVERY here (or injected, for tests) and closed by
-    the app's lifespan on shutdown - which is what drains a buffered (AUDIT_ASYNC) queue
-    before the process exits, the same guarantee the IAG's sender gives on stop.
-    """
-    agent = IntentAgent(settings, llm=llm, schema_client=schema_client)
-    agent.preload_schema()
-    sender = audit_sender or build_sender(settings)
-
-    agent_card = agent.build_agent_card()
-    handler = DefaultRequestHandler(
-        agent_executor=IntentExecutor(agent, sender),
-        task_store=InMemoryTaskStore(),
-        agent_card=agent_card,
-    )
-
-    @contextlib.asynccontextmanager
-    async def _lifespan(_app: Starlette) -> AsyncIterator[None]:
-        try:
-            yield
-        finally:
-            await sender.close()
-
-    app = Starlette(
-        routes=[
-            *create_agent_card_routes(agent_card=agent_card),
-            *create_jsonrpc_routes(request_handler=handler, rpc_url=DEFAULT_RPC_URL),
-        ],
-        lifespan=_lifespan,
-    )
-    return app, agent

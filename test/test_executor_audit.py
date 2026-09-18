@@ -13,9 +13,10 @@ from starlette.exceptions import HTTPException
 from starlette.status import HTTP_400_BAD_REQUEST, HTTP_401_UNAUTHORIZED
 
 from indykite.intent_agent import auth
-from indykite.intent_agent.agent import ExtractionResult, IntentExecutor
+from indykite.intent_agent.agent import ExtractionResult
 from indykite.intent_agent.audit.message import Outcome
 from indykite.intent_agent.config import Settings
+from indykite.intent_agent.executor import IntentExecutor
 
 _PROMPT = "rent kitt"
 _EVALUATIONS = [{"action": {"name": "RENT"}, "resource": {"type": "Car", "id": "kitt"}}]
