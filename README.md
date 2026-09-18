@@ -243,13 +243,20 @@ cache, and real Gemini calls:
    Run it, then set `INTROSPECT_URL=http://127.0.0.1:9001/introspect` with any
    `INTROSPECT_CLIENT_ID`/`INTROSPECT_CLIENT_SECRET`.
 4. Send a prompt that actually matches your graph's schema. `intent-agent`'s subject
-   is always auto-bound to the caller (from `subject_type`/`subject_id` in the request's
-   `message.metadata`, supplied by the caller itself), never from prompt text - a
+   is auto-bound to the caller (from `subject_type`/`subject_id` in the request's
+   `message.metadata`, supplied by the caller itself), never from prompt text - the only
+   evaluations that keep an LLM-chosen subject are a Subject Search ("who can read X?",
+   where `subject.type` is the type searched for and there is no id) and the marked
+   second-subject pattern, both described in `skills/extract-intent/SKILL.md`. A
    third-person prompt like "what can
    user X buy" doesn't test what it looks like it tests. Prefer first-person prompts,
-   and check the platform schema for resource types that actually exist before
-   assuming an entity is graph-modeled (e.g. an individual stock ticker usually
-   isn't a node - that data tends to come from an external source instead).
+   and check the platform schema (`GET {INDYKITE_BASE_URL}/data-schema/v1`) for the node
+   types and edge relations that actually exist before assuming an entity or action is
+   graph-modeled (e.g. an individual stock ticker usually isn't a node - that data tends
+   to come from an external source instead). An action word the schema has no relation
+   for (say "retrieve" when the only relation is `CAN_ACCESS`) makes the model re-fetch
+   the schema until `TOOL_CALL_MAX_ITERATIONS` runs out, which comes back as the no-intent
+   error and is audited as `outcome: error`.
 
 ### Testing end-to-end against real RC + Redis + Gemini with scripts
 
@@ -267,6 +274,51 @@ make start_app
 # terminal 3, once both are up
 manual_testing/call_agent.sh
 ```
+
+### Checking a Subject Search by hand
+
+`manual_testing/call_agent.sh` sends a first-person prompt, so every evaluation comes back
+bound to the caller. A Subject Search ("who can ...?") is the one case where the returned
+`subject` is not the caller: the model picks `subject.type` (the entity type searched for)
+and marks the evaluation with `context.parameters.subject_source` set to `"search"`, and the
+agent keeps that type and drops any id. To see it, send a caller of a *different* type than
+the one searched for, against the service started above (any non-empty token works with the
+mock introspection service):
+
+```sh
+curl -s -X POST http://127.0.0.1:6003/ \
+  -H "A2A-Version: 1.0" \
+  -H "Authorization: Bearer <any-non-empty-token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0", "id": "1", "method": "SendMessage",
+    "params": {"message": {
+      "role": "ROLE_USER",
+      "parts": [{"text": "Which users can access account acc_ted_investing?"}],
+      "messageId": "manual-search-1",
+      "metadata": {"subject_type": "Customer", "subject_id": "rebecca"}
+    }}
+  }'
+```
+
+(`User`, `Customer`, `Account` and `CAN_ACCESS` are the CanBank data model - substitute your
+graph's own node types and edge relation.) In the returned evaluation, expect:
+
+- `subject` is `{"type": "User"}` - the searched-for type, not the caller's `Customer`, and
+  no `id` even though the caller supplied one;
+- `context.parameters.subject_source` is `"search"`. If it is absent and the subject came
+  back as the caller, the model didn't set the marker - a prompt/model-compliance problem,
+  not the binding.
+
+The audit record for the request (under `AUDIT_FILE_STORAGE_PATH` with
+`AUDIT_DELIVERY=file`) still carries the caller's `subject_type`/`subject_id` from the
+metadata: the exemption changes the evaluations, not who is audited as the caller.
+
+Seen with `gemini-3.1-flash-lite`, and not the binding's doing: it tends to put the account
+id in `context.filters` (`resource.external_id == '...'`) rather than `resource.id`, and in a
+prompt that combines a Subject Search with a question about a named second subject it may
+put the search first - a search can never serve as the second-subject gate, so that
+evaluation is then bound to the caller rather than trusted.
 
 ### With Docker
 

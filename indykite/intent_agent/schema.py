@@ -6,11 +6,36 @@ from typing import Any
 import httpx2
 import jwt
 from dogpile.cache.api import NO_VALUE
-from dogpile.cache.region import CacheRegion
+from dogpile.cache.region import CacheRegion, make_region
 
+from indykite.intent_agent.config import Settings
 from indykite.intent_agent.errors import InvalidAppAgentKeyError
 
 logger = logging.getLogger(__name__)
+
+_SECONDS_PER_MINUTE = 60
+
+
+def build_schema_cache(settings: Settings) -> CacheRegion:
+    """Pick the schema cache backend named by CACHE_BACKEND: Redis, or in-process memory
+    (the default) - single-instance deployments never need Redis running. Settings rejects
+    CACHE_BACKEND=redis with no REDIS_URL at startup, so redis_url is guaranteed set here.
+
+    Sets expiration_time from SCHEMA_REFRESH_TTL_MINUTES so SchemaClient.get_cached()
+    refreshes on-demand once an entry ages past it, instead of a per-instance background
+    timer - see get_cached()'s docstring for why that matters with multiple instances.
+    """
+    ttl_seconds = settings.schema_refresh_ttl_minutes * _SECONDS_PER_MINUTE
+    logger.info("Using cache backend %r with TTL %d seconds", settings.cache_backend, ttl_seconds)
+    if settings.cache_backend == "redis":
+        return make_region().configure(
+            "dogpile.cache.redis",
+            expiration_time=ttl_seconds,
+            # `url` (not host/port) so dogpile hands the DSN as-is to redis.StrictRedis.from_url,
+            # preserving username/password/db/TLS scheme instead of dropping them.
+            arguments={"url": str(settings.redis_url)},
+        )
+    return make_region().configure("dogpile.cache.memory", expiration_time=ttl_seconds)
 
 
 def _cache_key(app_agent_key: str) -> str:
@@ -57,8 +82,8 @@ class SchemaClient:
     ) -> None:
         """Store the connection details; no request is made until load()/preload().
 
-        cache has no default here - agent.py's _build_schema_cache is the single place
-        that decides Redis-vs-Memory, so it's the one place that constructs a default.
+        cache has no default here - build_schema_cache above is the single place that
+        decides Redis-vs-Memory, so it's the one place that constructs a default.
         """
         self._base_url = base_url
         self._app_agent_key = app_agent_key

@@ -29,7 +29,11 @@ Intent is expressed as a **Subject** desiring to perform an **Action** (or set o
 
 Omit the `subject` key entirely for Access Evaluation, Resource Search, and Action Search - the system fills it in automatically after extraction, from the caller's own identity supplied with the request. Any value you provide is ignored.
 
-**Exception**: For **Subject Search** ("Who can do Y on Z?"), determine `subject.type` yourself (the entity type being searched for) and omit `subject.id` (leave it blank) - the search discovers subjects, so there's no caller identity to bind.
+**Exception**: For **Subject Search** ("Who can do Y on Z?"), determine `subject.type` yourself
+(the entity type being searched for), omit `subject.id` (leave it blank) - the search discovers
+subjects, so there's no caller identity to bind - and mark the evaluation with
+`"context": {"parameters": {"subject_source": "search"}}` - only then is your `subject.type`
+kept instead of overridden. Any `subject.id` on a marked Subject Search is dropped.
 
 **Exception**: For an evaluation about a **second, specific subject you identified in the prompt**
 (someone other than the caller - see Second Subject below), set both `subject.type` and
@@ -175,14 +179,16 @@ any search criteria in `context.filters` (see Context field above):
 
 ### Subject Search (who can act on resource Z?)
 
-When the prompt asks "Who can do Y on Z?" **omit `subject.id`** (leave blank):
+When the prompt asks "Who can do Y on Z?" set `subject.type` to the entity type being searched
+for, **omit `subject.id`** (leave blank), and mark the evaluation with
+`context.parameters.subject_source` set to `"search"` (see the Subject binding exception above):
 
 ```json
 {
   "subject": { "type": "<entity_type>" },
   "action": { "name": "<action_name>" },
   "resource": { "type": "<entity_type>", "id": "<id>" },
-  "context": {}
+  "context": { "parameters": { "subject_source": "search" } }
 }
 ```
 
@@ -206,8 +212,9 @@ Rebecca purchase GOOG stock?" - produce **two or more** evaluations instead of o
    `subject` - the system fills in the caller, as always): `action` is the schema's edge label
    that best represents the caller being allowed to reference/access that other subject;
    `resource` is the other subject itself (type = their entity type, id = their identifier).
-   **The system always overrides `subject` on this first evaluation regardless of anything you
-   write there - never put the marker below on it, it has no effect there.**
+   **The system always binds the caller on this first evaluation - never put a
+   `subject_source` marker on it: `"prompt"` has no effect there, and a Subject Search can
+   never serve as the gate.**
 2. One evaluation per action the prompt actually asks about, with `subject.type`/`subject.id`
    set explicitly to the other subject's own identity - **exactly matching** the gate
    evaluation's `resource.type`/`resource.id` from step 1, character for character - and

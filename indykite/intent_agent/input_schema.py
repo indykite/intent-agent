@@ -35,13 +35,20 @@ def _edge_relations(schema: dict[str, Any]) -> list[str]:
 
 class _Subject(BaseModel):
     """AuthZEN subject. `id` is normally left absent - it's assigned deterministically
-    post-LLM from the caller-supplied subject params, never trusted from the LLM. The one
-    exception is the second-subject case (SKILL.md), where the LLM must set it explicitly
-    for a marked evaluation; subject_binding._bind_subject enforces the override everywhere
-    else regardless of what's set here.
+    post-LLM from the caller-supplied subject params, never trusted from the LLM. The
+    exceptions are the two marked cases (SKILL.md): a second subject, where the LLM must set
+    both fields explicitly, and a Subject Search, where it sets only `type` (the entity type
+    searched for).
     """
 
-    type: str | None = None
+    type: str | None = Field(
+        default=None,
+        description=(
+            "Only for a Subject Search (the entity type being searched for - see the Subject "
+            "Search section) or an evaluation about a second, specific subject identified in the "
+            "prompt. Omit otherwise; the caller's own type is filled in automatically."
+        ),
+    )
     id: str | None = Field(
         default=None,
         description=(

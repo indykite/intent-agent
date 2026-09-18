@@ -10,7 +10,8 @@ from dogpile.cache.backends.redis import RedisBackend
 from langchain_core.messages import HumanMessage, ToolMessage
 from starlette.testclient import TestClient
 
-from indykite.intent_agent.agent import IntentAgent, RequestSubject, _build_schema_cache, build_app
+from indykite.intent_agent.agent import IntentAgent, RequestSubject
+from indykite.intent_agent.app import build_app
 from indykite.intent_agent.audit.message import Outcome, schema_version
 from indykite.intent_agent.config import Settings
 from indykite.intent_agent.errors import (
@@ -26,6 +27,7 @@ from indykite.intent_agent.errors import (
     validation_feedback_error,
 )
 from indykite.intent_agent.input_schema import build_input_schema
+from indykite.intent_agent.schema import build_schema_cache
 from indykite.intent_agent.skills import discover_skills
 from indykite.intent_agent.subject_binding import (
     _bind_subject,
@@ -160,10 +162,15 @@ def test_bind_subject_tolerates_non_dict_evaluation_entries():
     assert data["evaluations"][1]["subject"] == {"type": "Customer", "id": "user-1"}
 
 
-def test_bind_subject_omits_id_when_subject_id_is_falsy():
-    """A falsy subject_id (e.g. Subject Search's blank id) must remove any id, not set it to None/empty."""
+@pytest.mark.parametrize("subject_id", [None, ""], ids=["none", "empty"])
+def test_bind_subject_strips_stale_id_when_caller_has_no_id(subject_id):
+    """A blank caller subject_id (an anonymous caller - _subject_params doesn't require one)
+    must remove any id the LLM left on an unmarked evaluation, not set it to None/empty. The
+    type is still the caller's: without a Subject Search marker the evaluation is about the
+    caller, whatever type the LLM wrote there.
+    """
     data = {"evaluations": [{"subject": {"type": "Admin", "id": "stale-id"}}]}
-    _bind_subject(data, subject_id=None, subject_type="Customer")
+    _bind_subject(data, subject_id=subject_id, subject_type="Customer")
     assert data["evaluations"][0]["subject"] == {"type": "Customer"}
 
 
@@ -296,6 +303,109 @@ def test_bind_subject_overrides_when_marker_is_absent_or_malformed(evaluation):
     _bind_subject(data, subject_id="user-1", subject_type="Customer")
     assert data["evaluations"][0]["subject"] == {"type": "Customer", "id": "user-1"}
     assert data["evaluations"][1]["subject"] == {"type": "Customer", "id": "user-1"}
+
+
+_SUBJECT_SEARCH_CONTEXT = {"parameters": {"subject_source": "search"}}
+
+
+def _subject_search_evaluation(subject):
+    """A Subject Search evaluation over `subject` ("who can rent kitt?"), marked as SKILL.md
+    requires. On-schema vocabulary (RENT / Car) so it also passes validate_evaluations.
+    """
+    return {
+        "subject": subject,
+        "action": {"name": "RENT"},
+        "resource": {"type": "Car", "id": "kitt"},
+        "context": _SUBJECT_SEARCH_CONTEXT,
+    }
+
+
+@pytest.mark.parametrize("caller_id", ["roy", "", None], ids=["identified_caller", "empty", "none"])
+@pytest.mark.parametrize(
+    "llm_subject",
+    [{"type": "Admin"}, {"type": "Admin", "id": "stray-id"}],
+    ids=["no_id", "stray_id"],
+)
+def test_bind_subject_search_keeps_llm_subject_type_and_clears_id(caller_id, llm_subject):
+    """A marked Subject Search keeps the subject.type the LLM chose - the entity type being
+    searched for, not the caller's (SKILL.md) - and never carries an id: not the caller's,
+    even when the caller has one (that would turn "who can rent kitt?" into "can I rent
+    kitt?"), and not a stray one the LLM wrote. It holds at index 0 too, unlike the
+    second-subject marker: a Subject Search asserts no identity, so there is nothing to gate.
+    """
+    data = {"evaluations": [_subject_search_evaluation(llm_subject)]}
+    _bind_subject(data, subject_id=caller_id, subject_type="User")
+    assert data["evaluations"][0]["subject"] == {"type": "Admin"}
+
+
+def test_bind_subject_search_exempts_only_the_marked_evaluation():
+    """The exemption is per evaluation and needs the marker: an unmarked sibling before or
+    after a Subject Search is bound to the caller as always - even one shaped exactly like a
+    search (a subject with a type and no id), which is what the LLM emits on ordinary
+    evaluations too, so the shape alone can never be the signal.
+    """
+    search_shaped_but_unmarked = {
+        "subject": {"type": "Admin"},
+        "action": {"name": "OWN"},
+        "resource": {"type": "Car", "id": "kitt"},
+        "context": {},
+    }
+    data = {
+        "evaluations": [
+            {"action": {"name": "OWN"}, "resource": {"type": "Car", "id": "kitt"}, "context": {}},
+            _subject_search_evaluation({"type": "Admin"}),
+            search_shaped_but_unmarked,
+        ],
+    }
+    _bind_subject(data, subject_id="roy", subject_type="User")
+    assert data["evaluations"][0]["subject"] == {"type": "User", "id": "roy"}
+    assert data["evaluations"][1]["subject"] == {"type": "Admin"}
+    assert data["evaluations"][2]["subject"] == {"type": "User", "id": "roy"}
+
+
+def test_bind_subject_search_at_index_0_is_not_a_gate_for_a_second_subject():
+    """A Subject Search at evaluations[0] is not bound to the caller, so it can't serve as the
+    caller-anchored gate the "prompt" marker needs - otherwise a search at index 0 plus a
+    marked evaluation at index 1 would come back with no evaluation bound to the caller at
+    all. The search keeps its own exemption; the marked evaluation gets the override.
+    """
+    data = {
+        "evaluations": [
+            _subject_search_evaluation({"type": "Admin"}),
+            {
+                "subject": {"type": "Car", "id": "kitt"},
+                "action": {"name": "OWN"},
+                "resource": {"type": "Company", "id": "acme"},
+                "context": {"parameters": {"subject_source": "prompt"}},
+            },
+        ],
+    }
+    _bind_subject(data, subject_id="roy", subject_type="User")
+    assert data["evaluations"][0]["subject"] == {"type": "Admin"}
+    assert data["evaluations"][1]["subject"] == {"type": "User", "id": "roy"}
+
+
+@pytest.mark.parametrize(
+    "evaluation",
+    [
+        pytest.param({"context": _SUBJECT_SEARCH_CONTEXT}, id="no_subject_at_all"),
+        pytest.param({"subject": "Admin", "context": _SUBJECT_SEARCH_CONTEXT}, id="subject_not_a_dict"),
+        pytest.param({"subject": {"type": "   "}, "context": _SUBJECT_SEARCH_CONTEXT}, id="blank_subject_type"),
+        pytest.param({"subject": {"id": "x"}, "context": _SUBJECT_SEARCH_CONTEXT}, id="subject_without_type"),
+        pytest.param(
+            {"subject": {"type": "Admin"}, "context": {"parameters": {"subject_source": "Search"}}},
+            id="marker_value_differs_in_case",
+        ),
+    ],
+)
+def test_bind_subject_search_marker_without_a_searched_type_falls_back_to_override(evaluation):
+    """The marker alone is not enough: a Subject Search with nothing usable to search for (no
+    subject, a non-object one, a blank or missing type) - or anything short of the exact
+    marker value - gets the safe default, the caller's own subject, same as any malformed marker.
+    """
+    data = {"evaluations": [evaluation]}
+    _bind_subject(data, subject_id="roy", subject_type="User")
+    assert data["evaluations"][0]["subject"] == {"type": "User", "id": "roy"}
 
 
 @pytest.mark.parametrize(
@@ -599,6 +709,34 @@ def test_normalize_intent_response_binds_subject_end_to_end():
     assert data["evaluations"][0]["subject"] == {"type": "Customer", "id": "user-1"}
 
 
+def test_normalize_intent_response_keeps_subject_search_type_end_to_end():
+    """A Subject Search comes out of the whole pipeline with the LLM's subject.type kept and no
+    id, although the caller (_normalize's "user-1") has one, and with the marker passed through
+    in context like any other parameter (it is prompt-derived data, the same as the
+    second-subject marker).
+    """
+    llm_text = json.dumps({"evaluations": [_subject_search_evaluation({"type": "Company"})]})
+    data = json.loads(_normalize(llm_text, "who can rent kitt?"))
+    assert data["evaluations"] == [
+        {
+            "subject": {"type": "Company"},
+            "action": {"name": "RENT"},
+            "resource": {"type": "Car", "id": "kitt"},
+            "context": {"parameters": {"subject_source": "search"}},
+        },
+    ]
+
+
+def test_normalize_intent_response_still_validates_a_subject_search_type_against_the_schema():
+    """Keeping the LLM's subject.type on a Subject Search doesn't exempt it from the schema
+    membership check (TDD 4.8): an off-schema type is fed back to the LLM, never passed on.
+    """
+    llm_text = json.dumps({"evaluations": [_subject_search_evaluation({"type": "Martian"})]})
+    with pytest.raises(IntentValidationError) as excinfo:
+        _normalize(llm_text, "which martians can rent kitt?")
+    assert excinfo.value.errors == ["evaluations[0]: subject.type 'Martian' is not defined in the data schema"]
+
+
 def test_normalize_intent_response_passes_context_through_verbatim():
     """context.parameters / filters / qualifiers are user-controlled data passed through as-is
     (TDD 9) - a filters expression, including one that looks like an injection attempt, must
@@ -772,7 +910,7 @@ def _fake_audit_sender(mocker):
 def test_build_schema_cache_uses_memory_backend_by_default(monkeypatch):
     """CACHE_BACKEND defaults to memory - the in-process Memory cache - with no REDIS_URL set."""
     settings = _full_settings(monkeypatch)
-    assert isinstance(_build_schema_cache(settings).backend, MemoryBackend)
+    assert isinstance(build_schema_cache(settings).backend, MemoryBackend)
 
 
 def test_build_schema_cache_uses_redis_backend_when_configured(monkeypatch):
@@ -785,7 +923,7 @@ def test_build_schema_cache_uses_redis_backend_when_configured(monkeypatch):
     monkeypatch.setenv("REDIS_URL", redis_url)
     monkeypatch.setenv("SCHEMA_REFRESH_TTL_MINUTES", "2.0")
     settings = _full_settings(monkeypatch)
-    cache = _build_schema_cache(settings)
+    cache = build_schema_cache(settings)
     assert isinstance(cache.backend, RedisBackend)
     assert cache.backend.url == redis_url
     assert cache.expiration_time == 2.0 * 60

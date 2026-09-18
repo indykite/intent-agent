@@ -19,7 +19,7 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse, Response
 from starlette.routing import Route
 
-from indykite.intent_agent.agent import build_app
+from indykite.intent_agent.app import build_app
 from indykite.intent_agent.config import Settings
 from indykite.intent_agent.logging_config import build_logging_config
 

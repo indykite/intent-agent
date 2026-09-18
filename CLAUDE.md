@@ -108,20 +108,28 @@ re-opened by other separately-installed `indykite.*` packages instead of closed 
 package. Actual code always goes in sibling module (`config.py`, `agent.py`, a `test_*.py` file,
 ...), never in `__init__.py`.
 
-Six modules carry whole service:
+Eight modules carry whole service:
 
 - **`config.py`** — `Settings(BaseSettings)` single source of runtime config, loaded from
   environment or `.env`. `gemini_api_key` has no default, so constructing `Settings()` fails
   fast (`pydantic.ValidationError`) if missing — startup gate, not runtime check. New config =
   typed field here; don't reach for `os.getenv` elsewhere.
-- **`agent.py`** — the pipeline glue: `IntentAgent` class (owns LLM, discovered skills, schema
-  cache, tool bindings, tool-call loop), A2A `IntentExecutor`. `build_app(settings) -> (Starlette
-  app, IntentAgent)` = entrypoint into this module. Delegates skill discovery to `skills.py`,
-  access_token validation to `auth.py`, schema fetch/cache to `schema.py`'s `SchemaClient`.
+- **`agent.py`** — the extraction pipeline: `IntentAgent` class (owns LLM, discovered skills,
+  schema cache, tool bindings, tool-call loop, validation retries), plus the `RequestSubject` it
+  takes and the `ExtractionResult` it returns. Delegates skill discovery to `skills.py`, schema
+  fetch/cache to `schema.py`'s `SchemaClient`. Knows nothing of A2A transport or auditing.
+- **`executor.py`** — the A2A leg: `IntentExecutor` authenticates the caller (`auth.py`), reads
+  `subject_type`/`subject_id` off the message metadata, runs `IntentAgent.run_extraction`, emits
+  the task events, and audits every request exactly once (`_RequestAudit`). Depends on
+  `agent.py`, never the other way round.
+- **`app.py`** — `build_app(settings) -> (Starlette app, IntentAgent)`: wires `IntentAgent`,
+  `IntentExecutor`, the audit sender and the A2A routes together = entrypoint for `__main__.py`
+  and the integration tests.
 - **`skills.py`** — `SKILL.md` discovery/YAML-frontmatter parsing under `skills/`, builds the
   tier-1 system-prompt catalog (`skill_catalog_preamble.txt` + skill names/descriptions) and the
   A2A `AgentSkill` list for the agent card.
-- **`schema.py`** — `SchemaClient`: fetches/caches the IndyKite graph schema (JGF) over `httpx2`.
+- **`schema.py`** — `SchemaClient`: fetches/caches the IndyKite graph schema (JGF) over `httpx2`;
+  `build_schema_cache(settings)` picks the `dogpile.cache` region it caches into.
 - **`auth.py`** — pulls the Bearer `access_token` off the A2A request context and validates it via
   RFC 7662 Token Introspection against the external IdP (no local JWT decode/signature check -
   the introspection call itself is what covers signature validity). The `ik_token`/IndyKite Token
@@ -203,7 +211,7 @@ evaluations, retry count, schema hash) so `IntentExecutor` never parses its own 
 classify it; a new exit path from the pipeline must set its outcome there, not in the executor.
 
 **Schema cache backend.** `CACHE_BACKEND` (`Settings`, default `"memory"`) picks the
-`dogpile.cache` backend `_build_schema_cache` (`agent.py`) configures: in-process `memory`, or
+`dogpile.cache` backend `build_schema_cache` (`schema.py`) configures: in-process `memory`, or
 `redis` using `REDIS_URL` — required whenever `CACHE_BACKEND=redis` (`Settings` fails fast at
 startup otherwise). Multi-instance deployments need `redis` so instances share one schema cache
 entry (see the pre-merge multi-instance validation below).
@@ -215,8 +223,9 @@ test): JSON-RPC method name is `SendMessage`, not `message/send`; requests need
 call - a valid-looking-but-fake token, like the old JWT-decode design accepted, is now rejected) -
 this authenticates the calling client, not any subject, so `subject_type`/`subject_id` are no
 longer derived from it. Both are required in the request's `message.metadata` instead (`subject_type`
-missing/blank is a 400; `subject_id` may be blank, the Subject-Search exception) - see
-`IntentExecutor._subject_params`.
+missing/blank is a 400; `subject_id` may be blank - an anonymous caller, not a way to request a
+Subject Search, which the LLM marks per evaluation instead: `subject_binding._subject_search`) -
+see `IntentExecutor._subject_params`.
 
 ## Docker
 

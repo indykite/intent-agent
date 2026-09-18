@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 from starlette.status import HTTP_200_OK
 from starlette.testclient import TestClient
 
-from indykite.intent_agent.agent import build_app
+from indykite.intent_agent.app import build_app
 from indykite.intent_agent.config import Settings
 from indykite.intent_agent.errors import llm_timeout_error
 from integration.schema_fixtures import load_schema_fixture
@@ -37,7 +37,7 @@ def test_hung_llm_call_is_cut_off_within_request_budget(monkeypatch, mocker, tmp
     monkeypatch.setenv("AUDIT_FILE_ROTATION_STRATEGY", "time")
     monkeypatch.setenv("LLM_TIMEOUT_SECONDS", str(_LLM_TIMEOUT_SECONDS))
     mocker.patch(
-        "indykite.intent_agent.agent.auth.validate_access_token",
+        "indykite.intent_agent.executor.auth.validate_access_token",
         return_value={"active": True, "sub": "test-subject"},
     )
     fake_schema_client = mocker.Mock(
