@@ -10,7 +10,12 @@ from a2a import types as a2a_types
 from a2a.server.agent_execution import RequestContext
 from a2a.server.context import ServerCallContext
 from starlette.exceptions import HTTPException
-from starlette.status import HTTP_400_BAD_REQUEST, HTTP_401_UNAUTHORIZED
+from starlette.status import (
+    HTTP_400_BAD_REQUEST,
+    HTTP_401_UNAUTHORIZED,
+    HTTP_500_INTERNAL_SERVER_ERROR,
+    HTTP_502_BAD_GATEWAY,
+)
 
 from indykite.intent_agent import auth
 from indykite.intent_agent.agent import ExtractionResult
@@ -223,18 +228,52 @@ def test_rejected_token_is_audited_with_the_introspection_reason(baseline_env, m
     mocker.patch.object(
         auth,
         "validate_access_token",
-        mocker.AsyncMock(side_effect=auth.TokenValidationError("Token is not active")),
+        mocker.AsyncMock(side_effect=auth.TokenValidationError("Token is not active", auth.TokenFailure.CALLER)),
     )
     executor, sender, _agent = _executor(baseline_env, mocker)
 
     with pytest.raises(HTTPException) as excinfo:
         _execute(executor, _context({"authorization": "Bearer bad-token"}), mocker)
 
+    assert excinfo.value.status_code == HTTP_401_UNAUTHORIZED
     assert excinfo.value.detail == "Token is not active"
     record = _sole_record(sender)
     assert record.outcome == Outcome.ERROR
     assert record.message == "Token is not active"
     assert record.subject_id == ""
+
+
+@pytest.mark.parametrize(
+    ("failure", "message", "status"),
+    [
+        (auth.TokenFailure.CALLER, "Token is not active", HTTP_401_UNAUTHORIZED),
+        (auth.TokenFailure.SERVICE, "Token introspection request failed", HTTP_500_INTERNAL_SERVER_ERROR),
+        (auth.TokenFailure.PROVIDER, "Introspection endpoint returned status 503", HTTP_502_BAD_GATEWAY),
+    ],
+    ids=["caller-401", "service-500", "provider-502"],
+)
+def test_token_failures_are_answered_by_whose_fault_they_are(baseline_env, mocker, failure, message, status):
+    """Only the caller's own token is a 401 - the IAG's split: this service failing to get an
+    answer is a 500, an IdP answering something that isn't an answer is a 502 - so an IdP outage
+    doesn't read as a bad token. All three are audited as `error` with the caller's message, and
+    none reaches the extraction.
+    """
+    mocker.patch.object(
+        auth,
+        "validate_access_token",
+        mocker.AsyncMock(side_effect=auth.TokenValidationError(message, failure)),
+    )
+    executor, sender, agent = _executor(baseline_env, mocker)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _execute(executor, _context({"authorization": "Bearer some-token"}), mocker)
+
+    assert excinfo.value.status_code == status
+    assert excinfo.value.detail == message
+    record = _sole_record(sender)
+    assert record.outcome == Outcome.ERROR
+    assert record.message == message
+    agent.run_extraction.assert_not_awaited()
 
 
 @pytest.mark.parametrize(

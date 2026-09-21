@@ -1,4 +1,5 @@
 import logging
+from enum import Enum
 from http import HTTPStatus
 from typing import Any
 
@@ -8,8 +9,32 @@ from a2a.server.agent_execution import RequestContext
 logger = logging.getLogger(__name__)
 
 
+class TokenFailure(Enum):
+    """Whose fault a refused access token is - the three ways the IAG tells its introspection
+    failures apart (`idp/client.go`, `proxy/middlewares.go`'s `failureDecision`), so a caller
+    isn't told its token is bad when it's this service or the IdP that failed. IntentExecutor
+    maps each to the caller's HTTP status.
+    """
+
+    CALLER = "caller"
+    """The caller's token: missing, or the IdP says it is not active. 401."""
+
+    SERVICE = "service"
+    """This service: its request to the IdP never got an answer. 500."""
+
+    PROVIDER = "provider"
+    """The IdP's answer: any status instead of an answer (4xx and 5xx alike, our own rejected client
+    credentials included - the IAG's `introspectionStatusRefusal` makes no finer split), or a body
+    that can't be read as one. 502."""
+
+
 class TokenValidationError(Exception):
-    """Raised when an access token fails validation for any reason."""
+    """Raised when an access token fails validation for any reason; `failure` says whose fault."""
+
+    def __init__(self, message: str, failure: TokenFailure) -> None:
+        """Keep the caller-facing message and the failure class it belongs to."""
+        super().__init__(message)
+        self.failure = failure
 
 
 def get_access_token_from_context(context: RequestContext | None) -> str:
@@ -43,11 +68,14 @@ async def validate_access_token(
 
     Sends a single POST /introspect call
     Returns the introspection response body (claims) if the token is active.
-    Raises TokenValidationError if the token is inactive, or the call fails.
+    Raises TokenValidationError if the token is inactive, or the call fails - classified
+    (TokenFailure) the way the IAG's IdP client classifies the same failures: only a missing or
+    inactive token is the caller's, a request that never got an answer is this service's, and
+    any status or body that isn't an RFC 7662 answer is the IdP's.
     """
     if not token.strip():
         message = "No token provided"
-        raise TokenValidationError(message)
+        raise TokenValidationError(message, TokenFailure.CALLER)
 
     try:
         async with httpx2.AsyncClient() as client:
@@ -62,26 +90,29 @@ async def validate_access_token(
                 timeout=timeout_seconds,
             )
     except httpx2.RequestError as exc:
-        logger.warning("Token introspection request failed: %s", exc)
+        logger.exception("Token introspection request failed")
         message = "Token introspection request failed"
-        raise TokenValidationError(message) from exc
+        raise TokenValidationError(message, TokenFailure.SERVICE) from exc
 
+    # Any status instead of an answer is the IdP's, 4xx and 5xx alike, as in the IAG - the 401 is
+    # only singled out so the message and log name what actually needs fixing (RFC 7662 2.3: our
+    # own client credentials), not to classify it differently.
     if response.status_code == HTTPStatus.UNAUTHORIZED:
         logger.error("Token introspection rejected our own client credentials (introspect_client_id/secret)")
         message = "Introspection endpoint rejected our own client credentials"
-        raise TokenValidationError(message)
+        raise TokenValidationError(message, TokenFailure.PROVIDER)
 
     if response.status_code != HTTPStatus.OK:
-        logger.warning("Token introspection returned unexpected status %s", response.status_code)
+        logger.error("Token introspection returned unexpected status %s", response.status_code)
         message = f"Introspection endpoint returned status {response.status_code}"
-        raise TokenValidationError(message)
+        raise TokenValidationError(message, TokenFailure.PROVIDER)
 
     try:
         payload = response.json()
     except ValueError as exc:
-        logger.warning("Token introspection returned non-JSON response")
+        logger.exception("Token introspection returned non-JSON response")
         message = "Introspection endpoint returned invalid response"
-        raise TokenValidationError(message) from exc
+        raise TokenValidationError(message, TokenFailure.PROVIDER) from exc
 
     return _validate_introspection_claims(payload)
 
@@ -89,16 +120,24 @@ async def validate_access_token(
 def _validate_introspection_claims(payload: object) -> dict[str, Any]:
     """Validate a parsed introspection response body, raising TokenValidationError on any failure."""
     if not isinstance(payload, dict):
-        logger.warning("Token introspection returned a non-object JSON body")
+        logger.error("Token introspection returned a non-object JSON body")
         message = "Introspection endpoint returned an unexpected response shape"
-        raise TokenValidationError(message)
+        raise TokenValidationError(message, TokenFailure.PROVIDER)
 
-    # Per RFC 7662 Section 2.2: `active` is the one REQUIRED field.
+    # Per RFC 7662 Section 2.2: `active` is the one REQUIRED field, a boolean.
     # Everything else (exp, sub, scope, etc.) is OPTIONAL and IdP-dependent.
-    if payload.get("active") is not True:
+    # Only an explicit `false` is an answer about the token; an answer that omits the field (or
+    # doesn't make it a boolean) is the IdP's fault, not the token's - like the IAG's
+    # `introspectionRefusal`, which tells those two apart the same way.
+    active = payload.get("active")
+    if not isinstance(active, bool):
+        logger.error("Token introspection response does not say whether the token is active")
+        message = "Introspection endpoint did not say whether the token is active"
+        raise TokenValidationError(message, TokenFailure.PROVIDER)
+    if not active:
         logger.info("Token introspection: token is not active")
         message = "Token is not active"
-        raise TokenValidationError(message)
+        raise TokenValidationError(message, TokenFailure.CALLER)
 
     # This token authenticates the calling client, not any subject (see
     # IntentExecutor._authenticate) - subject_type/subject_id come from the caller-supplied

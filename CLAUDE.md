@@ -132,9 +132,13 @@ Eight modules carry whole service:
   `build_schema_cache(settings)` picks the `dogpile.cache` region it caches into.
 - **`auth.py`** — pulls the Bearer `access_token` off the A2A request context and validates it via
   RFC 7662 Token Introspection against the external IdP (no local JWT decode/signature check -
-  the introspection call itself is what covers signature validity). The `ik_token`/IndyKite Token
-  Service leg (`validate_ik_token`) is a deliberate `NotImplementedError` stub, blocked on ITS not
-  existing yet (`ENG-8846`) - not wired into `agent.py` yet either.
+  the introspection call itself is what covers signature validity). Every introspection refusal
+  is a `TokenValidationError` classified by whose fault it is (`TokenFailure`), the IAG's split:
+  `CALLER` (blank or inactive token, 401), `SERVICE` (the request never got an answer, 500),
+  `PROVIDER` (any status instead of an answer, 4xx and 5xx alike, or a body that isn't an
+  RFC 7662 answer, 502) - `executor.py` maps the class to the status, so an IdP outage never
+  reads as a bad token. A missing `Authorization` header never reaches introspection: `executor.py`
+  answers that 401 itself.
 - **`__main__.py`** — process entrypoint (`python -m indykite.intent_agent`). Wires `Settings()`,
   calls `build_app`, starts background health server on `HEALTH_PORT` (default 8001) using
   stdlib `http.server` — deliberately **not** part of main Starlette app, second listener —
@@ -172,7 +176,7 @@ checks `context`'s shape the same way (`filters` a string, `parameters`/`qualifi
 null keys and a blank `filters` are dropped afterwards, everything else passes through verbatim
 as untrusted data) and enforces CEL on `filters` (`cel.py`, on `cel-python`): it must parse,
 may reference only the `resource` variable, and may not call `dyn()`/`type()` - the same
-posture as the platform's `jarvis/pkg/cel` (blocked reflection functions, size limit). The
+posture as the platform's (blocked reflection functions, size limit). The
 expression is never evaluated here; IBAC does that. An
 off-schema value (or non-JSON output) raises `IntentValidationError`; `IntentAgent` feeds the
 errors back to the LLM as a follow-up message (`validation_feedback_error`) in the same
@@ -197,14 +201,13 @@ extraction, an `unmatched`/`validation_failed` one, a rejected token (audited as
 `outcome = error` with the same reason the caller got, like the Agent Gateway audits every
 rejection), and an unexpected exception alike. The record is the TDD's field list verbatim
 (`audit/message.py`'s `AuditMessage`: snake_case, `outcome`/`message`, `prompt` and
-`evaluations` recorded in full - a deliberate, TDD-owner-confirmed departure from the IAG's
-no-payload rule); `message` follows the IAG's `reason` rule and always equals the text the caller
-received. Delivery is the IAG's (`jarvis-proto/services/agent-gateway/internal/audit`), ported
+`evaluations` recorded in full; `message` follows the IAG's `reason` rule and always equals the text the caller
+received. Delivery is the IAG's, ported
 one `Sender` per IAG sender under `audit/`: `file.py` (rotating `audit-<service>-<unixNano>.<fmt>`
 files, json/csv/txt), `http.py` (one POST/PUT per record, mTLS/api-key/no-auth, failures logged
 never raised), `async_sender.py` (bounded queue + worker, drop-on-full, drained by the Starlette
 lifespan on shutdown), picked by `sender.build_sender` from the flat `AUDIT_*` `Settings` fields
-that mirror the IAG's `audit.` YAML keys. The one deliberate difference from the IAG: there is no
+that mirror the IAG's `audit.` YAML keys. There is no
 no-op sender - `AUDIT_DELIVERY` is required, so a deployment can't silently run unaudited.
 `IntentAgent.run_extraction` returns an `ExtractionResult` (response text plus outcome, message,
 evaluations, retry count, schema hash) so `IntentExecutor` never parses its own output to
