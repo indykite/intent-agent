@@ -67,7 +67,7 @@ jobs:
             type=semver,pattern={{major}}
 
       - name: Setup Docker
-        uses: indykite/ops-common/.github/actions/docker-setup@fab8561ba189cabf8cb64a8b8f128d868d102e8e # master
+        uses: indykite/ops-common/.github/actions/docker-setup@4c4cb34f01107182013dd8fe8a9de28ba7958153 # master
         with:
           workload-identity-provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER_MGMT }}
           gcp-service-account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
