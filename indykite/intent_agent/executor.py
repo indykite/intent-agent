@@ -11,7 +11,12 @@ from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.types import TaskArtifactUpdateEvent, TaskState, TaskStatus, TaskStatusUpdateEvent
 from starlette.exceptions import HTTPException
-from starlette.status import HTTP_400_BAD_REQUEST, HTTP_401_UNAUTHORIZED
+from starlette.status import (
+    HTTP_400_BAD_REQUEST,
+    HTTP_401_UNAUTHORIZED,
+    HTTP_500_INTERNAL_SERVER_ERROR,
+    HTTP_502_BAD_GATEWAY,
+)
 
 from indykite.intent_agent import auth
 from indykite.intent_agent.agent import ExtractionResult, IntentAgent, RequestSubject
@@ -22,6 +27,16 @@ from indykite.intent_agent.config import Settings
 logger = logging.getLogger(__name__)
 
 _MILLISECONDS_PER_SECOND = 1000
+
+# What each class of token failure (auth.TokenFailure) is answered with: 401 only
+# for what the caller got wrong, 500 for this service's own failure, 502 for an IdP that answered
+# something other than an RFC 7662 answer. A 401 for an IdP outage would send the caller off to
+# refresh a token that was never the problem.
+_TOKEN_FAILURE_STATUS = {
+    auth.TokenFailure.CALLER: HTTP_401_UNAUTHORIZED,
+    auth.TokenFailure.SERVICE: HTTP_500_INTERNAL_SERVER_ERROR,
+    auth.TokenFailure.PROVIDER: HTTP_502_BAD_GATEWAY,
+}
 
 
 def _prompt_from_context(context: RequestContext) -> str:
@@ -137,10 +152,12 @@ class IntentExecutor(AgentExecutor):
             logger.exception("Failed to audit request %s (outcome %s)", audit_record.request_id, result.outcome)
 
     async def _authenticate(self, context: RequestContext) -> None:
-        """Validate the Bearer token identifying the calling client; 401 (HTTPException)
-        otherwise. This token authenticates the caller (IAG), not any subject - it no longer
-        supplies subject_id/subject_type, which now come from the caller-supplied message
-        metadata instead (see _subject_params).
+        """Validate the Bearer token identifying the calling client; HTTPException otherwise -
+        401 when the token itself is missing or inactive, 500 when this service couldn't get an
+        answer about it, 502 when the IdP's answer can't be used (_TOKEN_FAILURE_STATUS). This
+        token authenticates the caller (IAG), not any subject - it no longer supplies
+        subject_id/subject_type, which now come from the caller-supplied message metadata
+        instead (see _subject_params).
         """
         access_token = auth.get_access_token_from_context(context)
         if not access_token:
@@ -156,7 +173,7 @@ class IntentExecutor(AgentExecutor):
                 timeout_seconds=settings.introspect_timeout_seconds,
             )
         except auth.TokenValidationError as exc:
-            raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+            raise HTTPException(status_code=_TOKEN_FAILURE_STATUS[exc.failure], detail=str(exc)) from exc
 
     def _subject_params(self, context: RequestContext) -> tuple[str, str]:
         """Read subject_type/subject_id from the caller-supplied message metadata - IAG

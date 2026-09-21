@@ -100,9 +100,12 @@ the steps below.
    Expect `outcome: success`, the bound `evaluations`, `subject_id` from `message.metadata`, a
    UUID `request_id` and a small `latency_ms`.
 2. **Failures are audited with the caller's message.** Send the request without the
-   `Authorization` header (401, `outcome: error`, `message: Authorization required`); stop the
-   mock IdP and call again (`Token introspection request failed` - restart it afterwards); send
-   an unrelated prompt (`outcome: unmatched`); send a request with no `subject_type` in
+   `Authorization` header (401, `outcome: error`, `message: Authorization required`); restart
+   the mock IdP with `MOCK_INTROSPECT_MODE=inactive` and call again (401, `Token is not
+   active`), then with `MOCK_INTROSPECT_MODE=broken` (502, `Introspection endpoint returned
+   status 503` - the IdP's fault, not the token's); stop the mock IdP and call again (500,
+   `Token introspection request failed` - this service's fault; restart it normally
+   afterwards); send an unrelated prompt (`outcome: unmatched`); send a request with no `subject_type` in
    `message.metadata` (400, `subject_type is required`); send one with a `subject_type` the
    schema doesn't have (`outcome: error` with the subject-type reason).
 3. **Request id propagation.** Add `-H "X-Request-ID: my-trace-1"` to the curl: `request_id`

@@ -32,9 +32,13 @@ def _mock_async_client(mocker, *, response=None, side_effect=None):
 
 @pytest.mark.parametrize("token", ["", "   ", "\t\n"])
 def test_rejects_blank_token(token):
-    """An empty or whitespace-only token must be rejected before any introspection call is made."""
-    with pytest.raises(auth.TokenValidationError):
+    """An empty or whitespace-only token must be rejected before any introspection call is made,
+    as the caller's fault (TokenFailure.CALLER).
+    """
+    with pytest.raises(auth.TokenValidationError) as excinfo:
         asyncio.run(auth.validate_access_token(token, **_INTROSPECT_KWARGS))
+
+    assert excinfo.value.failure is auth.TokenFailure.CALLER
 
 
 def test_returns_claims_for_active_token(mocker):
@@ -61,11 +65,29 @@ def test_accepts_active_token_regardless_of_act_claim(mocker):
 
 
 def test_rejects_inactive_token(mocker):
-    """An introspection response with active=False must raise TokenValidationError."""
+    """An introspection response with active=False must raise TokenValidationError as the
+    caller's fault (TokenFailure.CALLER) - the one RFC 7662 answer that is about the token.
+    """
     _mock_async_client(mocker, response=httpx2.Response(200, json={"active": False}))
 
-    with pytest.raises(auth.TokenValidationError):
+    with pytest.raises(auth.TokenValidationError, match="Token is not active") as excinfo:
         asyncio.run(auth.validate_access_token("token", **_INTROSPECT_KWARGS))
+
+    assert excinfo.value.failure is auth.TokenFailure.CALLER
+
+
+@pytest.mark.parametrize("payload", [{"sub": "user-1"}, {"active": None}, {"active": "true"}, {"active": 1}])
+def test_rejects_response_that_does_not_say_whether_active(mocker, payload):
+    """An answer that omits `active`, or doesn't make it a boolean, isn't an answer about the token
+    at all (RFC 7662 2.2 requires the boolean): it's the IdP's fault (TokenFailure.PROVIDER), not
+    an inactive token - the same split the IAG's introspectionRefusal makes.
+    """
+    _mock_async_client(mocker, response=httpx2.Response(200, json=payload))
+
+    with pytest.raises(auth.TokenValidationError, match="did not say whether") as excinfo:
+        asyncio.run(auth.validate_access_token("token", **_INTROSPECT_KWARGS))
+
+    assert excinfo.value.failure is auth.TokenFailure.PROVIDER
 
 
 def test_accepts_active_token_missing_sub(mocker):
@@ -82,44 +104,71 @@ def test_accepts_active_token_missing_sub(mocker):
     assert result == claims
 
 
-def test_rejects_non_200_status(mocker):
-    """A non-200 introspection response must raise TokenValidationError."""
-    _mock_async_client(mocker, response=httpx2.Response(500))
+@pytest.mark.parametrize("status", [500, 503, 400, 404])
+def test_rejects_unexpected_status_as_provider_fault(mocker, status):
+    """A status instead of an RFC 7662 answer must raise TokenValidationError as the IdP's fault
+    (TokenFailure.PROVIDER) - it says nothing about the token. 4xx and 5xx alike: the IAG's
+    introspectionStatusRefusal makes no finer split, and neither does this.
+    """
+    _mock_async_client(mocker, response=httpx2.Response(status))
 
-    with pytest.raises(auth.TokenValidationError):
+    with pytest.raises(auth.TokenValidationError, match=f"status {status}") as excinfo:
         asyncio.run(auth.validate_access_token("token", **_INTROSPECT_KWARGS))
+
+    assert excinfo.value.failure is auth.TokenFailure.PROVIDER
 
 
 def test_rejects_401_as_our_own_credentials_being_invalid(mocker):
-    """A 401 from the introspection endpoint means OUR client credentials are invalid (RFC 7662 2.3), not the token."""
+    """A 401 from the introspection endpoint means OUR client credentials are invalid (RFC 7662
+    2.3), not the token - the message must say so. It is still classified like any other status
+    instead of an answer (TokenFailure.PROVIDER), as the IAG does; only the message differs.
+    """
     _mock_async_client(mocker, response=httpx2.Response(401))
 
-    with pytest.raises(auth.TokenValidationError, match="our own client credentials"):
+    with pytest.raises(auth.TokenValidationError, match="our own client credentials") as excinfo:
         asyncio.run(auth.validate_access_token("token", **_INTROSPECT_KWARGS))
+
+    assert excinfo.value.failure is auth.TokenFailure.PROVIDER
 
 
 def test_rejects_non_json_response(mocker):
-    """A non-JSON introspection response body must raise TokenValidationError."""
+    """A non-JSON introspection response body must raise TokenValidationError as the IdP's fault."""
     _mock_async_client(mocker, response=httpx2.Response(200, content=b"not json"))
 
-    with pytest.raises(auth.TokenValidationError):
+    with pytest.raises(auth.TokenValidationError) as excinfo:
         asyncio.run(auth.validate_access_token("token", **_INTROSPECT_KWARGS))
+
+    assert excinfo.value.failure is auth.TokenFailure.PROVIDER
 
 
 def test_rejects_non_object_json_response(mocker):
-    """A valid JSON body that isn't an object (e.g. a list) must raise TokenValidationError, not AttributeError."""
+    """A valid JSON body that isn't an object (e.g. a list) must raise TokenValidationError as the
+    IdP's fault, not AttributeError.
+    """
     _mock_async_client(mocker, response=httpx2.Response(200, json=["not", "an", "object"]))
 
-    with pytest.raises(auth.TokenValidationError):
+    with pytest.raises(auth.TokenValidationError) as excinfo:
         asyncio.run(auth.validate_access_token("token", **_INTROSPECT_KWARGS))
 
+    assert excinfo.value.failure is auth.TokenFailure.PROVIDER
 
-def test_wraps_network_failure(mocker):
-    """A network failure reaching the IdP must raise TokenValidationError, not leak httpx2's own exception."""
-    _mock_async_client(mocker, side_effect=httpx2.ConnectError("Connection refused"))
 
-    with pytest.raises(auth.TokenValidationError):
+@pytest.mark.parametrize(
+    "error",
+    [httpx2.ConnectError("Connection refused"), httpx2.ReadTimeout("timed out")],
+    ids=["connect-error", "timeout"],
+)
+def test_wraps_network_failure_as_service_fault(mocker, error):
+    """A network failure reaching the IdP must raise TokenValidationError, not leak httpx2's own
+    exception - and as this service's fault (TokenFailure.SERVICE): it never got an answer, so
+    nothing was said about the token.
+    """
+    _mock_async_client(mocker, side_effect=error)
+
+    with pytest.raises(auth.TokenValidationError, match="request failed") as excinfo:
         asyncio.run(auth.validate_access_token("token", **_INTROSPECT_KWARGS))
+
+    assert excinfo.value.failure is auth.TokenFailure.SERVICE
 
 
 def test_validate_ik_token_is_blocked():
