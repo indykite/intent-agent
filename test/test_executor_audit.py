@@ -151,22 +151,30 @@ def test_success_records_the_extraction(baseline_env, mocker):
     assert record.latency_ms >= 0
 
 
-def test_audit_is_recorded_before_the_terminal_task_event_is_enqueued(baseline_env, mocker):
-    """The audit write must happen before the terminal Task status event reaches the queue.
+def test_audit_ordering_around_the_terminal_task_event(baseline_env, mocker):
+    """Two properties about where the audit write sits relative to the terminal Task status
+    event, both regressions for the same CI-only failure (the audit file ended up empty despite
+    a fully correct response):
 
-    DefaultRequestHandler.on_message_send returns to the caller as soon as its own subscription
-    observes that terminal event, via a separate producer/consumer task racing this coroutine's
-    own remaining code (see executor.py's _emit_terminal_status). Auditing only after enqueuing the terminal
-    event lets a short-lived event loop driving the request (e.g. starlette's TestClient without
-    `with client:`) tear itself down once the response is sent, before this coroutine's own tail
-    finishes - dropping the record while the caller-visible response was already correct. This is
-    a regression test for exactly that CI-only failure (audit file empty despite a correct
-    response); auditing first guarantees the record exists before a caller can observe "done".
+    1. The audit write must happen before the terminal event reaches the queue -
+       DefaultRequestHandler.on_message_send returns to the caller as soon as its own
+       subscription observes that event, via a separate producer/consumer task racing this
+       coroutine's own remaining code (see executor.py's _emit_terminal_status). Auditing only
+       after enqueuing the terminal event lets a short-lived event loop driving the request
+       (e.g. starlette's TestClient without `with client:`) tear itself down once the response
+       is sent, before this coroutine's own tail finishes - dropping the record.
+    2. A failure enqueuing that event, after the record was already written, must not be
+       treated by execute()'s `except Exception` handler as a fresh failure and produce a
+       second, synthetic record for the same request - enforced structurally (see
+       _emit_terminal_status's docstring: it runs after execute()'s own `try` block, outside
+       of it, so a failure there can never reach either `except` clause a second time), not by
+       a guard flag.
     """
     mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value={"active": True, "sub": "user-1"}))
-    executor, sender, _agent = _executor(
-        baseline_env, mocker, result=ExtractionResult(text="{...}", outcome=Outcome.SUCCESS, evaluations=_EVALUATIONS)
-    )
+    success_result = ExtractionResult(text="{...}", outcome=Outcome.SUCCESS, evaluations=_EVALUATIONS)
+
+    # 1. ordering: the audit write precedes the terminal event on an ordinary successful request.
+    executor, sender, _agent = _executor(baseline_env, mocker, result=success_result)
     calls = []
     sender.send.side_effect = lambda *_args, **_kwargs: calls.append("audit")
 
@@ -178,25 +186,11 @@ def test_audit_is_recorded_before_the_terminal_task_event_is_enqueued(baseline_e
             calls.append("terminal_event")
 
     event_queue = mocker.Mock(enqueue_event=mocker.AsyncMock(side_effect=_record_terminal_event))
-
     asyncio.run(executor.execute(_context({"authorization": "Bearer good-token"}), event_queue))
-
     assert calls == ["audit", "terminal_event"]
 
-
-def test_a_failure_after_the_audit_write_does_not_double_audit(baseline_env, mocker):
-    """Auditing before the terminal status event (see the test above) opens a window where
-    emitting that event can still fail after the record was already written - execute()'s
-    `except Exception` handler must not treat that as a fresh failure and write a second,
-    synthetic error record for the same request, violating the exactly-once audit guarantee
-    (TDD 4.9). This is enforced structurally, not by a guard flag: `_emit_terminal_status` runs
-    after `execute`'s own `try` block, outside of it, so a failure there propagates straight to
-    the caller without ever reaching either `except` clause a second time.
-    """
-    mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value={"active": True, "sub": "user-1"}))
-    executor, sender, _agent = _executor(
-        baseline_env, mocker, result=ExtractionResult(text="{...}", outcome=Outcome.SUCCESS, evaluations=_EVALUATIONS)
-    )
+    # 2. idempotency: a failure right after the audit call must not produce a second record.
+    executor, sender, _agent = _executor(baseline_env, mocker, result=success_result)
     status_events_seen = 0
     post_audit_status_event = 2  # the WORKING update _emit_terminal_status enqueues first
     queue_closed = RuntimeError("queue closed")
@@ -211,10 +205,8 @@ def test_a_failure_after_the_audit_write_does_not_double_audit(baseline_env, moc
     event_queue = mocker.Mock(
         enqueue_event=mocker.AsyncMock(side_effect=_fail_the_status_event_right_after_the_audit_call)
     )
-
     with pytest.raises(RuntimeError, match="queue closed"):
         asyncio.run(executor.execute(_context({"authorization": "Bearer good-token"}), event_queue))
-
     assert sender.send.await_count == _MAX_RECORDS_PER_REQUEST
 
 

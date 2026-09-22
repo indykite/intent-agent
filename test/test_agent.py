@@ -642,6 +642,8 @@ _EMPTY_SCHEMA_POLICY_ACTION_ERROR = "evaluations[0]: action.name 'APPROVE_REFUND
             [_EMPTY_SCHEMA_POLICY_ACTION_ERROR],
             id="marked_but_wrong_resource_type_rejected",
         ),
+        pytest.param(None, False, [], id="no_policies_at_all_stays_unconstrained"),
+        pytest.param([], False, [], id="empty_policies_list_stays_unconstrained"),
     ],
 )
 def test_validate_evaluations_empty_edges_still_enforces_policy_membership(policies, marked, expected_errors):
@@ -651,25 +653,17 @@ def test_validate_evaluations_empty_edges_still_enforces_policy_membership(polic
     for any non-blank name, bypassing the policy/marker check below it. Once policies are
     fetched, that carve-out must not apply any more - an unmarked (or wrong-resource) policy
     action must still be rejected exactly like it would be against a schema that does have
-    edges (test_validate_evaluations_policy_derived_action). resource.type is fixed to the one
-    real node type this fixture has (_Application) throughout, so only the policy's own scoping
-    - not the unrelated resource.type-vocabulary check - varies between cases.
+    edges (test_validate_evaluations_policy_derived_action). The last two cases prove the
+    pre-ENG-9671 behavior survives intact when there is truly no vocabulary to check against
+    (no policies at all, fetched or not): the carve-out this fix narrows is "nothing to check
+    against", not "policies happen to be absent". resource.type is fixed to the one real node
+    type this fixture has (_Application) throughout, so only the policy's own scoping - not the
+    unrelated resource.type-vocabulary check - varies between cases.
     """
     evaluation = {"action": {"name": "APPROVE_REFUND"}, "resource": {"type": "_Application"}}
     if marked:
         evaluation["context"] = {"parameters": {"action_derivation_rule": "policy_based"}}
     assert validate_evaluations(_load_empty_schema_fixture(), [evaluation], policies) == expected_errors
-
-
-def test_validate_evaluations_empty_edges_without_policies_stays_unconstrained():
-    """The pre-ENG-9671 behavior (a schema with no edges yet leaves action.name entirely
-    unconstrained) must still hold when no policies were fetched at all - the carve-out this
-    fix narrows is "no vocabulary to check against", not "policies happen to be absent", but the
-    absent case is exactly what the original, pre-ENG-9671 behavior needs preserved.
-    """
-    evaluations = [{"action": {"name": "ANYTHING"}, "resource": {"type": "_Application"}}]
-    assert validate_evaluations(_load_empty_schema_fixture(), evaluations, None) == []
-    assert validate_evaluations(_load_empty_schema_fixture(), evaluations, []) == []
 
 
 def test_validation_feedback_error_lists_every_error_in_fixed_shape():
