@@ -54,6 +54,25 @@ def _cache_key(app_agent_key: str, subject_type: str) -> str:
     return f"ikg_policies:{scope}:{subject_type}"
 
 
+def _parse_results(resp: httpx2.Response) -> list[dict[str, Any]]:
+    """Parse and validate a 2xx policy response's body, raising on anything that isn't the
+    documented {"results": [...]} envelope (review: a malformed body must count as a failed
+    attempt - retried and, on exhaustion, degrading to None/policy_fetch_failed - not escape
+    get_cached() as an uncaught exception, and not silently become a successful empty policy
+    set that hides a real problem from the caller). Callers must catch TypeError alongside
+    ValueError (resp.json() itself raises the latter, a json.JSONDecodeError, on invalid JSON).
+    """
+    body = resp.json()
+    if not isinstance(body, dict):
+        msg = f"policy response body is not a JSON object: {body!r}"
+        raise TypeError(msg)
+    results = body.get("results")
+    if not isinstance(results, list):
+        msg = f"policy response 'results' is missing or not an array: {body!r}"
+        raise TypeError(msg)
+    return results
+
+
 class PolicyClient:
     """Fetches and caches AuthZEN policies for one base_url/app_agent_key pair, per subject_type."""
 
@@ -88,7 +107,7 @@ class PolicyClient:
         url = f"{self._base_url.rstrip('/')}/access/v1/policies"
         headers = {"X-IK-ClientKey": self._app_agent_key}
         params = {"subject_type": subject_type}
-        last_error: httpx2.HTTPError | None = None
+        last_error: Exception | None = None
         for attempt in range(1, self._retry_attempts + 1):
             logger.debug("Requesting policies from %s (attempt %d/%d)", url, attempt, self._retry_attempts)
             try:
@@ -96,10 +115,10 @@ class PolicyClient:
                     resp = client.get(url, headers=headers, params=params)
                     logger.debug("Policy response: status=%s body[:500]=%r", resp.status_code, resp.text[:500])
                     resp.raise_for_status()
-            except httpx2.HTTPError as exc:
+                    results = _parse_results(resp)
+            except (httpx2.HTTPError, ValueError, TypeError) as exc:
                 last_error = exc
                 continue
-            results = resp.json().get("results", [])
             logger.info("Loaded %d polic%s from %s", len(results), "y" if len(results) == 1 else "ies", url)
             return results
         logger.warning("Failed to load policies from %s after %d attempts: %s", url, self._retry_attempts, last_error)

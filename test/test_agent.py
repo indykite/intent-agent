@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from pathlib import Path
 
 import httpx2
@@ -1111,7 +1112,8 @@ def test_run_extraction_rebuilds_schema_when_cached_schema_changes_between_reque
     mock_bind_tools = mocker.Mock(return_value=fake_bound_llm)
     fake_llm = mocker.Mock(bind_tools=mock_bind_tools)
     fake_schema_client = mocker.Mock(get_cached=mocker.Mock(side_effect=[schema_v1, schema_v2]))
-    agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client)
+    fake_policy_client = mocker.Mock(get_cached=mocker.Mock(return_value=[]))
+    agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client, policy_client=fake_policy_client)
 
     asyncio.run(agent.run_extraction("buy AAPL", RequestSubject(id="user-1", type="Customer")))
     asyncio.run(agent.run_extraction("rent a boat", RequestSubject(id="user-1", type="Customer")))
@@ -1455,6 +1457,45 @@ def test_run_extraction_policies_block_injection_on_skill_activation(
         assert not any("</policies>" in result for result in tool_results)
 
 
+def test_run_extraction_reuses_one_policy_snapshot_for_the_whole_request(monkeypatch, mocker):
+    """Review finding: activate_skill's extract-intent injection used to call
+    get_cached_policies() a second time, independent of the fetch run_extraction already used
+    to build request.policy_context and the response schema's action enum. If that first fetch
+    failed and a second, later fetch (e.g. after the cache entry gets repopulated) succeeded,
+    the LLM would see policies its own enum was never widened for and that
+    validate_evaluations/the audit trail never learn about either. Fixed by fetching policies
+    exactly once per request and threading that same snapshot into the injected block -
+    proven here by a policy_client whose second call would return different data, and
+    confirming it is never actually called a second time.
+    """
+    settings = _full_settings(monkeypatch)
+    mock_ainvoke = mocker.AsyncMock(
+        side_effect=[
+            _llm_response(mocker, tool_calls=[_ACTIVATE_EXTRACT_INTENT_CALL]),
+            _llm_response(mocker, _ON_SCHEMA_ANSWER),
+        ],
+    )
+    fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mock_ainvoke)))
+    fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=_load_schema_fixture()))
+    first_fetch_policies = [{"policy": {"actions": ["APPROVE_REFUND"], "resource": {"type": "Car"}}, "tags": []}]
+    second_fetch_policies = [{"policy": {"actions": ["ESCALATE"], "resource": {"type": "Car"}}, "tags": []}]
+    fake_policy_client = mocker.Mock(get_cached=mocker.Mock(side_effect=[first_fetch_policies, second_fetch_policies]))
+    agent = IntentAgent(
+        settings,
+        llm=fake_llm,
+        schema_client=fake_schema_client,
+        policy_client=fake_policy_client,
+    )
+
+    asyncio.run(agent.run_extraction("rent kitt", RequestSubject(id="user-1", type="Customer")))
+
+    assert fake_policy_client.get_cached.call_count == 1
+    messages = mock_ainvoke.call_args_list[-1].args[0]
+    tool_results = [m.content for m in messages if isinstance(m, ToolMessage)]
+    assert any("APPROVE_REFUND" in result for result in tool_results)
+    assert not any("ESCALATE" in result for result in tool_results)
+
+
 def test_run_extraction_returns_timeout_error_when_llm_call_exceeds_limit(monkeypatch, mocker, caplog):
     """A single LLM call past LLM_TIMEOUT_SECONDS must surface as llm_timeout_error - not hang
     the request, and not be retried.
@@ -1502,6 +1543,38 @@ def test_run_extraction_enforces_request_deadline_across_calls(monkeypatch, mock
     assert 1 < mock_ainvoke.call_count < _UNREACHABLE_TOOL_BUDGET
     assert "Request exceeded the 0.1s end-to-end budget" in caplog.text
     assert "LLM call exceeded" not in caplog.text
+
+
+def test_run_extraction_slow_schema_fetch_does_not_block_the_event_loop(monkeypatch, mocker):
+    """SchemaClient/PolicyClient hit the platform over a synchronous httpx2.Client, so a
+    slow/unreachable fetch run directly on the event loop would stall every concurrent request
+    this process is serving, not just this one (reported in review). Fetching via
+    asyncio.to_thread fixes that specific claim - proven here by a concurrent, unrelated
+    coroutine completing well before the slow fetch does, rather than the whole loop stalling
+    for its duration. (Python cannot preempt an already-running thread, so this request's own
+    latency still tracks the fetch's duration once started - see run_extraction's docstring;
+    that is a separate, already-documented limitation this test does not attempt to disprove.)
+    """
+    settings = _full_settings(monkeypatch)
+    mock_ainvoke = mocker.AsyncMock(return_value=_llm_response(mocker, text="no intent here"))
+    fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mock_ainvoke)))
+    fake_schema_client = mocker.Mock(
+        get_cached=mocker.Mock(side_effect=lambda: (time.sleep(0.3), _load_schema_fixture())[1])
+    )
+    fake_policy_client = mocker.Mock(get_cached=mocker.Mock(return_value=[]))
+    agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client, policy_client=fake_policy_client)
+
+    async def _scenario():
+        slow_task = asyncio.create_task(agent.run_extraction("rent kitt", RequestSubject(id="user-1", type="Customer")))
+        started = time.perf_counter()
+        await asyncio.sleep(0.05)  # the loop must still service this while the fetch blocks its own thread
+        concurrent_elapsed = time.perf_counter() - started
+        await slow_task  # let the slow request finish so no task is left dangling
+        return concurrent_elapsed
+
+    concurrent_elapsed = asyncio.run(_scenario())
+
+    assert concurrent_elapsed < 0.15  # noqa: PLR2004 - loop kept ticking, not frozen for the fetch's 0.3s
 
 
 def test_run_extraction_times_out_during_retry_too(monkeypatch, mocker):

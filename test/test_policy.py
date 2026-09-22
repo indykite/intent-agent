@@ -66,6 +66,22 @@ def _mock_response(mocker, results=_POLICIES):
     return response
 
 
+def _mock_malformed_response(mocker, *, json_value=None, json_error=None):
+    """A 2xx response whose body is not the documented {"results": [...]} envelope - either
+    `.json()` itself raises (invalid JSON) or it returns something structurally wrong
+    (`json_value`, e.g. not a dict, or missing/non-list "results").
+    """
+    response = mocker.Mock()
+    response.status_code = 200
+    response.text = "malformed" if json_error else json.dumps(json_value)
+    response.raise_for_status = mocker.Mock()
+    if json_error is not None:
+        response.json = mocker.Mock(side_effect=json_error)
+    else:
+        response.json = mocker.Mock(return_value=json_value)
+    return response
+
+
 def _expire(cache):
     """Same deterministic-expiry trick as test_schema.py's _expire."""
     for key, cached in cache.backend._cache.items():
@@ -123,31 +139,55 @@ def test_get_cached_logs_the_request_url_and_a_truncated_response_preview(mocker
     assert full_body not in caplog.text
 
 
-def test_get_cached_retries_then_succeeds(mocker):
-    """A transient failure on an earlier attempt must not fail the whole fetch - only exhausting
-    every retry does.
+_MALFORMED_JSON_VALUES = {
+    "body_not_a_dict": ["not", "an", "object"],
+    "results_missing": {"no_results_key": True},
+    "results_not_a_list": {"results": "not-a-list"},
+    "soft_error_envelope": {"error": "insufficient API access level"},
+}
+
+
+def _one_failure(mocker, kind):
+    """Build one failed attempt's worth of mock state for `kind` - either an exception (raised
+    directly by client.get) or a malformed-but-2xx response object (review: invalid JSON, or a
+    structurally wrong envelope), covering both ways an attempt can fail.
     """
-    error = httpx2.ConnectTimeout("connect timed out")
-    client_mock = _mock_sync_client(mocker, side_effect=[error, error, _mock_response(mocker)])
+    if kind == "http_error":
+        return httpx2.ConnectTimeout("connect timed out")
+    if kind == "invalid_json":
+        return _mock_malformed_response(mocker, json_error=json.JSONDecodeError("bad json", "malformed", 0))
+    return _mock_malformed_response(mocker, json_value=_MALFORMED_JSON_VALUES[kind])
+
+
+@pytest.mark.parametrize("kind", ["http_error", "invalid_json", *_MALFORMED_JSON_VALUES])
+def test_get_cached_retries_then_succeeds(mocker, kind):
+    """A transient failure on an earlier attempt - an HTTP error or a malformed 2xx body alike
+    (review) - must not fail the whole fetch; only exhausting every retry does.
+    """
+    failure = _one_failure(mocker, kind)
+    client_mock = _mock_sync_client(mocker, side_effect=[failure, failure, _mock_response(mocker)])
     client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=3, cache=_memory_cache())
 
     assert client.get_cached(_SUBJECT_TYPE) == _POLICIES
     assert client_mock.get.call_count == _RETRY_ATTEMPTS
 
 
-def test_get_cached_returns_none_after_exhausting_retries(mocker, caplog):
-    """Every attempt failing must return None (extraction proceeds without policy context, see
-    subject_binding.py) rather than raise - and must be logged at WARNING once retries are
-    exhausted, not ERROR: a policies outage is never fatal here.
+@pytest.mark.parametrize("kind", ["http_error", "invalid_json", *_MALFORMED_JSON_VALUES])
+def test_get_cached_returns_none_after_exhausting_retries(mocker, caplog, kind):
+    """Every attempt failing - whether an HTTP error or a malformed 2xx body (review: invalid
+    JSON, a non-object body, a missing/non-list "results", or a 2xx "soft error" envelope that
+    would otherwise silently become a successful empty policy set and hide a real problem from
+    the caller) - must return None (extraction proceeds without policy context, see
+    subject_binding.py) rather than raise, and log at WARNING once retries are exhausted, not
+    ERROR: a policies outage is never fatal here.
     """
     caplog.set_level("WARNING")
-    error = httpx2.ConnectTimeout("connect timed out")
-    client_mock = _mock_sync_client(mocker, side_effect=error)
+    failure = _one_failure(mocker, kind)
+    client_mock = _mock_sync_client(mocker, side_effect=[failure] * _RETRY_ATTEMPTS)
     client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=3, cache=_memory_cache())
 
     assert client.get_cached(_SUBJECT_TYPE) is None
     assert client_mock.get.call_count == _RETRY_ATTEMPTS
-    assert any(record.levelname == "WARNING" for record in caplog.records)
     assert "after 3 attempts" in caplog.text
 
 

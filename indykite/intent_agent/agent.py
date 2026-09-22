@@ -322,24 +322,41 @@ class IntentAgent:
 
         return get_policies
 
-    def _build_tools(self, subject_type: str) -> list[StructuredTool]:
+    def _build_tools(self, subject_type: str, policies: list[dict[str, Any]] | None) -> list[StructuredTool]:
         """Build this request's tool set, fresh each call - activate_skill's extract-intent
         injection and get_policies both need this request's subject_type, which varies
         per-request unlike the schema, so this can no longer be built once at __init__.
+
+        `policies` is run_extraction's own already-fetched snapshot, passed straight into
+        activate_skill's injection (see _make_activate_skill_tool) rather than fetched again -
+        get_policies is the one exception, deliberately fetching fresh at invocation time since
+        it exists for the LLM to pull an up-to-date view on demand, not to describe what this
+        request's own validation/audit already committed to.
         """
         return [
             t
             for t in (
-                self._make_activate_skill_tool(subject_type),
+                self._make_activate_skill_tool(policies),
                 self._make_get_data_schema_tool(),
                 self._make_get_policies_tool(subject_type),
             )
             if t
         ]
 
-    def _make_activate_skill_tool(self, subject_type: str) -> StructuredTool | None:
+    def _make_activate_skill_tool(self, policies: list[dict[str, Any]] | None) -> StructuredTool | None:
         """Create activate_skill; extract-intent injects the data schema and, when available,
         this request's policies.
+
+        `policies` is the exact snapshot run_extraction already fetched once and built
+        request.policy_context / the response_schema's action enum from - not fetched again
+        here. A second independent fetch could otherwise diverge from that snapshot (e.g. a
+        first fetch that failed, followed by a successful retry moments later): the LLM would
+        see policies that its own structured-output enum was never widened for, and that
+        validate_evaluations/the audit trail never learn about either, so a genuinely
+        policy-derived action could get wrongly rejected as off-schema, or the response could
+        claim policy_fetch_failed when a later attempt actually succeeded. Reusing one
+        snapshot for the whole request keeps what the LLM is told, what gets validated, and
+        what gets audited all in agreement.
         """
         if not self.skill_registry:
             return None
@@ -369,7 +386,6 @@ class IntentAgent:
                     + schema_json[:preview_chars]
                     + "\n</data_schema>\n\nUse the above schema to map entity types."
                 )
-                policies = self.get_cached_policies(subject_type)
                 policy_block = _policy_block(policies, self.settings.policy_preview_chars)
                 return (
                     f"<skill_content name={name!r}>\n"
@@ -517,57 +533,81 @@ class IntentAgent:
         startup - possibly none at all. Rebuilding it fresh here (once per request, before the
         tool-call loop, not once per iteration) satisfies "derived ... each time it reloads"
         without a second cache to keep in sync.
+
+        Schema/policy fetch, both moved inside REQUEST_TIMEOUT_SECONDS below, run via
+        asyncio.to_thread rather than directly - both clients call the platform over a
+        synchronous httpx2.Client, so run directly on the event loop a slow/unreachable
+        platform would stall every concurrent request this process is serving, not just this
+        one. asyncio.to_thread fixes that (the blocking call runs on a worker thread instead),
+        and folds the fetch into the same deadline the LLM calls already share, so a slow fetch
+        no longer gets unlimited extra time on top of the request budget - but Python cannot
+        preempt an already-running synchronous call, so *this* request's own worst-case latency
+        still tracks that client's own timeout x retry settings once the fetch has started, not
+        a hard cutoff at REQUEST_TIMEOUT_SECONDS.
         """
-        schema = self.get_cached_schema()
-        if schema is None:
-            logger.error(
-                "Schema unavailable - cannot verify subject_type %r; skipping extraction for prompt %r",
-                subject.type,
-                prompt,
-            )
-            return ExtractionResult.failed(Outcome.ERROR, schema_unavailable_error(prompt))
-        version = schema_version(schema)
-        if schema_has_no_node_types(schema):
-            logger.warning(
-                "Schema fetched but the data model isn't populated yet - cannot verify "
-                "subject_type %r; skipping extraction for prompt %r",
-                subject.type,
-                prompt,
-            )
-            return ExtractionResult.failed(Outcome.ERROR, schema_not_populated_error(prompt), schema_version=version)
-
-        try:
-            validate_subject_type(schema, subject.type)
-        except SubjectTypeMismatchError as exc:
-            logger.error(  # noqa: TRY400
-                "subject_type %r invalid for the current schema; skipping extraction for prompt %r: %s",
-                subject.type,
-                prompt,
-                exc,
-            )
-            return ExtractionResult.failed(Outcome.ERROR, subject_type_mismatch_error(prompt), schema_version=version)
-
-        policies = self.get_cached_policies(subject.type)
-        policy_fetch_failed = policies is None
-        if policy_fetch_failed:
-            logger.warning(
-                "Policies unavailable for subject_type %r after retries; proceeding with "
-                "schema-only action derivation for prompt %r",
-                subject.type,
-                prompt,
-            )
-        tools = self._build_tools(subject.type)
-        llm_with_tools = self._llm.bind_tools(
-            tools,
-            response_mime_type="application/json",
-            response_schema=build_input_schema(schema, policies),
-        )
-        request = _RequestContext(
-            tools=tools,
-            policy_context=PolicyContext(policies=policies, fetch_failed=policy_fetch_failed),
-        )
+        # Defaults for the except TimeoutError block below - a timeout can fire while awaiting
+        # the schema/policy fetch itself, before either is assigned inside the try.
+        version = ""
+        policy_context = PolicyContext(policies=None, fetch_failed=False)
         try:
             async with asyncio.timeout(self.settings.request_timeout_seconds) as deadline:
+                # ENG-9671 review: both SchemaClient and PolicyClient hit the platform over a
+                # synchronous httpx2.Client - run via asyncio.to_thread so a slow/unreachable
+                # fetch can't stall every other concurrent request this process is serving, and
+                # so it counts against this same deadline rather than getting unlimited extra
+                # time before the LLM-call budget even starts. Cannot cut this request's own
+                # latency off mid-fetch though - Python cannot preempt a running thread, so a
+                # stuck fetch still runs its own timeout x retry course before this fires.
+                schema = await asyncio.to_thread(self.get_cached_schema)
+                if schema is None:
+                    logger.error(
+                        "Schema unavailable - cannot verify subject_type %r; skipping extraction for prompt %r",
+                        subject.type,
+                        prompt,
+                    )
+                    return ExtractionResult.failed(Outcome.ERROR, schema_unavailable_error(prompt))
+                version = schema_version(schema)
+                if schema_has_no_node_types(schema):
+                    logger.warning(
+                        "Schema fetched but the data model isn't populated yet - cannot verify "
+                        "subject_type %r; skipping extraction for prompt %r",
+                        subject.type,
+                        prompt,
+                    )
+                    return ExtractionResult.failed(
+                        Outcome.ERROR, schema_not_populated_error(prompt), schema_version=version
+                    )
+
+                try:
+                    validate_subject_type(schema, subject.type)
+                except SubjectTypeMismatchError as exc:
+                    logger.error(  # noqa: TRY400
+                        "subject_type %r invalid for the current schema; skipping extraction for prompt %r: %s",
+                        subject.type,
+                        prompt,
+                        exc,
+                    )
+                    return ExtractionResult.failed(
+                        Outcome.ERROR, subject_type_mismatch_error(prompt), schema_version=version
+                    )
+
+                policies = await asyncio.to_thread(self.get_cached_policies, subject.type)
+                policy_fetch_failed = policies is None
+                policy_context = PolicyContext(policies=policies, fetch_failed=policy_fetch_failed)
+                if policy_fetch_failed:
+                    logger.warning(
+                        "Policies unavailable for subject_type %r after retries; proceeding with "
+                        "schema-only action derivation for prompt %r",
+                        subject.type,
+                        prompt,
+                    )
+                tools = self._build_tools(subject.type, policies)
+                llm_with_tools = self._llm.bind_tools(
+                    tools,
+                    response_mime_type="application/json",
+                    response_schema=build_input_schema(schema, policies),
+                )
+                request = _RequestContext(tools=tools, policy_context=policy_context)
                 return await self._extract_with_retries(
                     llm_with_tools,
                     prompt,
@@ -594,7 +634,7 @@ class IntentAgent:
                 Outcome.ERROR,
                 llm_timeout_error(prompt),
                 schema_version=version,
-                policy_context=request.policy_context,
+                policy_context=policy_context,
             )
 
     async def _invoke_llm(self, llm: Runnable[Any, BaseMessage], messages: list[BaseMessage]) -> BaseMessage:

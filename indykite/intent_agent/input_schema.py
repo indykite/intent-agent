@@ -171,7 +171,7 @@ def build_input_schema(schema: dict[str, Any], policies: list[dict[str, Any]] | 
     schema's actual vocabulary (TDD 4.6). Access-blind: enums list every entity/action the
     schema defines regardless of the caller's permissions (PRD 2.3.1).
 
-    action.name's enum additionally includes every action any fetched policy defines
+    action.name's enum additionally includes every action any fetched policy defines, in
     a single global list, since JSON Schema can't make an
     enum conditional per-evaluation; subject_binding.validate_evaluations enforces, per
     evaluation, that a policy-only action name is only accepted when that evaluation is marked
