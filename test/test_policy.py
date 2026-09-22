@@ -98,9 +98,12 @@ def _mock_status_error_response(mocker, status_code):
 
 
 def _expire(cache):
-    """Same deterministic-expiry trick as test_schema.py's _expire."""
+    """Same deterministic-expiry trick as test_schema.py's _expire, including backdating to a
+    real past timestamp rather than zero (review) - see that docstring for why.
+    """
     for key, cached in cache.backend._cache.items():
-        cache.backend._cache[key] = cached._replace(metadata={**cached.metadata, "ct": 0})
+        expired_ct = time.time() - 1_000_000
+        cache.backend._cache[key] = cached._replace(metadata={**cached.metadata, "ct": expired_ct})
 
 
 @pytest.mark.parametrize(

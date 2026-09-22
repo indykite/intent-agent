@@ -1,6 +1,7 @@
 """Tests for SchemaClient: fetching, caching, and TTL-driven on-demand refresh."""
 
 import json
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import httpx2
@@ -59,9 +60,16 @@ def _expire(cache):
     """Force every entry in this Memory-backed CacheRegion to read as expired, deterministically -
     backdates the stored CachedValue's creation time instead of sleeping past expiration_time,
     which would make the test slow and racy against real wall-clock timing.
+
+    Backdates to a real past timestamp rather than zeroing it out: dogpile's own Lock treats a
+    creation time of 0 as "no value has ever been created" (Lock._has_value: createdtime > 0),
+    not "a value exists but is stale" - zeroing it would make get_or_create block waiting to
+    acquire the creation lock synchronously instead of returning the stale value immediately
+    and kicking off the async refresh, silently exercising the wrong code path (review).
     """
     for key, cached in cache.backend._cache.items():
-        cache.backend._cache[key] = cached._replace(metadata={**cached.metadata, "ct": 0})
+        expired_ct = time.time() - 1_000_000
+        cache.backend._cache[key] = cached._replace(metadata={**cached.metadata, "ct": expired_ct})
 
 
 def _memory_cache_with_async_refresh():
