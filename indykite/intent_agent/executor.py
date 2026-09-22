@@ -78,7 +78,6 @@ class _RequestAudit:
         self.prompt = _prompt_from_context(context)
         self.subject_id = ""
         self.subject_type = ""
-        self.audited = False
 
     def record(self, result: ExtractionResult) -> AuditMessage:
         """Build the audit record for this request from what the pipeline produced."""
@@ -120,12 +119,23 @@ class IntentExecutor(AgentExecutor):
         `outcome = error` with the same reason the caller gets (TDD owner's decision) - and so
         is an unexpected exception, so a request can't slip through unrecorded. Auditing never
         changes the request's own outcome: see _audit.
+
+        Exactly one of the three `_audit` calls below ever runs for a given request, by
+        construction rather than by a guard flag: the `try` block's own two `except` clauses
+        audit-and-reraise immediately, so nothing past this method's `try` statement can also
+        run when one of them fires; the line auditing `result` is reachable only once the `try`
+        block has run to completion without raising, at which point neither `except` clause can
+        fire for it any more. `_emit_terminal_status`, called after that line, is deliberately
+        outside the `try` - a failure there propagates straight out instead of through either
+        `except`, so it can never trigger a second audit for a request already recorded as a
+        success. That is also why the audit itself has to happen between `_run_extraction` and
+        `_emit_terminal_status`, not after both: see `_emit_terminal_status`'s docstring.
         """
         audit_record = _RequestAudit(self._agent.settings, context)
         try:
             await self._authenticate(context)
             audit_record.subject_type, audit_record.subject_id = self._subject_params(context)
-            await self._extract(context, event_queue, audit_record)
+            result = await self._run_extraction(context, event_queue, audit_record)
         except HTTPException as exc:
             await self._audit(audit_record, ExtractionResult(text="", outcome=Outcome.ERROR, message=str(exc.detail)))
             raise
@@ -136,30 +146,17 @@ class IntentExecutor(AgentExecutor):
             )
             raise
 
+        await self._audit(audit_record, result)
+        await self._emit_terminal_status(context, event_queue, result)
+
     async def _audit(self, audit_record: _RequestAudit, result: ExtractionResult) -> None:
-        """Record the request's outcome exactly once; never raises.
+        """Record the request's outcome; never raises.
 
         The sender contract is already "log, don't raise", but building the record or a
         misbehaving sender could still fail - and that must not override what the request
         itself produced: the 401 / exception being re-raised in `execute`, or a result whose
         artifact the caller already has. An audit failure is logged with the request id instead.
-
-        `_extract` calls this before its own final two task-status events (so the record exists
-        before a caller can possibly observe the terminal one, see `_extract`'s docstring) - a
-        request whose success was already audited there can still raise afterwards (e.g. one of
-        those enqueue_event calls failing), which `execute`'s `except` handlers would otherwise
-        turn into a second, synthetic error record for the same request. `audit_record.audited`
-        makes this idempotent per request instead of relying on every caller to track whether
-        the first audit already happened.
         """
-        if audit_record.audited:
-            logger.error(
-                "Suppressed a duplicate audit attempt for request %s (outcome %s)",
-                audit_record.request_id,
-                result.outcome,
-            )
-            return
-        audit_record.audited = True
         try:
             await self._audit_sender.send(audit_record.record(result))
         except Exception:
@@ -226,37 +223,17 @@ class IntentExecutor(AgentExecutor):
             raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=f"{key} must be a string")
         return value.strip()
 
-    async def _extract(
+    async def _run_extraction(
         self,
         context: RequestContext,
         event_queue: EventQueue,
         audit_record: _RequestAudit,
-    ) -> None:
-        """Run the extraction for an authenticated request, emitting the A2A task events.
+    ) -> ExtractionResult:
+        """Run the extraction for an authenticated request, emitting the task/artifact events.
 
-        The terminal TaskState reflects the outcome (ENG-9804): TASK_STATE_COMPLETED only for
-        a successful extraction, TASK_STATE_FAILED for every other outcome (validation failure,
-        no-intent/unmatched, timeout, schema unavailable, ...) - the caller's artifact JSON
-        still carries the fixed {prompt, error, reason, obligation} shape (errors.py) either way,
-        this only changes what the task's own status reports. A fixed summary message (success
-        or failure - the detailed reason stays in the artifact JSON's `reason` field, not
-        duplicated here) ends up as the task's last `history` entry, replacing the pre-extraction
-        "Extracting intent..." placeholder as the final word instead of leaving it there - done
-        by emitting one last WORKING update carrying the message, then a message-free terminal
-        status (see the comment at the call site for why it has to be in that order).
-
-        The audit record is written here, before the terminal status event is enqueued, not
-        after `execute()` gets control back. `ActiveTask._run_producer` awaits this whole method
-        before it ever looks at the result, but `DefaultRequestHandler.on_message_send` doesn't
-        wait for that - it returns as soon as its own subscription sees the terminal Task
-        snapshot, which reaches it through the event queue/consumer concurrently with this
-        coroutine still running. Auditing after enqueuing that terminal event races the caller-
-        visible response against this coroutine's own remaining code; a test driving the request
-        through a short-lived event loop (e.g. starlette's TestClient without `with client:`,
-        which tears its portal down as soon as the ASGI call returns) can then close out from
-        under this task before the write finishes, dropping the record while the response the
-        caller got was already correct. Writing it first makes the record exist before a caller
-        can possibly observe "done".
+        Deliberately stops short of the terminal status event - `execute` audits the result
+        returned here first, then calls `_emit_terminal_status` (see that docstring for why
+        the terminal event has to come after the audit, not before).
         """
         logger.info(
             "Received message for %s: %s",
@@ -291,7 +268,36 @@ class IntentExecutor(AgentExecutor):
                 artifact=new_text_artifact(name="result", text=result.text),
             ),
         )
-        await self._audit(audit_record, result)
+        return result
+
+    async def _emit_terminal_status(
+        self, context: RequestContext, event_queue: EventQueue, result: ExtractionResult
+    ) -> None:
+        """Emit the task's terminal status, after the request has already been audited.
+
+        The terminal TaskState reflects the outcome (ENG-9804): TASK_STATE_COMPLETED only for
+        a successful extraction, TASK_STATE_FAILED for every other outcome (validation failure,
+        no-intent/unmatched, timeout, schema unavailable, ...) - the caller's artifact JSON
+        still carries the fixed {prompt, error, reason, obligation} shape (errors.py) either way,
+        this only changes what the task's own status reports. A fixed summary message (success
+        or failure - the detailed reason stays in the artifact JSON's `reason` field, not
+        duplicated here) ends up as the task's last `history` entry, replacing the pre-extraction
+        "Extracting intent..." placeholder as the final word instead of leaving it there - done
+        by emitting one last WORKING update carrying the message, then a message-free terminal
+        status (see the comment below for why it has to be in that order).
+
+        Called only after `execute` has already audited `result`, never before: `ActiveTask.
+        _run_producer` awaits `execute` in full before it ever looks at the outcome, but
+        `DefaultRequestHandler.on_message_send` doesn't wait for that - it returns as soon as its
+        own subscription sees the terminal Task snapshot enqueued here, which reaches it through
+        the event queue/consumer concurrently with `execute` still running. Auditing after
+        enqueuing that terminal event would race the caller-visible response against `execute`'s
+        own remaining code; a test driving the request through a short-lived event loop (e.g.
+        starlette's TestClient without `with client:`, which tears its portal down as soon as the
+        ASGI call returns) can then close out from under that task before the write finishes,
+        dropping the record while the response the caller got was already correct. Auditing first
+        makes the record exist before a caller can possibly observe "done".
+        """
         # ENG-9804: the task's own terminal state must tell success from failure - a caller
         # otherwise has no way to know without parsing the artifact JSON for an "error" key.
         # VALIDATION_FAILED/UNMATCHED/ERROR (no_intent_error, timeouts, schema unavailable, ...)

@@ -96,8 +96,8 @@ def _history_summary_message(event_queue):
     One last WORKING status carries this message, followed by a message-free terminal status -
     a2a's TaskManager only archives a status's message into `history` once a *later*
     TaskStatusUpdateEvent supersedes it, so the WORKING update's message ends up in history and
-    the truly final status is left message-free; see executor.py's _extract for the full
-    mechanism. Asserts that shape holds (the last status has no message of its own) rather than
+    the truly final status is left message-free; see executor.py's _emit_terminal_status for the
+    full mechanism. Asserts that shape holds (the last status has no message of its own) rather than
     just reading whichever status happens to carry one.
     """
     statuses = _status_events(event_queue)
@@ -156,7 +156,7 @@ def test_audit_is_recorded_before_the_terminal_task_event_is_enqueued(baseline_e
 
     DefaultRequestHandler.on_message_send returns to the caller as soon as its own subscription
     observes that terminal event, via a separate producer/consumer task racing this coroutine's
-    own remaining code (see executor.py's _extract). Auditing only after enqueuing the terminal
+    own remaining code (see executor.py's _emit_terminal_status). Auditing only after enqueuing the terminal
     event lets a short-lived event loop driving the request (e.g. starlette's TestClient without
     `with client:`) tear itself down once the response is sent, before this coroutine's own tail
     finishes - dropping the record while the caller-visible response was already correct. This is
@@ -184,22 +184,21 @@ def test_audit_is_recorded_before_the_terminal_task_event_is_enqueued(baseline_e
     assert calls == ["audit", "terminal_event"]
 
 
-def test_a_failure_after_the_audit_write_does_not_double_audit(baseline_env, mocker, caplog):
-    """Auditing before the trailing task-status events (see the test above) opens a window
-    where one of those events can still fail to enqueue after the record was already written -
-    execute()'s `except Exception` handler would otherwise treat that as a fresh failure and
-    write a second, synthetic error record for the same request, violating the exactly-once
-    audit guarantee (TDD 4.9). `_audit` must be idempotent per request instead: the record is
-    sent once, the later failure is still logged and still propagates to the caller, but no
-    second record is sent.
+def test_a_failure_after_the_audit_write_does_not_double_audit(baseline_env, mocker):
+    """Auditing before the terminal status event (see the test above) opens a window where
+    emitting that event can still fail after the record was already written - execute()'s
+    `except Exception` handler must not treat that as a fresh failure and write a second,
+    synthetic error record for the same request, violating the exactly-once audit guarantee
+    (TDD 4.9). This is enforced structurally, not by a guard flag: `_emit_terminal_status` runs
+    after `execute`'s own `try` block, outside of it, so a failure there propagates straight to
+    the caller without ever reaching either `except` clause a second time.
     """
-    caplog.set_level("ERROR")
     mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value={"active": True, "sub": "user-1"}))
     executor, sender, _agent = _executor(
         baseline_env, mocker, result=ExtractionResult(text="{...}", outcome=Outcome.SUCCESS, evaluations=_EVALUATIONS)
     )
     status_events_seen = 0
-    post_audit_status_event = 2  # the WORKING update _extract enqueues right after _audit
+    post_audit_status_event = 2  # the WORKING update _emit_terminal_status enqueues first
     queue_closed = RuntimeError("queue closed")
 
     async def _fail_the_status_event_right_after_the_audit_call(event):
@@ -217,7 +216,6 @@ def test_a_failure_after_the_audit_write_does_not_double_audit(baseline_env, moc
         asyncio.run(executor.execute(_context({"authorization": "Bearer good-token"}), event_queue))
 
     assert sender.send.await_count == _MAX_RECORDS_PER_REQUEST
-    assert "Suppressed a duplicate audit attempt" in caplog.text
 
 
 @pytest.mark.parametrize(
