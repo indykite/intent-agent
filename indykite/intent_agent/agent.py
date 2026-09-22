@@ -31,6 +31,7 @@ from indykite.intent_agent.errors import (
     SubjectTypeMismatchError,
     llm_timeout_error,
     no_intent_error,
+    request_timeout_error,
     schema_not_populated_error,
     schema_unavailable_error,
     subject_type_mismatch_error,
@@ -598,9 +599,15 @@ class IntentAgent:
         firing while that fetch is still in flight must fall back to a default that already
         says the fetch failed, not one that looks like a successful fetch that just found no
         policies.
+
+        `phase` tracks which of the three sections below was underway when a TimeoutError is
+        caught, so `_timeout_result` can tell a slow schema/policy fetch from a slow LLM
+        instead of blaming "the model" for either (review, ENG-9671) - see that method's
+        docstring for the full reasoning.
         """
         version = ""
         policy_context = PolicyContext(policies=None, fetch_failed=True)
+        phase = "schema fetch"
         try:
             async with asyncio.timeout(self.settings.request_timeout_seconds) as deadline:
                 schema = self.peek_cached_schema()
@@ -638,6 +645,7 @@ class IntentAgent:
                         Outcome.ERROR, subject_type_mismatch_error(prompt), schema_version=version
                     )
 
+                phase = "policy fetch"
                 policy_resolved, policies = self.peek_cached_policies(subject.type)
                 if not policy_resolved:
                     policies = await _run_in_fetch_executor(self.get_cached_policies, subject.type)
@@ -657,6 +665,7 @@ class IntentAgent:
                     response_schema=build_input_schema(schema, policies),
                 )
                 request = _RequestContext(tools=tools, policy_context=policy_context)
+                phase = "LLM interaction"
                 return await self._extract_with_retries(
                     llm_with_tools,
                     prompt,
@@ -665,26 +674,64 @@ class IntentAgent:
                     request=request,
                 )
         except TimeoutError:
-            # Both the per-call and the whole-request limits raise TimeoutError; only the
-            # request one marks its own context as expired.
-            if deadline.expired():
-                logger.error(  # noqa: TRY400 - a timeout's traceback carries no diagnostic value
-                    "Request exceeded the %.1fs end-to-end budget; giving up on prompt %r",
-                    self.settings.request_timeout_seconds,
-                    prompt,
-                )
-            else:
-                logger.error(  # noqa: TRY400 - a timeout's traceback carries no diagnostic value
-                    "LLM call exceeded %.1fs; skipping extraction for prompt %r",
-                    self.settings.llm_timeout_seconds,
-                    prompt,
-                )
+            return self._timeout_result(phase, prompt, deadline, version, policy_context)
+
+    def _timeout_result(
+        self,
+        phase: str,
+        prompt: str,
+        deadline: asyncio.Timeout,
+        version: str,
+        policy_context: PolicyContext,
+    ) -> ExtractionResult:
+        """Build run_extraction's response to a TimeoutError, classified by which of its three
+        phases (schema fetch, policy fetch, LLM interaction) was underway when it fired (review,
+        ENG-9671) - see run_extraction's docstring for why that classification exists at all.
+
+        Only the LLM-interaction phase uses llm_timeout_error ("The model did not respond in
+        time.") - that text would misattribute a slow schema or policy fetch to the model, so
+        those two use request_timeout_error instead. A schema-fetch-phase timeout also omits
+        schema_version/policy_context, the same "not applicable yet" shape
+        schema_unavailable_error's own path in run_extraction uses: neither a schema nor a
+        policy was ever confirmed one way or the other. A policy-fetch-phase timeout reports
+        both, since the schema is already known and policy_context's own `fetch_failed=True`
+        default already correctly says that fetch was never completed.
+        """
+        if phase != "LLM interaction":
+            logger.error(
+                "%s exceeded the %.1fs end-to-end budget; giving up on prompt %r",
+                phase.capitalize(),
+                self.settings.request_timeout_seconds,
+                prompt,
+            )
+            if phase == "schema fetch":
+                return ExtractionResult.failed(Outcome.ERROR, request_timeout_error(prompt))
             return ExtractionResult.failed(
                 Outcome.ERROR,
-                llm_timeout_error(prompt),
+                request_timeout_error(prompt),
                 schema_version=version,
                 policy_context=policy_context,
             )
+        # Both the per-call and the whole-request limits raise TimeoutError; only the
+        # request one marks its own context as expired.
+        if deadline.expired():
+            logger.error(
+                "Request exceeded the %.1fs end-to-end budget; giving up on prompt %r",
+                self.settings.request_timeout_seconds,
+                prompt,
+            )
+        else:
+            logger.error(
+                "LLM call exceeded %.1fs; skipping extraction for prompt %r",
+                self.settings.llm_timeout_seconds,
+                prompt,
+            )
+        return ExtractionResult.failed(
+            Outcome.ERROR,
+            llm_timeout_error(prompt),
+            schema_version=version,
+            policy_context=policy_context,
+        )
 
     async def _invoke_llm(self, llm: Runnable[Any, BaseMessage], messages: list[BaseMessage]) -> BaseMessage:
         """One LLM call, bounded by LLM_TIMEOUT_SECONDS - raises TimeoutError past it."""

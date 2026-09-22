@@ -23,6 +23,7 @@ from indykite.intent_agent.errors import (
     SubjectTypeMismatchError,
     llm_timeout_error,
     no_intent_error,
+    request_timeout_error,
     schema_not_populated_error,
     schema_unavailable_error,
     subject_type_mismatch_error,
@@ -1629,6 +1630,11 @@ def test_run_extraction_timeout_mid_policy_fetch_reports_the_fetch_as_failed(mon
     fetch actually returns, so a timeout mid-fetch falls back to the default instead; that
     default must itself already say fetch_failed=True, or the audit record would claim a policy
     fetch that never completed was healthy, with an empty policy hash to match.
+
+    The caller must also get request_timeout_error, not llm_timeout_error (review) - the model
+    was never even reached, so "The model did not respond in time." would misattribute a slow
+    policy fetch to Gemini. schema_version is still reported, since the schema fetch that
+    preceded this one already succeeded.
     """
     monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "0.02")
     monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "0.01")
@@ -1636,7 +1642,8 @@ def test_run_extraction_timeout_mid_policy_fetch_reports_the_fetch_as_failed(mon
     monkeypatch.setenv("POLICY_FETCH_TIMEOUT_SECONDS", "0.02")
     settings = _full_settings(monkeypatch)
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mocker.AsyncMock())))
-    fake_schema_client = _fake_schema_client(mocker, get_cached=mocker.Mock(return_value=_load_schema_fixture()))
+    schema = _load_schema_fixture()
+    fake_schema_client = _fake_schema_client(mocker, get_cached=mocker.Mock(return_value=schema))
     fake_policy_client = _fake_policy_client(
         mocker, get_cached=mocker.Mock(side_effect=lambda _subject_type: time.sleep(0.1) or [])
     )
@@ -1647,6 +1654,36 @@ def test_run_extraction_timeout_mid_policy_fetch_reports_the_fetch_as_failed(mon
     assert result.outcome == Outcome.ERROR
     assert result.policy_fetch_failed is True
     assert result.policy_version == ""
+    assert result.schema_version == schema_version(schema)
+    assert json.loads(result.text) == request_timeout_error("rent kitt")
+
+
+def test_run_extraction_timeout_mid_schema_fetch_reports_the_request_timeout(monkeypatch, mocker):
+    """A request deadline firing while get_cached_schema() is still running (review) must
+    report request_timeout_error, not llm_timeout_error - the model was never even reached, so
+    blaming it for a slow schema fetch would misattribute the failure. Unlike the mid-policy-
+    fetch case, schema_version/policy_context are both still their unset defaults here: neither
+    a schema nor a policy was ever confirmed one way or the other.
+    """
+    monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "0.02")
+    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "0.01")
+    monkeypatch.setenv("SCHEMA_FETCH_TIMEOUT_SECONDS", "0.02")
+    monkeypatch.setenv("POLICY_FETCH_TIMEOUT_SECONDS", "0.02")
+    settings = _full_settings(monkeypatch)
+    fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mocker.AsyncMock())))
+    fake_schema_client = _fake_schema_client(
+        mocker, get_cached=mocker.Mock(side_effect=lambda: time.sleep(0.1) or _load_schema_fixture())
+    )
+    fake_policy_client = _fake_policy_client(mocker, get_cached=mocker.Mock(return_value=[]))
+    agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client, policy_client=fake_policy_client)
+
+    result = asyncio.run(agent.run_extraction("rent kitt", RequestSubject(id="user-1", type="Customer")))
+
+    assert result.outcome == Outcome.ERROR
+    assert result.schema_version == ""
+    assert result.policy_fetch_failed is False
+    assert result.policy_version == ""
+    assert json.loads(result.text) == request_timeout_error("rent kitt")
 
 
 def test_run_extraction_slow_schema_fetch_does_not_block_the_event_loop(monkeypatch, mocker):
