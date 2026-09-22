@@ -188,22 +188,41 @@ class PolicyClient:
         backoff has elapsed - triggers an on-demand refresh here, the same
         request-driven-not-a-timer refresh schema.get_cached() uses.
 
-        A failure is itself cached, briefly (review, _FAILURE_CACHE_SECONDS) - without this,
-        every request during an outage would pay the full retry_attempts x timeout_seconds cost
-        again; this never blocks or raises for the caller either way; it only changes whether
-        get_cached retries right now or returns None immediately from a still-fresh failure -
-        run_extraction proceeds exactly the same (policy_fetch_failed=True), just faster.
+        The refresh itself goes through the cache region's own get_or_create (review) rather
+        than a manual get-then-set, so concurrent callers observing the same miss/expired
+        backoff coalesce into one _load() behind dogpile's own lock (a real distributed one
+        across instances when CACHE_BACKEND=redis) instead of each firing its own request.
+
+        A failure is itself cached too, briefly (_FAILURE_CACHE_SECONDS) via the same
+        get_or_create call - without this, every request during an outage would pay the full
+        retry_attempts x timeout_seconds cost again, and, just as importantly, a waiting
+        concurrent caller would see nothing cached once it is their turn and retry the fetch
+        itself rather than reusing the winner's failure. That still never blocks or raises for
+        the caller either way - run_extraction proceeds exactly the same
+        (policy_fetch_failed=True) whether this returns fast from a fresh backoff or slow from
+        a real attempt.
+
+        That short backoff is enforced manually rather than through get_or_create's own
+        expiration check, since dogpile applies one expiration_time per region (the much longer
+        success TTL), not per entry - so before calling get_or_create, a cached failure whose
+        own backoff has already elapsed is explicitly evicted here first; left in place,
+        dogpile's own (longer) freshness check would still consider it fresh and hand it back
+        without ever regenerating. A harmless no-op when nothing was cached at all.
         """
         resolved, cached_result = self.peek_cached(subject_type)
         if resolved:
             return cached_result
         cache_key = _cache_key(self._app_agent_key, subject_type)
-        policies = self._load(subject_type)
-        if policies is not None:
-            self._cache.set(cache_key, policies)
-        else:
-            self._cache.set(cache_key, _FailedFetch(expires_at=time.time() + _FAILURE_CACHE_SECONDS))
-        return policies
+        self._cache.delete(cache_key)
+
+        def _fetch_or_cache_failure() -> list[dict[str, Any]] | _FailedFetch:
+            policies = self._load(subject_type)
+            if policies is not None:
+                return policies
+            return _FailedFetch(expires_at=time.time() + _FAILURE_CACHE_SECONDS)
+
+        result = self._cache.get_or_create(cache_key, _fetch_or_cache_failure)
+        return None if isinstance(result, _FailedFetch) else result
 
     def peek_cached(self, subject_type: str) -> tuple[bool, list[dict[str, Any]] | None]:
         """Try to resolve subject_type's policies from the cache alone, without ever calling

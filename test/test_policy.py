@@ -1,6 +1,7 @@
 """Tests for PolicyClient: fetching, per-subject_type caching, and retry-then-give-up (ENG-9671)."""
 
 import json
+import threading
 import time
 
 import httpx2
@@ -263,6 +264,45 @@ def test_get_cached_retries_again_once_the_failure_backoff_expires(mocker):
 
     assert client.get_cached(_SUBJECT_TYPE) == _POLICIES
     assert client_mock.get.call_count == _RETRY_ATTEMPTS + 1
+
+
+def test_get_cached_coalesces_concurrent_misses_into_one_fetch(mocker):
+    """Concurrent callers observing the same cache miss must coalesce into a single _load()
+    behind dogpile's own lock (review, get_or_create) instead of each firing their own request.
+    This is a real concurrency property - proven with actual threads against a real (in-memory)
+    cache region, not by mocking the lock away.
+    """
+    load_started = threading.Event()
+    release_load = threading.Event()
+    call_count = 0
+    call_count_lock = threading.Lock()
+
+    def _slow_get(*_args, **_kwargs):
+        nonlocal call_count
+        with call_count_lock:
+            call_count += 1
+        load_started.set()
+        assert release_load.wait(timeout=5), "the winning fetch was never released"
+        return _mock_response(mocker)
+
+    _mock_sync_client(mocker, side_effect=_slow_get)
+    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, cache=_memory_cache())
+
+    results = []
+
+    def _call():
+        results.append(client.get_cached(_SUBJECT_TYPE))
+
+    threads = [threading.Thread(target=_call) for _ in range(5)]
+    for thread in threads:
+        thread.start()
+    assert load_started.wait(timeout=5), "no thread ever reached _load()"
+    release_load.set()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert call_count == 1
+    assert results == [_POLICIES] * len(threads)
 
 
 def test_peek_cached_never_fetches(mocker):
