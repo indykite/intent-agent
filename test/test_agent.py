@@ -11,7 +11,7 @@ from dogpile.cache.backends.redis import RedisBackend
 from langchain_core.messages import HumanMessage, ToolMessage
 from starlette.testclient import TestClient
 
-from indykite.intent_agent.agent import IntentAgent, RequestSubject
+from indykite.intent_agent.agent import IntentAgent, RequestSubject, _fetch_executor, _run_in_fetch_executor
 from indykite.intent_agent.app import build_app
 from indykite.intent_agent.audit.message import Outcome, schema_version
 from indykite.intent_agent.config import Settings
@@ -1603,8 +1603,8 @@ def test_run_extraction_enforces_request_deadline_across_calls(monkeypatch, mock
 def test_run_extraction_slow_schema_fetch_does_not_block_the_event_loop(monkeypatch, mocker):
     """SchemaClient/PolicyClient hit the platform over a synchronous httpx2.Client, so a
     slow/unreachable fetch run directly on the event loop would stall every concurrent request
-    this process is serving, not just this one (reported in review). Fetching via
-    asyncio.to_thread fixes that specific claim - proven here by a concurrent, unrelated
+    this process is serving, not just this one (reported in review). Fetching via the
+    dedicated _fetch_executor fixes that specific claim - proven here by a concurrent, unrelated
     coroutine completing well before the slow fetch does, rather than the whole loop stalling
     for its duration. (Python cannot preempt an already-running thread, so this request's own
     latency still tracks the fetch's duration once started - see run_extraction's docstring;
@@ -1677,6 +1677,37 @@ def test_run_extraction_get_policies_tool_call_does_not_block_the_event_loop(mon
     concurrent_elapsed = asyncio.run(_scenario())
 
     assert concurrent_elapsed < 0.15  # noqa: PLR2004 - loop kept ticking, not frozen for the tool call's 0.3s
+
+
+def test_schema_and_policy_fetches_use_the_dedicated_fetch_executor():
+    """Schema/policy fetches must run on the dedicated _fetch_executor, not the event loop's
+    shared default one (review, ENG-9671): Python cannot preempt an already-running synchronous
+    call, so a stuck/unreachable endpoint's worker thread keeps running past this request's own
+    REQUEST_TIMEOUT_SECONDS deadline. Enough concurrent requests hitting a genuinely down
+    endpoint could otherwise pile up orphaned workers on the *shared* default executor and
+    starve unrelated concurrent requests' tool calls and audit writes, which also use it -
+    routing these two fetches through their own small, bounded pool instead contains that
+    pile-up to fetches specifically.
+    """
+    calls: list[object] = []
+
+    async def _scenario():
+        loop = asyncio.get_running_loop()
+        real_run_in_executor = loop.run_in_executor
+
+        def _record(executor, func, *args):
+            calls.append(executor)
+            return real_run_in_executor(executor, func, *args)
+
+        loop.run_in_executor = _record
+        try:
+            return await _run_in_fetch_executor(lambda: "ok")
+        finally:
+            loop.run_in_executor = real_run_in_executor
+
+    assert asyncio.run(_scenario()) == "ok"
+    assert calls == [_fetch_executor]
+    assert _fetch_executor is not None  # the loop's shared default executor is None, not this
 
 
 def test_run_extraction_times_out_during_retry_too(monkeypatch, mocker):
