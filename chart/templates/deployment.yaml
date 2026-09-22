@@ -82,6 +82,14 @@ spec:
               value: {{ .Values.app.schemaFetchTimeoutSeconds | quote }}
             - name: SCHEMA_REFRESH_TTL_MINUTES
               value: {{ .Values.app.schemaRefreshTtlMinutes | quote }}
+            - name: POLICY_FETCH_TIMEOUT_SECONDS
+              value: {{ .Values.app.policyFetchTimeoutSeconds | quote }}
+            - name: POLICY_REFRESH_TTL_MINUTES
+              value: {{ .Values.app.policyRefreshTtlMinutes | quote }}
+            - name: POLICY_FETCH_RETRY_ATTEMPTS
+              value: {{ .Values.app.policyFetchRetryAttempts | int64 | quote }}
+            - name: POLICY_PREVIEW_CHARS
+              value: {{ .Values.app.policyPreviewChars | int64 | quote }}
             - name: CACHE_BACKEND
               value: {{ .Values.app.cacheBackend | quote }}
             {{- if .Values.app.redisUrlSecretRef.name }}

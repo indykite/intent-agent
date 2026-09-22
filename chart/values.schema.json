@@ -113,6 +113,22 @@
           "type": "number",
           "exclusiveMinimum": 0
         },
+        "policyFetchTimeoutSeconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "policyRefreshTtlMinutes": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "policyFetchRetryAttempts": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "policyPreviewChars": {
+          "type": "integer",
+          "minimum": 1
+        },
         "introspectUrl": {
           "type": "string",
           "format": "uri",

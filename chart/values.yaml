@@ -26,8 +26,17 @@ app:
   validationMaxRetries: 1 # VALIDATION_MAX_RETRIES
 
   indykiteBaseUrl: "https://placeholder.example.com" # INDYKITE_BASE_URL
-  schemaFetchTimeoutSeconds: 30.0 # SCHEMA_FETCH_TIMEOUT_SECONDS
+  # schemaFetchTimeoutSeconds/policyFetchTimeoutSeconds must each stay <= requestTimeoutSeconds
+  # (Settings rejects a fetch timeout that could never fire before the whole-request deadline
+  # does) - both are tight ceilings sized to leave room for the LLM calls in the same budget,
+  # not a generous allowance in their own right; tune against the platform's observed latency.
+  schemaFetchTimeoutSeconds: 3.0 # SCHEMA_FETCH_TIMEOUT_SECONDS
   schemaRefreshTtlMinutes: 5.0 # SCHEMA_REFRESH_TTL_MINUTES
+
+  policyFetchTimeoutSeconds: 2.0 # POLICY_FETCH_TIMEOUT_SECONDS
+  policyRefreshTtlMinutes: 5.0 # POLICY_REFRESH_TTL_MINUTES
+  policyFetchRetryAttempts: 2 # POLICY_FETCH_RETRY_ATTEMPTS
+  policyPreviewChars: 12000 # POLICY_PREVIEW_CHARS
 
   cacheBackend: "memory" # CACHE_BACKEND - "memory" or "redis"
 
