@@ -259,7 +259,7 @@ def test_get_cached_retries_again_once_the_failure_backoff_expires(mocker):
     assert client.get_cached(_SUBJECT_TYPE) is None
     assert client_mock.get.call_count == _RETRY_ATTEMPTS
 
-    mocker.patch("indykite.intent_agent.policy.time.monotonic", return_value=time.monotonic() + _FAILURE_CACHE_SECONDS)
+    mocker.patch("indykite.intent_agent.policy.time.time", return_value=time.time() + _FAILURE_CACHE_SECONDS)
 
     assert client.get_cached(_SUBJECT_TYPE) == _POLICIES
     assert client_mock.get.call_count == _RETRY_ATTEMPTS + 1

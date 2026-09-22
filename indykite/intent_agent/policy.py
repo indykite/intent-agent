@@ -45,6 +45,15 @@ class _FailedFetch:
     """A cached failure (review) - carries its own short expiry rather than the region's normal
     (much longer) success TTL, checked manually in get_cached since dogpile.cache applies one
     expiration_time per region, not per entry.
+
+    expires_at is time.time() (wall clock, review), not time.monotonic() - this entry can be
+    written by one process and read by another through a shared Redis-backed region
+    (CACHE_BACKEND=redis, multiple instances behind a load balancer). monotonic()'s reference
+    point is per-process/per-host and undefined across machines, so comparing one host's
+    monotonic reading against a value another host wrote is meaningless - depending on which
+    host booted first, the backoff could be ignored entirely or treated as active for the
+    region's full (much longer) success TTL. Wall-clock time is what every instance actually
+    shares, the same assumption dogpile.cache's own Redis TTL already relies on.
     """
 
     expires_at: float
@@ -192,7 +201,7 @@ class PolicyClient:
             return None
         cached = self._cache.get(cache_key)
         if isinstance(cached, _FailedFetch):
-            if time.monotonic() < cached.expires_at:
+            if time.time() < cached.expires_at:
                 logger.debug("cache_key=%s hit=recent-failure (backoff active)", cache_key)
                 return None
             cached = NO_VALUE
@@ -203,5 +212,5 @@ class PolicyClient:
         if policies is not None:
             self._cache.set(cache_key, policies)
         else:
-            self._cache.set(cache_key, _FailedFetch(expires_at=time.monotonic() + _FAILURE_CACHE_SECONDS))
+            self._cache.set(cache_key, _FailedFetch(expires_at=time.time() + _FAILURE_CACHE_SECONDS))
         return policies
