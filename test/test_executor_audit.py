@@ -1,5 +1,6 @@
 """IntentExecutor emits exactly one TDD 4.9 audit record per request - on success, on a rejected
-token (like the IAG audits every rejection), and on an unexpected failure.
+token (like the IAG audits every rejection), and on an unexpected failure - and (ENG-9804) the
+A2A task's own terminal state reflects that same success/failure classification.
 """
 
 import asyncio
@@ -9,6 +10,7 @@ import pytest
 from a2a import types as a2a_types
 from a2a.server.agent_execution import RequestContext
 from a2a.server.context import ServerCallContext
+from a2a.types import TaskState, TaskStatusUpdateEvent
 from starlette.exceptions import HTTPException
 from starlette.status import (
     HTTP_400_BAD_REQUEST,
@@ -64,9 +66,43 @@ def _executor(baseline_env, mocker, *, result=None, run_extraction=None):
 
 
 def _execute(executor, context, mocker):
-    """Run one request through the executor with a fake event queue."""
+    """Run one request through the executor with a fake event queue, returned so a test can
+    inspect which events it was sent (e.g. the terminal TaskStatusUpdateEvent, ENG-9804).
+    """
     event_queue = mocker.Mock(enqueue_event=mocker.AsyncMock())
     asyncio.run(executor.execute(context, event_queue))
+    return event_queue
+
+
+def _status_events(event_queue):
+    """Every TaskStatusUpdateEvent's Status enqueued, in order."""
+    return [
+        call.args[0].status
+        for call in event_queue.enqueue_event.call_args_list
+        if isinstance(call.args[0], TaskStatusUpdateEvent)
+    ]
+
+
+def _terminal_task_state(event_queue):
+    """The State of the last TaskStatusUpdateEvent enqueued - the task's own final word on
+    whether the request succeeded, distinct from the audit record's `outcome`.
+    """
+    return _status_events(event_queue)[-1].state
+
+
+def _history_summary_message(event_queue):
+    """The summary message text that ends up as the task's last `history` entry (ENG-9804).
+
+    The terminal state is emitted twice - once carrying this message, then bare - so a2a's
+    TaskManager (which only archives a status's message into `history` once a *later*
+    TaskStatusUpdateEvent supersedes it) pushes the message into history and leaves the truly
+    final status message-free; see executor.py's _extract for the full mechanism. Asserts that
+    shape holds (the last status has no message of its own) rather than just reading whichever
+    status happens to carry one.
+    """
+    statuses = _status_events(event_queue)
+    assert not statuses[-1].HasField("message"), "the final status must be message-free"
+    return statuses[-2].message.parts[0].text
 
 
 def _sole_record(sender):
@@ -89,8 +125,12 @@ def test_success_records_the_extraction(baseline_env, mocker):
     )
     executor, sender, _agent = _executor(baseline_env, mocker, result=result)
 
-    _execute(executor, _context({"authorization": "Bearer good-token", "x-request-id": "req-123"}), mocker)
+    event_queue = _execute(
+        executor, _context({"authorization": "Bearer good-token", "x-request-id": "req-123"}), mocker
+    )
 
+    assert _terminal_task_state(event_queue) == TaskState.TASK_STATE_COMPLETED
+    assert _history_summary_message(event_queue) == "Intent extracted successfully."
     record = _sole_record(sender)
     assert record.outcome == Outcome.SUCCESS
     assert record.request_id == "req-123"
@@ -106,6 +146,30 @@ def test_success_records_the_extraction(baseline_env, mocker):
     assert record.validation_retries == 1
     assert record.message == ""
     assert record.latency_ms >= 0
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [Outcome.VALIDATION_FAILED, Outcome.UNMATCHED, Outcome.ERROR],
+    ids=["validation_failed", "unmatched", "error"],
+)
+def test_non_success_outcomes_surface_as_task_state_failed(baseline_env, mocker, outcome):
+    """The task's own terminal state must tell the caller success from failure without them
+    having to parse the artifact JSON for an "error" key (ENG-9804) - every outcome other than
+    SUCCESS (a validation failure, no-intent/unmatched, a timeout or other pipeline error)
+    surfaces as TASK_STATE_FAILED, never TASK_STATE_COMPLETED - with a fixed summary message
+    (the detailed reason stays in the artifact JSON, not duplicated here), not left on the
+    pre-extraction "Extracting intent..." placeholder.
+    """
+    mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value={"active": True, "sub": "user-1"}))
+    executor, _sender, _agent = _executor(
+        baseline_env, mocker, result=ExtractionResult(text="{...}", outcome=outcome, message="did not work out")
+    )
+
+    event_queue = _execute(executor, _context({"authorization": "Bearer good-token"}), mocker)
+
+    assert _terminal_task_state(event_queue) == TaskState.TASK_STATE_FAILED
+    assert _history_summary_message(event_queue) == "Failed to extract intent."
 
 
 def test_generates_a_request_id_when_the_caller_sends_none(baseline_env, mocker):

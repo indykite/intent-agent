@@ -27,6 +27,8 @@ from indykite.intent_agent.config import Settings
 logger = logging.getLogger(__name__)
 
 _MILLISECONDS_PER_SECOND = 1000
+_EXTRACTION_SUCCEEDED_MESSAGE = "Intent extracted successfully."
+_EXTRACTION_FAILED_MESSAGE = "Failed to extract intent."
 
 # What each class of token failure (auth.TokenFailure) is answered with: 401 only
 # for what the caller got wrong, 500 for this service's own failure, 502 for an IdP that answered
@@ -216,7 +218,18 @@ class IntentExecutor(AgentExecutor):
         subject_id: str,
         subject_type: str,
     ) -> ExtractionResult:
-        """Run the extraction for an authenticated request, emitting the A2A task events."""
+        """Run the extraction for an authenticated request, emitting the A2A task events.
+
+        The terminal TaskState reflects the outcome (ENG-9804): TASK_STATE_COMPLETED only for
+        a successful extraction, TASK_STATE_FAILED for every other outcome (validation failure,
+        no-intent/unmatched, timeout, schema unavailable, ...) - the caller's artifact JSON
+        still carries the fixed {prompt, error, reason, obligation} shape (errors.py) either way,
+        this only changes what the task's own status reports. A fixed summary message (success
+        or failure - the detailed reason stays in the artifact JSON's `reason` field, not
+        duplicated here) ends up as the task's last `history` entry, replacing the pre-extraction
+        "Extracting intent..." placeholder as the final word instead of leaving it there - done
+        by emitting the terminal status twice (see the comment at the call site for why).
+        """
         logger.info(
             "Received message for %s: %s",
             self._agent.settings.intent_agent_name,
@@ -248,11 +261,34 @@ class IntentExecutor(AgentExecutor):
                 artifact=new_text_artifact(name="result", text=result.text),
             ),
         )
+        # ENG-9804: the task's own terminal state must tell success from failure - a caller
+        # otherwise has no way to know without parsing the artifact JSON for an "error" key.
+        # VALIDATION_FAILED/UNMATCHED/ERROR (no_intent_error, timeouts, schema unavailable, ...)
+        # all surface as TASK_STATE_FAILED; only SUCCESS is TASK_STATE_COMPLETED. A fixed summary
+        # message (the detailed reason stays in the artifact JSON's `reason` field, not
+        # duplicated here) must land in the task's `history`, not just sit on the terminal status -
+        # a2a's TaskManager only archives a status's message into history once a *later*
+        # TaskStatusUpdateEvent supersedes it, so the message is carried on one last WORKING
+        # update first (never on the terminal one itself: DefaultRequestHandler.on_message_send
+        # returns on the *first* terminal-state Task snapshot it sees, so a message on that event
+        # would never get superseded/archived - it would just sit unread in `status.message`).
+        # The final, bare terminal event is what the caller actually gets back, with the summary
+        # text already archived as history's last entry instead of "Extracting intent...".
+        is_success = result.outcome == Outcome.SUCCESS
+        terminal_state = TaskState.TASK_STATE_COMPLETED if is_success else TaskState.TASK_STATE_FAILED
+        terminal_text = _EXTRACTION_SUCCEEDED_MESSAGE if is_success else _EXTRACTION_FAILED_MESSAGE
         await event_queue.enqueue_event(
             TaskStatusUpdateEvent(
                 task_id=context.task_id,
                 context_id=context.context_id,
-                status=TaskStatus(state=TaskState.TASK_STATE_COMPLETED),
+                status=TaskStatus(state=TaskState.TASK_STATE_WORKING, message=new_text_message(terminal_text)),
+            ),
+        )
+        await event_queue.enqueue_event(
+            TaskStatusUpdateEvent(
+                task_id=context.task_id,
+                context_id=context.context_id,
+                status=TaskStatus(state=terminal_state),
             ),
         )
         logger.info(
