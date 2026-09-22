@@ -387,27 +387,32 @@ class IntentAgent:
         return [
             t
             for t in (
-                self._make_activate_skill_tool(policies),
+                self._make_activate_skill_tool(schema, policies),
                 self._make_get_data_schema_tool(schema),
                 self._make_get_policies_tool(policies),
             )
             if t
         ]
 
-    def _make_activate_skill_tool(self, policies: list[dict[str, Any]] | None) -> StructuredTool | None:
+    def _make_activate_skill_tool(
+        self, schema: dict[str, Any], policies: list[dict[str, Any]] | None
+    ) -> StructuredTool | None:
         """Create activate_skill; extract-intent injects the data schema and, when available,
         this request's policies.
 
-        `policies` is the exact snapshot run_extraction already fetched once and built
-        request.policy_context / the response_schema's action enum from - not fetched again
-        here. A second independent fetch could otherwise diverge from that snapshot (e.g. a
-        first fetch that failed, followed by a successful retry moments later): the LLM would
-        see policies that its own structured-output enum was never widened for, and that
-        validate_evaluations/the audit trail never learn about either, so a genuinely
-        policy-derived action could get wrongly rejected as off-schema, or the response could
-        claim policy_fetch_failed when a later attempt actually succeeded. Reusing one
-        snapshot for the whole request keeps what the LLM is told, what gets validated, and
-        what gets audited all in agreement.
+        `schema`/`policies` are the exact snapshots run_extraction already fetched once and
+        built the response_schema's enums, validate_evaluations, and request.policy_context
+        from - not fetched again here (review: this previously called get_cached_schema() again
+        for the schema half specifically, the one inconsistency left in an otherwise
+        snapshot-everywhere request). A second independent fetch could otherwise diverge from
+        that snapshot (e.g. a refresh landing between run_extraction's own fetch and this call,
+        or a first policy fetch that failed followed by a successful retry moments later): the
+        LLM would see a schema or policies its own structured-output enum was never built for,
+        and that validate_evaluations/the audit trail never learn about either, so a genuinely
+        valid action could get wrongly rejected as off-schema, or the response could claim
+        policy_fetch_failed when a later attempt actually succeeded. Reusing one snapshot for
+        the whole request keeps what the LLM is told, what gets validated, and what gets
+        audited all in agreement.
         """
         if not self.skill_registry:
             return None
@@ -429,7 +434,6 @@ class IntentAgent:
             skill_dir = str(Path(location).parent) if location else ""
 
             if name == "extract-intent":
-                schema = self.get_cached_schema()
                 preview_chars = self.settings.schema_preview_chars
                 schema_json = json.dumps(schema, indent=2, ensure_ascii=False)
                 schema_block = (

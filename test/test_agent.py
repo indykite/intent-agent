@@ -1569,6 +1569,40 @@ def test_run_extraction_reuses_one_policy_snapshot_for_the_whole_request(monkeyp
     assert not any("ESCALATE" in result for result in tool_results)
 
 
+def test_run_extraction_reuses_one_schema_snapshot_for_the_whole_request(monkeypatch, mocker):
+    """Review finding: activate_skill's extract-intent injection called get_cached_schema() a
+    second time, independent of the fetch run_extraction already used to build the response
+    schema's enums and validate subject_type. If a refresh landed between that first fetch and
+    this second one, the LLM would see a schema its own enum was never built for, and
+    validate_evaluations/the audit's schema_version would silently describe a different one.
+    Fixed by fetching the schema exactly once per request and threading that same snapshot into
+    the injected block - proven here by a schema_client whose second call would return
+    different data, and confirming it is never actually called a second time.
+    """
+    settings = _full_settings(monkeypatch)
+    mock_ainvoke = mocker.AsyncMock(
+        side_effect=[
+            _llm_response(mocker, tool_calls=[_ACTIVATE_EXTRACT_INTENT_CALL]),
+            _llm_response(mocker, _ON_SCHEMA_ANSWER),
+        ],
+    )
+    fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mock_ainvoke)))
+    first_fetch_schema = _load_schema_fixture()
+    second_fetch_schema = json.loads(json.dumps(first_fetch_schema))
+    second_fetch_schema["graph"]["nodes"]["TotallyDifferentNodeType"] = {"properties": {}}
+    fake_schema_client = _fake_schema_client(
+        mocker, get_cached=mocker.Mock(side_effect=[first_fetch_schema, second_fetch_schema])
+    )
+    agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client)
+
+    asyncio.run(agent.run_extraction("rent kitt", RequestSubject(id="user-1", type="Customer")))
+
+    assert fake_schema_client.get_cached.call_count == 1
+    messages = mock_ainvoke.call_args_list[-1].args[0]
+    tool_results = [m.content for m in messages if isinstance(m, ToolMessage)]
+    assert not any("TotallyDifferentNodeType" in result for result in tool_results)
+
+
 def test_run_extraction_returns_timeout_error_when_llm_call_exceeds_limit(monkeypatch, mocker, caplog):
     """A single LLM call past LLM_TIMEOUT_SECONDS must surface as llm_timeout_error - not hang
     the request, and not be retried.
