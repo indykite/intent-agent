@@ -208,28 +208,50 @@ class PolicyClient:
         own backoff has already elapsed is explicitly evicted here first; left in place,
         dogpile's own (longer) freshness check would still consider it fresh and hand it back
         without ever regenerating. A harmless no-op when nothing was cached at all.
+
+        That eviction re-reads the entry immediately beforehand rather than trusting
+        peek_cached()'s earlier read (review): two callers can both observe the same expired
+        failure, and if the first already finished _load() and cached a fresh value by the time
+        the second reaches this line, an unconditional delete of "whatever is there" would
+        destroy that fresh value and force a second, redundant fetch right on top of a recovery
+        that had already happened - the exact fetch stampede get_or_create's coalescing exists
+        to prevent. Re-checking immediately before deleting closes that specific case (the
+        second caller sees the first's fresh write and skips the delete entirely), though
+        without dogpile exposing a public compare-and-delete or its own per-key lock, the
+        immediate re-check-then-delete itself is not perfectly atomic - only narrowed to a
+        window too small to matter in practice.
+
+        Any cache backend failure (e.g. CACHE_BACKEND=redis genuinely unreachable, not just a
+        miss) is treated the same as a policy fetch failure rather than left to escape as an
+        unhandled exception (review) - run_extraction proceeds schema-only either way.
         """
-        resolved, cached_result = self.peek_cached(subject_type)
-        if resolved:
-            return cached_result
-        cache_key = _cache_key(self._app_agent_key, subject_type)
-        self._cache.delete(cache_key)
+        try:
+            resolved, cached_result = self.peek_cached(subject_type)
+            if resolved:
+                return cached_result
+            cache_key = _cache_key(self._app_agent_key, subject_type)
+            current = self._cache.get(cache_key, ignore_expiration=True)
+            if isinstance(current, _FailedFetch) and time.time() >= current.expires_at:
+                self._cache.delete(cache_key)
 
-        def _fetch_or_cache_failure() -> list[dict[str, Any]] | _FailedFetch:
-            policies = self._load(subject_type)
-            if policies is not None:
-                return policies
-            return _FailedFetch(expires_at=time.time() + _FAILURE_CACHE_SECONDS)
+            def _fetch_or_cache_failure() -> list[dict[str, Any]] | _FailedFetch:
+                policies = self._load(subject_type)
+                if policies is not None:
+                    return policies
+                return _FailedFetch(expires_at=time.time() + _FAILURE_CACHE_SECONDS)
 
-        result = self._cache.get_or_create(cache_key, _fetch_or_cache_failure)
+            result = self._cache.get_or_create(cache_key, _fetch_or_cache_failure)
+        except Exception:
+            logger.exception("Cache backend failed while fetching policies for subject_type %r", subject_type)
+            return None
         return None if isinstance(result, _FailedFetch) else result
 
     def peek_cached(self, subject_type: str) -> tuple[bool, list[dict[str, Any]] | None]:
         """Try to resolve subject_type's policies from the cache alone, without ever calling
-        _load(). A cheap, bounded cache lookup (a dict or Redis round-trip, not the platform's
-        synchronous HTTP call), safe for a caller to run directly on the event loop instead of
-        paying a thread-pool dispatch for every request regardless of whether a fetch is
-        actually needed (review).
+        _load(). Not necessarily cheap: with CACHE_BACKEND=redis this is a real network round
+        trip, not a bounded in-process lookup, so - like get_cached() itself - it must not be
+        called directly on the event loop (review, ENG-9671); see
+        IntentAgent.get_cached_policies's docstring.
 
         Returns (True, value) once resolved purely from the cache - an actual hit, or a
         still-fresh cached failure's own backoff (value is None, same as get_cached()'s own

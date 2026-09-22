@@ -9,7 +9,7 @@ import jwt
 import pytest
 from dogpile.cache.region import make_region
 
-from indykite.intent_agent.policy import _FAILURE_CACHE_SECONDS, PolicyClient, _cache_key
+from indykite.intent_agent.policy import _FAILURE_CACHE_SECONDS, PolicyClient, _cache_key, _FailedFetch
 
 _POLICIES = [
     {
@@ -264,6 +264,47 @@ def test_get_cached_retries_again_once_the_failure_backoff_expires(mocker):
 
     assert client.get_cached(_SUBJECT_TYPE) == _POLICIES
     assert client_mock.get.call_count == _RETRY_ATTEMPTS + 1
+
+
+def test_get_cached_does_not_delete_a_concurrently_recovered_entry(mocker):
+    """If a concurrent caller already cached a fresh value between this call's own read and the
+    re-check right before evicting an expired failure, that eviction must not destroy the fresh
+    value and force a redundant fetch on top of a recovery that already happened (review) -
+    exactly the fetch stampede get_or_create's own coalescing exists to prevent. Proven here by
+    having the cache "recover" at exactly that moment, via a wrapped .get() that writes a fresh
+    value the first time this method re-checks what is actually there.
+    """
+    cache = _memory_cache()
+    cache_key = _cache_key(_APP_AGENT_KEY, _SUBJECT_TYPE)
+    cache.set(cache_key, _FailedFetch(expires_at=time.time() - 1))
+    client_mock = _mock_sync_client(mocker, response=_mock_response(mocker))
+    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
+
+    real_get = cache.get
+    calls = {"n": 0}
+    recheck_before_delete_call = 2
+
+    def _get_with_concurrent_recovery(key, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == recheck_before_delete_call:
+            cache.set(key, _POLICIES)
+        return real_get(key, **kwargs)
+
+    mocker.patch.object(cache, "get", side_effect=_get_with_concurrent_recovery)
+
+    assert client.get_cached(_SUBJECT_TYPE) == _POLICIES
+    client_mock.get.assert_not_called()
+
+
+def test_get_cached_treats_a_cache_backend_failure_as_an_unresolved_fetch(mocker):
+    """A cache backend failure (e.g. CACHE_BACKEND=redis genuinely unreachable, not just a
+    miss) must be treated the same as a policy fetch failure rather than escape as an
+    unhandled exception (review) - run_extraction proceeds schema-only either way.
+    """
+    cache = mocker.Mock(get=mocker.Mock(side_effect=ConnectionError("redis unreachable")))
+    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
+
+    assert client.get_cached(_SUBJECT_TYPE) is None
 
 
 def test_get_cached_coalesces_concurrent_misses_into_one_fetch(mocker):

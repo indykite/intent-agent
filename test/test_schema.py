@@ -242,6 +242,18 @@ def test_get_cached_fetches_on_demand_when_not_already_cached(mocker, caplog):
     assert unconfigured_client.get_cached() is None
 
 
+def test_get_cached_treats_a_cache_backend_failure_as_schema_unavailable(mocker):
+    """A cache backend failure (e.g. CACHE_BACKEND=redis genuinely unreachable, not just a
+    miss) must be treated the same as an unavailable schema rather than escape as an unhandled
+    exception (review) - run_extraction's schema_unavailable_error path already exists to
+    answer exactly that.
+    """
+    cache = mocker.Mock(get=mocker.Mock(side_effect=ConnectionError("redis unreachable")))
+    client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
+
+    assert client.get_cached() is None
+
+
 def test_peek_cached_never_fetches(mocker):
     """peek_cached() must return None on a miss without ever calling load() - a caller (review,
     ENG-9671: run_extraction) uses this to skip the dedicated fetch executor entirely on a

@@ -12,7 +12,7 @@ from dogpile.cache.backends.redis import RedisBackend
 from langchain_core.messages import HumanMessage, ToolMessage
 from starlette.testclient import TestClient
 
-from indykite.intent_agent.agent import IntentAgent, RequestSubject, _fetch_executor, _run_in_fetch_executor
+from indykite.intent_agent.agent import IntentAgent, RequestSubject
 from indykite.intent_agent.app import build_app
 from indykite.intent_agent.audit.message import Outcome, schema_version
 from indykite.intent_agent.config import Settings
@@ -120,26 +120,23 @@ def test_build_app_registers_routes(monkeypatch, mocker):
 
 def test_build_app_closes_audit_sender_on_shutdown(monkeypatch, mocker):
     """The app's lifespan closes the audit sender on shutdown - that is what drains a buffered
-    (AUDIT_ASYNC) queue before the process exits, so nothing audited is lost on a rollout.
-
-    Patches agent.py's shared _fetch_executor with a throwaway one for this test only (review:
-    the lifespan also shuts that executor down) - it is a process-lifetime singleton other
-    tests depend on staying usable, and ThreadPoolExecutor.shutdown() is not reversible, so
-    letting this test's real lifespan shutdown reach the actual shared instance would corrupt
-    every test that runs after it in the same process.
+    (AUDIT_ASYNC) queue before the process exits, so nothing audited is lost on a rollout. It
+    also shuts down the agent's own _fetch_executor (review) - each IntentAgent owns its own,
+    rather than sharing one process-wide singleton (review: a shared one would let one app's
+    shutdown break every other IntentAgent/build_app instance in the same process, since
+    ThreadPoolExecutor.shutdown() is not reversible), so asserting on this one instance's
+    executor cannot affect any other test.
     """
     settings = _full_settings(monkeypatch)
     fake_schema_client = mocker.Mock(preload=mocker.Mock(), get_cached=mocker.Mock(return_value=_load_schema_fixture()))
     sender = _fake_audit_sender(mocker)
-    disposable_executor = ThreadPoolExecutor(max_workers=1)
-    mocker.patch("indykite.intent_agent.app._fetch_executor", disposable_executor)
-    app, _agent = build_app(settings, schema_client=fake_schema_client, audit_sender=sender)
+    app, agent = build_app(settings, schema_client=fake_schema_client, audit_sender=sender)
 
     with TestClient(app):
         sender.close.assert_not_awaited()
-        assert not disposable_executor._shutdown
+        assert not agent._fetch_executor._shutdown
     sender.close.assert_awaited_once()
-    assert disposable_executor._shutdown
+    assert agent._fetch_executor._shutdown
 
 
 def test_build_app_starts_when_schema_unavailable_at_cold_start(monkeypatch, mocker):
@@ -1075,7 +1072,7 @@ def _fake_audit_sender(mocker):
 def test_build_schema_cache_uses_memory_backend_by_default(monkeypatch):
     """CACHE_BACKEND defaults to memory - the in-process Memory cache - with no REDIS_URL set."""
     settings = _full_settings(monkeypatch)
-    assert isinstance(build_schema_cache(settings, _fetch_executor).backend, MemoryBackend)
+    assert isinstance(build_schema_cache(settings, ThreadPoolExecutor(max_workers=1)).backend, MemoryBackend)
 
 
 def test_build_schema_cache_uses_redis_backend_when_configured(monkeypatch):
@@ -1088,7 +1085,7 @@ def test_build_schema_cache_uses_redis_backend_when_configured(monkeypatch):
     monkeypatch.setenv("REDIS_URL", redis_url)
     monkeypatch.setenv("SCHEMA_REFRESH_TTL_MINUTES", "2.0")
     settings = _full_settings(monkeypatch)
-    cache = build_schema_cache(settings, _fetch_executor)
+    cache = build_schema_cache(settings, ThreadPoolExecutor(max_workers=1))
     assert isinstance(cache.backend, RedisBackend)
     assert cache.backend.url == redis_url
     assert cache.expiration_time == 2.0 * 60
@@ -1765,16 +1762,20 @@ def test_run_extraction_get_policies_tool_call_does_not_block_the_event_loop(mon
     assert concurrent_elapsed < 0.15  # noqa: PLR2004 - loop kept ticking, not frozen for the tool call's 0.3s
 
 
-def test_schema_and_policy_fetches_use_the_dedicated_fetch_executor():
-    """Schema/policy fetches must run on the dedicated _fetch_executor, not the event loop's
-    shared default one (review, ENG-9671): Python cannot preempt an already-running synchronous
-    call, so a stuck/unreachable endpoint's worker thread keeps running past this request's own
-    REQUEST_TIMEOUT_SECONDS deadline. Enough concurrent requests hitting a genuinely down
-    endpoint could otherwise pile up orphaned workers on the *shared* default executor and
-    starve unrelated concurrent requests' tool calls and audit writes, which also use it -
-    routing these two fetches through their own small, bounded pool instead contains that
-    pile-up to fetches specifically.
+def test_schema_and_policy_fetches_use_the_dedicated_fetch_executor(monkeypatch, mocker):
+    """Schema/policy fetches must run on the agent's own dedicated _fetch_executor, not the
+    event loop's shared default one (review, ENG-9671): Python cannot preempt an already-running
+    synchronous call, so a stuck/unreachable endpoint's worker thread keeps running past this
+    request's own REQUEST_TIMEOUT_SECONDS deadline. Enough concurrent requests hitting a
+    genuinely down endpoint could otherwise pile up orphaned workers on the *shared* default
+    executor and starve unrelated concurrent requests' tool calls and audit writes, which also
+    use it - routing these two fetches through their own small, bounded pool instead contains
+    that pile-up to fetches specifically. Every IntentAgent owns its own such pool (review:
+    not a shared module-level one, see __init__'s docstring), so this drives it from a real
+    instance rather than a module-level name.
     """
+    settings = _full_settings(monkeypatch)
+    agent = IntentAgent(settings, llm=mocker.Mock())
     calls: list[object] = []
 
     async def _scenario():
@@ -1787,35 +1788,13 @@ def test_schema_and_policy_fetches_use_the_dedicated_fetch_executor():
 
         loop.run_in_executor = _record
         try:
-            return await _run_in_fetch_executor(lambda: "ok")
+            return await agent._run_in_fetch_executor(lambda: "ok")
         finally:
             loop.run_in_executor = real_run_in_executor
 
     assert asyncio.run(_scenario()) == "ok"
-    assert calls == [_fetch_executor]
-    assert _fetch_executor is not None  # the loop's shared default executor is None, not this
-
-
-def test_run_extraction_skips_the_fetch_executor_on_a_cache_hit(monkeypatch, mocker):
-    """A schema/policy cache hit must be resolved directly on the event loop
-    (peek_cached_schema/peek_cached_policies), never dispatched through the dedicated fetch
-    executor at all (review) - only a genuine miss needs that thread hop. get_cached_schema()/
-    get_cached_policies() are the executor-routed path (see _run_in_fetch_executor); asserting
-    they are never called proves the peek alone resolved this request.
-    """
-    settings = _full_settings(monkeypatch)
-    mock_ainvoke = mocker.AsyncMock(return_value=_llm_response(mocker, text="no intent here"))
-    fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mock_ainvoke)))
-    fake_schema_client = mocker.Mock(
-        peek_cached=mocker.Mock(return_value=_load_schema_fixture()), get_cached=mocker.Mock()
-    )
-    fake_policy_client = mocker.Mock(peek_cached=mocker.Mock(return_value=(True, [])), get_cached=mocker.Mock())
-    agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client, policy_client=fake_policy_client)
-
-    asyncio.run(agent.run_extraction("rent kitt", RequestSubject(id="user-1", type="Customer")))
-
-    fake_schema_client.get_cached.assert_not_called()
-    fake_policy_client.get_cached.assert_not_called()
+    assert calls == [agent._fetch_executor]
+    assert agent._fetch_executor is not None  # loop's shared default executor is None, not this
 
 
 def test_run_extraction_times_out_during_retry_too(monkeypatch, mocker):

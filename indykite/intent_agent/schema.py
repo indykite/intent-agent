@@ -182,20 +182,35 @@ class SchemaClient:
         there uncancelled in the cache the whole time. The async path can't lose it that way -
         the stale value is handed back before any refresh attempt starts, not after one fails.
 
-        Tries peek_cached() first - besides its own event-loop-friendly fast path, it is what
-        logs the cache key and hit/miss flag get_or_create's own internal check does not.
+        Tries peek_cached() first, which is what logs the cache key and hit/miss flag
+        get_or_create's own internal check does not - callers of get_cached() itself must
+        always go through a thread executor regardless (review, ENG-9671): with
+        CACHE_BACKEND=redis this whole method, peek included, is genuinely synchronous network
+        I/O, not a bounded in-process lookup, so nothing here is safe to call directly on the
+        event loop - see IntentAgent.get_cached_schema's docstring.
+
+        Any cache backend failure (e.g. CACHE_BACKEND=redis genuinely unreachable, not just a
+        miss) is treated the same as an unavailable schema rather than left to escape as an
+        unhandled exception (review) - run_extraction's own schema_unavailable_error path
+        already exists to answer exactly that.
         """
-        cached = self.peek_cached()
-        if cached is not None:
-            return cached
-        return self._cache.get_or_create(self._cache_key, self.load, should_cache_fn=lambda schema: schema is not None)
+        try:
+            cached = self.peek_cached()
+            if cached is not None:
+                return cached
+            return self._cache.get_or_create(
+                self._cache_key, self.load, should_cache_fn=lambda schema: schema is not None
+            )
+        except Exception:
+            logger.exception("Cache backend failed while fetching the schema")
+            return None
 
     def peek_cached(self) -> dict[str, Any] | None:
-        """Return the cached schema if present, without ever calling load(). A cheap, bounded
-        cache lookup (a dict or Redis round-trip, not the platform's synchronous HTTP call),
-        safe for a caller to run directly on the event loop instead of paying a thread-pool
-        dispatch for every request regardless of whether a fetch is actually needed (review) -
-        only a genuine miss (None here) needs get_cached()'s slower load()-on-miss path.
+        """Return the cached schema if present, without ever calling load(). Only a genuine
+        miss (None here) needs get_cached()'s slower load()-on-miss path - but this lookup
+        itself is not necessarily cheap: with CACHE_BACKEND=redis it is a real network round
+        trip, not a bounded in-process one, so it must not be called directly on the event loop
+        either (review, ENG-9671) - see get_cached's docstring.
         """
         cached = self._cache.get(self._cache_key)
         logger.debug("cache_key=%s hit=%s", self._cache_key, cached is not NO_VALUE)
