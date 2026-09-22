@@ -82,7 +82,11 @@ def test_gemini_send_message_end_to_end(monkeypatch, mocker, tmp_path):
 
     assert response.status_code == HTTP_200_OK
     body = response.json()
-    result_text = body["result"]["task"]["artifacts"][0]["parts"][0]["text"]
+    task = body["result"]["task"]
+    assert task["status"]["state"] == "TASK_STATE_COMPLETED"
+    assert "message" not in task["status"]
+    assert task["history"][-1]["parts"][0]["text"] == "Intent extracted successfully."
+    result_text = task["artifacts"][0]["parts"][0]["text"]
     assert '"buy"' in result_text
     assert mock_ainvoke.await_count == 2  # noqa: PLR2004 - one tool-call round, one final answer
 
