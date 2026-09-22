@@ -124,13 +124,7 @@ class IntentExecutor(AgentExecutor):
         try:
             await self._authenticate(context)
             audit_record.subject_type, audit_record.subject_id = self._subject_params(context)
-            result = await self._extract(
-                context,
-                event_queue,
-                audit_record.prompt,
-                subject_id=audit_record.subject_id,
-                subject_type=audit_record.subject_type,
-            )
+            await self._extract(context, event_queue, audit_record)
         except HTTPException as exc:
             await self._audit(audit_record, ExtractionResult(text="", outcome=Outcome.ERROR, message=str(exc.detail)))
             raise
@@ -140,7 +134,6 @@ class IntentExecutor(AgentExecutor):
                 ExtractionResult(text="", outcome=Outcome.ERROR, message=f"{type(exc).__name__}: {exc}"),
             )
             raise
-        await self._audit(audit_record, result)
 
     async def _audit(self, audit_record: _RequestAudit, result: ExtractionResult) -> None:
         """Record the request's outcome; never raises.
@@ -220,11 +213,8 @@ class IntentExecutor(AgentExecutor):
         self,
         context: RequestContext,
         event_queue: EventQueue,
-        raw_text: str,
-        *,
-        subject_id: str,
-        subject_type: str,
-    ) -> ExtractionResult:
+        audit_record: _RequestAudit,
+    ) -> None:
         """Run the extraction for an authenticated request, emitting the A2A task events.
 
         The terminal TaskState reflects the outcome (ENG-9804): TASK_STATE_COMPLETED only for
@@ -237,14 +227,27 @@ class IntentExecutor(AgentExecutor):
         "Extracting intent..." placeholder as the final word instead of leaving it there - done
         by emitting one last WORKING update carrying the message, then a message-free terminal
         status (see the comment at the call site for why it has to be in that order).
+
+        The audit record is written here, before the terminal status event is enqueued, not
+        after `execute()` gets control back. `ActiveTask._run_producer` awaits this whole method
+        before it ever looks at the result, but `DefaultRequestHandler.on_message_send` doesn't
+        wait for that - it returns as soon as its own subscription sees the terminal Task
+        snapshot, which reaches it through the event queue/consumer concurrently with this
+        coroutine still running. Auditing after enqueuing that terminal event races the caller-
+        visible response against this coroutine's own remaining code; a test driving the request
+        through a short-lived event loop (e.g. starlette's TestClient without `with client:`,
+        which tears its portal down as soon as the ASGI call returns) can then close out from
+        under this task before the write finishes, dropping the record while the response the
+        caller got was already correct. Writing it first makes the record exist before a caller
+        can possibly observe "done".
         """
         logger.info(
             "Received message for %s: %s",
             self._agent.settings.intent_agent_name,
-            raw_text,
+            audit_record.prompt,
         )
 
-        prompt = raw_text or "(empty)"
+        prompt = audit_record.prompt or "(empty)"
 
         task = context.current_task or new_task_from_user_message(context.message)
         await event_queue.enqueue_event(task)
@@ -260,7 +263,9 @@ class IntentExecutor(AgentExecutor):
             ),
         )
 
-        result = await self._agent.run_extraction(prompt, RequestSubject(id=subject_id, type=subject_type))
+        result = await self._agent.run_extraction(
+            prompt, RequestSubject(id=audit_record.subject_id, type=audit_record.subject_type)
+        )
 
         await event_queue.enqueue_event(
             TaskArtifactUpdateEvent(
@@ -269,6 +274,7 @@ class IntentExecutor(AgentExecutor):
                 artifact=new_text_artifact(name="result", text=result.text),
             ),
         )
+        await self._audit(audit_record, result)
         # ENG-9804: the task's own terminal state must tell success from failure - a caller
         # otherwise has no way to know without parsing the artifact JSON for an "error" key.
         # VALIDATION_FAILED/UNMATCHED/ERROR (no_intent_error, timeouts, schema unavailable, ...)
@@ -304,7 +310,6 @@ class IntentExecutor(AgentExecutor):
             self._agent.settings.intent_agent_name,
             result.text,
         )
-        return result
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         """Handle task cancellation by emitting a CANCELED status event."""

@@ -151,6 +151,39 @@ def test_success_records_the_extraction(baseline_env, mocker):
     assert record.latency_ms >= 0
 
 
+def test_audit_is_recorded_before_the_terminal_task_event_is_enqueued(baseline_env, mocker):
+    """The audit write must happen before the terminal Task status event reaches the queue.
+
+    DefaultRequestHandler.on_message_send returns to the caller as soon as its own subscription
+    observes that terminal event, via a separate producer/consumer task racing this coroutine's
+    own remaining code (see executor.py's _extract). Auditing only after enqueuing the terminal
+    event lets a short-lived event loop driving the request (e.g. starlette's TestClient without
+    `with client:`) tear itself down once the response is sent, before this coroutine's own tail
+    finishes - dropping the record while the caller-visible response was already correct. This is
+    a regression test for exactly that CI-only failure (audit file empty despite a correct
+    response); auditing first guarantees the record exists before a caller can observe "done".
+    """
+    mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value={"active": True, "sub": "user-1"}))
+    executor, sender, _agent = _executor(
+        baseline_env, mocker, result=ExtractionResult(text="{...}", outcome=Outcome.SUCCESS, evaluations=_EVALUATIONS)
+    )
+    calls = []
+    sender.send.side_effect = lambda *_args, **_kwargs: calls.append("audit")
+
+    async def _record_terminal_event(event):
+        if isinstance(event, TaskStatusUpdateEvent) and event.status.state in (
+            TaskState.TASK_STATE_COMPLETED,
+            TaskState.TASK_STATE_FAILED,
+        ):
+            calls.append("terminal_event")
+
+    event_queue = mocker.Mock(enqueue_event=mocker.AsyncMock(side_effect=_record_terminal_event))
+
+    asyncio.run(executor.execute(_context({"authorization": "Bearer good-token"}), event_queue))
+
+    assert calls == ["audit", "terminal_event"]
+
+
 @pytest.mark.parametrize(
     "outcome",
     [Outcome.VALIDATION_FAILED, Outcome.UNMATCHED, Outcome.ERROR],
