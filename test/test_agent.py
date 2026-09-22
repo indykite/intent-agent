@@ -30,6 +30,7 @@ from indykite.intent_agent.input_schema import build_input_schema
 from indykite.intent_agent.schema import build_schema_cache
 from indykite.intent_agent.skills import discover_skills
 from indykite.intent_agent.subject_binding import (
+    PolicyContext,
     _bind_subject,
     _normalize_contexts,
     _vocabulary_reason,
@@ -583,6 +584,40 @@ def test_validate_evaluations_ignores_non_string_relations():
     ]
 
 
+_CAR_POLICY = [{"policy": {"actions": ["APPROVE_REFUND"], "resource": {"type": "Car"}}}]
+
+
+_POLICY_ACTION_ERROR = "evaluations[0]: action.name 'APPROVE_REFUND' is not defined in the data schema"
+
+
+@pytest.mark.parametrize(
+    ("resource_type", "marked", "expected_errors"),
+    [
+        pytest.param("Car", True, [], id="marked_matching_resource_accepted"),
+        pytest.param("Car", False, [_POLICY_ACTION_ERROR], id="unmarked_rejected_like_any_off_schema_value"),
+        pytest.param("Company", True, [_POLICY_ACTION_ERROR], id="marked_but_wrong_resource_type_rejected"),
+    ],
+)
+def test_validate_evaluations_policy_derived_action(resource_type, marked, expected_errors):
+    """A policy-only action name (not a schema edge relation, ENG-9671) is valid only when the
+    evaluation carries context.parameters.action_derivation_rule = "policy_based" *and* the
+    policy's resource.type matches this evaluation's resource.type - either condition missing
+    falls back to the same off-schema rejection as any other unrecognized action.name.
+    """
+    evaluation = {"action": {"name": "APPROVE_REFUND"}, "resource": {"type": resource_type}}
+    if marked:
+        evaluation["context"] = {"parameters": {"action_derivation_rule": "policy_based"}}
+    assert validate_evaluations(_load_schema_fixture(), [evaluation], _CAR_POLICY) == expected_errors
+
+
+def test_validate_evaluations_still_accepts_schema_edges_when_policies_are_present():
+    """A schema edge relation is valid whether marked or not, exactly as before ENG-9671 -
+    fetched policies only ever widen the vocabulary, never narrow the existing one.
+    """
+    evaluations = [{"action": {"name": "RENT"}, "resource": {"type": "Car"}}]
+    assert validate_evaluations(_load_schema_fixture(), evaluations, _CAR_POLICY) == []
+
+
 def test_validation_feedback_error_lists_every_error_in_fixed_shape():
     """The follow-up message must be the fixed 4.7 error shape and carry each error verbatim
     in `reason`, one per line, plus the corrective instruction in `obligation` - not just the
@@ -635,14 +670,17 @@ def test_vocabulary_reason_ends_with_the_shared_schema_suffix(value, suffix):
     assert _vocabulary_reason("action.name", "RENT", {"RENT"}) is None
 
 
-def _normalize(llm_text, prompt="rent kitt"):
-    """normalize_intent_response against the fixture schema with the usual test subject."""
+def _normalize(llm_text, prompt="rent kitt", *, subject=None, policy_context=None):
+    """normalize_intent_response against the fixture schema with the usual test subject and,
+    by default, no policies fetched at all (as opposed to a fetch that failed - see
+    PolicyContext.fetch_failed) - most tests here don't care about ENG-9671 at all.
+    """
     return normalize_intent_response(
         llm_text,
         prompt,
         schema=_load_schema_fixture(),
-        subject_id="user-1",
-        subject_type="Customer",
+        subject=subject or RequestSubject(id="user-1", type="Customer"),
+        policy_context=policy_context or PolicyContext(policies=None, fetch_failed=False),
     )
 
 
@@ -735,6 +773,52 @@ def test_normalize_intent_response_still_validates_a_subject_search_type_against
     with pytest.raises(IntentValidationError) as excinfo:
         _normalize(llm_text, "which martians can rent kitt?")
     assert excinfo.value.errors == ["evaluations[0]: subject.type 'Martian' is not defined in the data schema"]
+
+
+def test_normalize_intent_response_accepts_a_marked_policy_derived_action_end_to_end():
+    """A policy-only action, marked action_derivation_rule="policy_based", passes validation
+    and the marker survives in the response's context.parameters unchanged (ENG-9671) - the
+    same passthrough treatment as every other context.parameters entry.
+    """
+    llm_text = json.dumps(
+        {
+            "evaluations": [
+                {
+                    "action": {"name": "APPROVE_REFUND"},
+                    "resource": {"type": "Car", "id": "kitt"},
+                    "context": {"parameters": {"action_derivation_rule": "policy_based"}},
+                },
+            ],
+        },
+    )
+    policy_context = PolicyContext(policies=_CAR_POLICY, fetch_failed=False)
+    data = json.loads(_normalize(llm_text, "approve a refund for kitt", policy_context=policy_context))
+    assert data["evaluations"][0]["action"] == {"name": "APPROVE_REFUND"}
+    assert data["evaluations"][0]["context"]["parameters"]["action_derivation_rule"] == "policy_based"
+
+
+@pytest.mark.parametrize(
+    ("fetch_failed", "expect_marker"),
+    [
+        pytest.param(True, True, id="fetch_failed_marks_every_evaluation"),
+        pytest.param(False, False, id="fetch_succeeded_omits_the_marker"),
+    ],
+)
+def test_normalize_intent_response_policy_fetch_failed_marker(fetch_failed, expect_marker):
+    """PolicyContext.fetch_failed=True (ENG-9671, retries exhausted) tags every evaluation with
+    the system-set context.parameters.policy_fetch_failed - never the LLM's to produce, added
+    after validation/subject binding so it can't be spoofed by the model's own output and can't
+    be lost by _normalize_contexts settling the context shape. A successful fetch (the default)
+    must not add the key at all - it's a failure signal, not a routine status field.
+    """
+    llm_text = json.dumps({"evaluations": [{"action": {"name": "RENT"}, "resource": {"type": "Car", "id": "kitt"}}]})
+    policy_context = PolicyContext(policies=None, fetch_failed=fetch_failed)
+    data = json.loads(_normalize(llm_text, policy_context=policy_context))
+    parameters = data["evaluations"][0].get("context", {}).get("parameters", {})
+    if expect_marker:
+        assert parameters["policy_fetch_failed"] is True
+    else:
+        assert "policy_fetch_failed" not in parameters
 
 
 def test_normalize_intent_response_passes_context_through_verbatim():
@@ -937,15 +1021,56 @@ def test_get_data_schema_tool_returns_cached_schema(monkeypatch, mocker):
     fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=schema))
     agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client)
 
-    tool = next(t for t in agent.tools if t.name == "get_data_schema")
-    result = tool.invoke({})
+    result = agent._make_get_data_schema_tool().invoke({})
 
     assert json.loads(result) == schema
 
 
+@pytest.mark.parametrize(
+    ("cached_policies", "expected_json"),
+    [
+        pytest.param(
+            [{"policy": {"actions": ["APPROVE_REFUND"], "resource": {"type": "Car"}}, "tags": []}],
+            [{"policy": {"actions": ["APPROVE_REFUND"], "resource": {"type": "Car"}}, "tags": []}],
+            id="returns_cached_policies",
+        ),
+        pytest.param(None, [], id="failed_fetch_returns_empty_list_not_null"),
+    ],
+)
+def test_get_policies_tool_returns_cached_policies_for_the_requests_subject_type(
+    monkeypatch,
+    mocker,
+    cached_policies,
+    expected_json,
+):
+    """The get_policies tool (ENG-9671) must return this request's cached policies as minified
+    JSON, fetched via the subject_type it was built for - mirroring get_data_schema. A failed
+    fetch (get_cached returns None, see PolicyClient.get_cached) must still hand the LLM valid
+    JSON - an empty array, not the string "null".
+    """
+    settings = _full_settings(monkeypatch)
+    fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock()))
+    fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=_load_schema_fixture()))
+    fake_policy_client = mocker.Mock(get_cached=mocker.Mock(return_value=cached_policies))
+    agent = IntentAgent(
+        settings,
+        llm=fake_llm,
+        schema_client=fake_schema_client,
+        policy_client=fake_policy_client,
+    )
+
+    result = agent._make_get_policies_tool("Customer").invoke({})
+
+    assert json.loads(result) == expected_json
+    fake_policy_client.get_cached.assert_called_with("Customer")
+
+
 def test_run_extraction_binds_structured_output_schema_derived_from_current_schema(monkeypatch, mocker):
     """run_extraction must call bind_tools with a response_schema derived from the last
-    successfully derived schema (via build_input_schema), not some other/unrelated schema.
+    successfully derived schema (via build_input_schema), not some other/unrelated schema -
+    and with the expected tool set. Tools are rebuilt fresh every request (ENG-9671 - policies
+    vary by subject_type), so two separately-built StructuredTool lists never compare equal by
+    identity; asserting on names is what is actually meaningful here.
     """
     settings = _full_settings(monkeypatch)
     schema = _load_schema_fixture()
@@ -955,15 +1080,18 @@ def test_run_extraction_binds_structured_output_schema_derived_from_current_sche
     mock_bind_tools = mocker.Mock(return_value=fake_bound_llm)
     fake_llm = mocker.Mock(bind_tools=mock_bind_tools)
     fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=schema))
-    agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client)
+    fake_policy_client = mocker.Mock(get_cached=mocker.Mock(return_value=[]))
+    agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client, policy_client=fake_policy_client)
 
     asyncio.run(agent.run_extraction("buy AAPL", RequestSubject(id="user-1", type="Customer")))
 
-    mock_bind_tools.assert_called_once_with(
-        agent.tools,
-        response_mime_type="application/json",
-        response_schema=build_input_schema(schema),
-    )
+    mock_bind_tools.assert_called_once()
+    call = mock_bind_tools.call_args
+    assert {t.name for t in call.args[0]} == {"activate_skill", "get_data_schema", "get_policies"}
+    assert call.kwargs == {
+        "response_mime_type": "application/json",
+        "response_schema": build_input_schema(schema, []),
+    }
 
 
 def test_run_extraction_rebuilds_schema_when_cached_schema_changes_between_requests(monkeypatch, mocker):
@@ -1057,7 +1185,15 @@ def _agent_with_responses(monkeypatch, mocker, responses, **env):
     mock_ainvoke = mocker.AsyncMock(side_effect=responses)
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mock_ainvoke)))
     fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=_load_schema_fixture()))
-    return IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client), mock_ainvoke
+    # No policies by default (a successful fetch that found none, not a failure) - a real
+    # PolicyClient would otherwise hit the real network against the fake base_url on every
+    # run_extraction-level test here, and incidentally tag every evaluation
+    # policy_fetch_failed=True, which is its own dedicated test's concern, not this fixture's.
+    fake_policy_client = mocker.Mock(get_cached=mocker.Mock(return_value=[]))
+    return (
+        IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client, policy_client=fake_policy_client),
+        mock_ainvoke,
+    )
 
 
 def test_run_extraction_returns_bound_evaluations_when_first_answer_is_on_schema(monkeypatch, mocker):
@@ -1270,6 +1406,53 @@ def test_run_extraction_short_circuits_repeat_skill_activation(monkeypatch, mock
     assert ["<data_schema>" in result for result in tool_results] == [True, False]
     assert ["already active" in result for result in tool_results] == [False, True]
     assert caplog.text.count("Activating skill: extract-intent") == 1
+
+
+@pytest.mark.parametrize(
+    ("cached_policies", "expect_block"),
+    [
+        pytest.param(
+            [{"policy": {"actions": ["APPROVE_REFUND"], "resource": {"type": "Car"}}, "tags": []}],
+            True,
+            id="policies_fetched_injects_the_block",
+        ),
+        pytest.param([], False, id="none_fetched_omits_the_block"),
+    ],
+)
+def test_run_extraction_policies_block_injection_on_skill_activation(
+    monkeypatch, mocker, cached_policies, expect_block
+):
+    """extract-intent's activation must inject a <policies> block alongside <data_schema> when
+    policies were fetched for this request (ENG-9671) - the LLM's other source for action.name -
+    and must not inject an empty/misleading block when none were fetched (a failed fetch or a
+    project with none at all), falling back to schema-only action derivation as before ENG-9671.
+    """
+    settings = _full_settings(monkeypatch)
+    mock_ainvoke = mocker.AsyncMock(
+        side_effect=[
+            _llm_response(mocker, tool_calls=[_ACTIVATE_EXTRACT_INTENT_CALL]),
+            _llm_response(mocker, _ON_SCHEMA_ANSWER),
+        ],
+    )
+    fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mock_ainvoke)))
+    fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=_load_schema_fixture()))
+    fake_policy_client = mocker.Mock(get_cached=mocker.Mock(return_value=cached_policies))
+    agent = IntentAgent(
+        settings,
+        llm=fake_llm,
+        schema_client=fake_schema_client,
+        policy_client=fake_policy_client,
+    )
+
+    asyncio.run(agent.run_extraction("rent kitt", RequestSubject(id="user-1", type="Customer")))
+
+    messages = mock_ainvoke.call_args_list[-1].args[0]
+    tool_results = [m.content for m in messages if isinstance(m, ToolMessage)]
+    if expect_block:
+        assert any("<policies>" in result and "APPROVE_REFUND" in result for result in tool_results)
+        assert any("policy_based" in result for result in tool_results)
+    else:
+        assert not any("</policies>" in result for result in tool_results)
 
 
 def test_run_extraction_returns_timeout_error_when_llm_call_exceeds_limit(monkeypatch, mocker, caplog):

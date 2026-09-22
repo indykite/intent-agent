@@ -2,6 +2,7 @@
 
 import json
 import re
+from dataclasses import dataclass
 from typing import Any
 
 from indykite.intent_agent.cel import filter_errors
@@ -12,6 +13,34 @@ from indykite.intent_agent.errors import (
     SubjectTypeMismatchError,
     no_intent_error,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class RequestSubject:
+    """The caller-supplied subject identity for one request resolved and sent by
+    IAG itself, not derived from the Bearer token, which now authenticates the
+    calling client rather than any subject. `id` may be blank (an anonymous caller
+    a Subject Search is the LLM's per-evaluation marker instead); `type` may not.
+    """
+
+    id: str | None
+    type: str
+
+
+@dataclass(frozen=True, slots=True)
+class PolicyContext:
+    """This request's fetched AuthZEN policies used to accept a policy-derived
+    action.name when the evaluation is marked action_derivation_rule="policy_based", see
+    _action_name_error - and whether the fetch itself failed after retries, which
+    normalize_intent_response tags onto every evaluation's context.parameters (see
+    _mark_policy_fetch_failed) so the receiving agent knows this answer used the data schema
+    only. Bundled together since both come from one per-request PolicyClient.get_cached() call
+    and normalize_intent_response needs both; separately they would push its own argument count
+    over the lint limit.
+    """
+
+    policies: list[dict[str, Any]] | None
+    fetch_failed: bool
 
 
 def _node_types(schema: dict[str, Any]) -> set[str]:
@@ -86,6 +115,77 @@ def _vocabulary_reason(field: str, value: object, allowed: set[str]) -> str | No
     return None
 
 
+# SKILL.md's marker for "action.name came from a policy, not the schema's edge relations" -
+# same context.parameters convention as subject_source, a different key so the two markers
+# never collide on one evaluation.
+_ACTION_DERIVATION_KEY = "action_derivation_rule"
+_ACTION_DERIVATION_POLICY = "policy_based"
+_POLICY_FETCH_FAILED_KEY = "policy_fetch_failed"
+
+
+def _policy_actions_for_resource(policies: list[dict[str, Any]] | None, resource_type: str) -> set[str]:
+    """Every action name a fetched policy defines for evaluations against this resource type -
+    from policy.actions where policy.resource.type matches. Confirmed against a real captured
+    GET /access/v1/policies response (ENG-9671):
+    {"results": [{"policy": {"actions": [...], "resource": {"type": ...}, "subject": {...},
+    "condition": {...}}, "tags": [...]}]} - subject.type is not checked here too, since the
+    fetch itself is already scoped to the caller's subject_type (PolicyClient.get_cached).
+    """
+    if not policies:
+        return set()
+    names: set[str] = set()
+    for entry in policies:
+        policy = entry.get("policy") if isinstance(entry, dict) else None
+        if not isinstance(policy, dict):
+            continue
+        resource = policy.get("resource")
+        if not isinstance(resource, dict) or resource.get("type") != resource_type:
+            continue
+        actions = policy.get("actions")
+        if isinstance(actions, list):
+            names.update(name for name in actions if isinstance(name, str) and name)
+    return names
+
+
+def _action_derivation_rule(evaluation: dict[str, Any]) -> object:
+    """Return the evaluation's context.parameters.action_derivation_rule marker, mirroring
+    _subject_source - a malformed context/parameters reads as no marker at all.
+    """
+    context = evaluation.get("context")
+    if not isinstance(context, dict):
+        return None
+    parameters = context.get("parameters")
+    if not isinstance(parameters, dict):
+        return None
+    return parameters.get(_ACTION_DERIVATION_KEY)
+
+
+def _action_name_error(
+    action: dict[str, Any],
+    resource_type: object,
+    edge_relations: set[str],
+    policies: list[dict[str, Any]] | None,
+    marker: object,
+) -> str | None:
+    """Describe why action.name isn't acceptable, or None if it is. `action` is already known
+    to be an object (see _evaluation_errors); `marker` is the evaluation's own
+    context.parameters.action_derivation_rule value (_action_derivation_rule).
+
+    Valid two ways: as a schema edge relation, always (marked or not - unchanged from before
+    ENG-9671), or as a policy-derived action for this evaluation's resource.type, but only when
+    marker == "policy_based". Unmarked, a policy-only action name is rejected the same as any
+    other off-schema value - the retry loop (validation_feedback_error) is what pushes the LLM
+    to add the marker, not a silent acceptance of an unmarked claim.
+    """
+    name = action.get("name")
+    reason = _vocabulary_reason("action.name", name, edge_relations)
+    if reason is None or _blank(name) or not isinstance(resource_type, str):
+        return reason
+    if name in _policy_actions_for_resource(policies, resource_type) and marker == _ACTION_DERIVATION_POLICY:
+        return None
+    return reason
+
+
 # The PRD's context sub-shapes (TDD 3.2) and what each must be when present - the same three
 # keys input_schema._Context declares for the structured output.
 _CONTEXT_KEY_TYPES: dict[str, type] = {"filters": str, "parameters": dict, "qualifiers": dict}
@@ -117,7 +217,12 @@ def _context_errors(context: object) -> list[str]:
     return errors
 
 
-def _evaluation_errors(evaluation: object, node_types: set[str], edge_relations: set[str]) -> list[str]:
+def _evaluation_errors(
+    evaluation: object,
+    node_types: set[str],
+    edge_relations: set[str],
+    policies: list[dict[str, Any]] | None,
+) -> list[str]:
     """Return every reason this evaluation can't be accepted, empty if it can.
 
     Must run before _bind_subject, which overwrites subject.type/id regardless of what the
@@ -129,21 +234,25 @@ def _evaluation_errors(evaluation: object, node_types: set[str], edge_relations:
     correlate it. subject is exempt from the malformed-shape check (though not the
     blank/off-schema one) since _bind_subject replaces a non-object subject outright either
     way. context has no schema vocabulary to check against, only a shape (_context_errors).
+    action.name is additionally valid as a policy-derived action for resource.type when marked
+    action_derivation_rule="policy_based" (ENG-9671) - see _action_name_error.
     """
     if not isinstance(evaluation, dict):
         return ["evaluation is not an object"]
     errors: list[str] = []
     resource = evaluation.get("resource")
+    resource_type = resource.get("type") if isinstance(resource, dict) else None
     if not isinstance(resource, dict):
         errors.append("resource is missing or not an object")
     else:
-        errors.append(_vocabulary_reason("resource.type", resource.get("type"), node_types))
+        errors.append(_vocabulary_reason("resource.type", resource_type, node_types))
     action = evaluation.get("action")
     if action is not None:
         if not isinstance(action, dict):
             errors.append("action is not an object")
         else:
-            errors.append(_vocabulary_reason("action.name", action.get("name"), edge_relations))
+            marker = _action_derivation_rule(evaluation)
+            errors.append(_action_name_error(action, resource_type, edge_relations, policies, marker))
     subject = evaluation.get("subject")
     if isinstance(subject, dict):
         errors.append(_vocabulary_reason("subject.type", subject.get("type"), node_types))
@@ -151,20 +260,25 @@ def _evaluation_errors(evaluation: object, node_types: set[str], edge_relations:
     return [error for error in errors if error]
 
 
-def validate_evaluations(schema: dict[str, Any], evaluations: list[object]) -> list[str]:
+def validate_evaluations(
+    schema: dict[str, Any],
+    evaluations: list[object],
+    policies: list[dict[str, Any]] | None = None,
+) -> list[str]:
     """Check every evaluation's subject.type / action.name / resource.type against the
     schema's node types and edge relations (TDD 4.8 post-assembly check), and its context
     against the PRD's parameters/filters/qualifiers shape. Returns one message per problem,
     prefixed with the evaluation's index so the LLM can tell which entry to fix (they
     become the `reason` lines of errors.validation_feedback_error); empty means the list
-    is acceptable.
+    is acceptable. `policies` (ENG-9671) additionally allows a marked action.name to come from
+    a policy instead of the schema - see _action_name_error.
     """
     node_types = _node_types(schema)
     edge_relations = _edge_relations(schema)
     return [
         f"evaluations[{index}]: {error}"
         for index, evaluation in enumerate(evaluations)
-        for error in _evaluation_errors(evaluation, node_types, edge_relations)
+        for error in _evaluation_errors(evaluation, node_types, edge_relations, policies)
     ]
 
 
@@ -186,8 +300,8 @@ def normalize_intent_response(
     original_prompt: str,
     *,
     schema: dict[str, Any],
-    subject_id: str | None,
-    subject_type: str,
+    subject: RequestSubject,
+    policy_context: PolicyContext,
 ) -> str:
     """Ensure the response is valid JSON with an evaluations list, wrap it if needed, and set
     the prompt echo.
@@ -221,13 +335,33 @@ def normalize_intent_response(
         raise IntentValidationError(["evaluations is missing or not an array"])
     if not evaluations:
         return json.dumps(no_intent_error(original_prompt), indent=2, ensure_ascii=False)
-    errors = validate_evaluations(schema, evaluations)
+    errors = validate_evaluations(schema, evaluations, policy_context.policies)
     if errors:
         raise IntentValidationError(errors)
 
-    _bind_subject(data, subject_id=subject_id, subject_type=subject_type)
+    _bind_subject(data, subject_id=subject.id, subject_type=subject.type)
     _normalize_contexts(data)
+    if policy_context.fetch_failed:
+        _mark_policy_fetch_failed(data)
     return json.dumps(data, indent=2, ensure_ascii=False)
+
+
+def _mark_policy_fetch_failed(data: dict[str, Any]) -> None:
+    """Tag every evaluation's context.parameters.policy_fetch_failed - a system-set flag, never
+    the LLM's to produce, so the receiving agent knows this response's action derivation used
+    the data schema only: the policies fetch failed after retries (ENG-9671,
+    PolicyClient.get_cached). Runs after _normalize_contexts, so context is already settled
+    into an object on every evaluation.
+    """
+    for evaluation in data.get("evaluations", []):
+        if not isinstance(evaluation, dict):
+            continue
+        context = evaluation["context"]
+        parameters = context.get("parameters")
+        if not isinstance(parameters, dict):
+            parameters = {}
+            context["parameters"] = parameters
+        parameters[_POLICY_FETCH_FAILED_KEY] = True
 
 
 def _normalize_contexts(data: dict[str, Any]) -> None:

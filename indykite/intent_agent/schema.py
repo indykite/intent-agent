@@ -38,24 +38,23 @@ def build_schema_cache(settings: Settings) -> CacheRegion:
     return make_region().configure("dogpile.cache.memory", expiration_time=ttl_seconds)
 
 
-def _cache_key(app_agent_key: str) -> str:
-    """Build a cache key scoped to this specific IndyKite environment.
+def app_agent_key_gid(app_agent_key: str) -> str | None:
+    """Extract the stable, non-secret GID (the `sub` claim) from an IK_APP_AGENT_KEY JWT,
+    without verifying its signature (never anything that would require the signing key) - the
+    one piece every per-environment cache key (schema, policies) is scoped by, since a single
+    shared key would let clients pointed at different IndyKite environments silently overwrite
+    each other's cached data if they happen to share a Redis backend/region.
 
-    A single shared key would let multiple SchemaClient instances - e.g. pointing at different
-    IndyKite environments - silently overwrite each other's schema if they happen to share a
-    Redis backend/region.
-
-    A blank app_agent_key is a supported "IK not configured" state (see SchemaClient.load()) -
-    hashes to a stable placeholder instead of decoding, since there's nothing to decode and
-    no schema will ever be fetched/cached under it anyway. Any non-blank app_agent_key must be
-    a valid JWT with a `sub` claim (a stable, non-secret GID, read without verifying the
-    signature - never anything that would require the signing key) - a malformed one is a
-    real configuration error and must fail the process loudly at startup with a clear
-    InvalidAppAgentKeyError, not silently fall back to a less specific cache key while
-    continuing to attempt a schema fetch with a broken credential.
+    None for a blank app_agent_key - the supported "IK not configured" state (see
+    SchemaClient.load()), which callers map to their own stable placeholder instead of
+    decoding, since there's nothing to decode and nothing will ever be fetched/cached under it
+    anyway. Any non-blank app_agent_key must be a valid JWT with a string `sub` claim - a
+    malformed one is a real configuration error and must fail the process loudly at startup
+    with a clear InvalidAppAgentKeyError, not silently degrade to a less specific cache key
+    while continuing to attempt a fetch with a broken credential.
     """
     if not app_agent_key:
-        return "ikg_schema:unconfigured"
+        return None
     message = "IK_APP_AGENT_KEY is not a valid JWT with a 'sub' claim"
     try:
         claims = jwt.decode(app_agent_key, options={"verify_signature": False})
@@ -66,7 +65,15 @@ def _cache_key(app_agent_key: str) -> str:
     if not isinstance(gid, str):
         logger.error("IK_APP_AGENT_KEY decoded fine but is missing a string 'sub' claim: %r", gid)
         raise InvalidAppAgentKeyError(message)
-    return f"ikg_schema:{gid}"
+    return gid
+
+
+def _cache_key(app_agent_key: str) -> str:
+    """Build a cache key scoped to this specific IndyKite environment - see
+    app_agent_key_gid() for why. A blank app_agent_key hashes to a stable placeholder.
+    """
+    gid = app_agent_key_gid(app_agent_key)
+    return "ikg_schema:unconfigured" if gid is None else f"ikg_schema:{gid}"
 
 
 class SchemaClient:

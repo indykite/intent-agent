@@ -68,6 +68,11 @@ class Settings(BaseSettings):
     schema_fetch_timeout_seconds: PositiveFloat = 30.0
     schema_refresh_ttl_minutes: PositiveFloat = 5.0
 
+    policy_fetch_timeout_seconds: PositiveFloat = 30.0
+    policy_refresh_ttl_minutes: PositiveFloat = 5.0
+    policy_fetch_retry_attempts: PositiveInt = 3
+    policy_preview_chars: PositiveInt = 12000
+
     cache_backend: Literal["memory", "redis"] = "memory"
     redis_url: RedisDsn | None = None
 

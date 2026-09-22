@@ -122,6 +122,7 @@ def test_success_records_the_extraction(baseline_env, mocker):
         evaluations=_EVALUATIONS,
         validation_retries=1,
         schema_version="deadbeef",
+        policy_version="cafef00d",
     )
     executor, sender, _agent = _executor(baseline_env, mocker, result=result)
 
@@ -141,6 +142,8 @@ def test_success_records_the_extraction(baseline_env, mocker):
     assert record.prompt == _PROMPT
     assert record.evaluations == _EVALUATIONS
     assert record.schema_version == "deadbeef"
+    assert record.policy_version == "cafef00d"
+    assert record.policy_fetch_failed is False
     assert record.llm_provider == "gemini"
     assert record.llm_model == "gemini-3.5-flash-lite"
     assert record.validation_retries == 1
@@ -170,6 +173,28 @@ def test_non_success_outcomes_surface_as_task_state_failed(baseline_env, mocker,
 
     assert _terminal_task_state(event_queue) == TaskState.TASK_STATE_FAILED
     assert _history_summary_message(event_queue) == "Failed to extract intent."
+
+
+def test_policy_fetch_failure_is_recorded_on_the_audit_trail(baseline_env, mocker):
+    """When the pipeline couldn't retrieve policies (ENG-9671), the audit record carries that
+    alongside the caller-facing `context.parameters.policy_fetch_failed` marker, for server-side
+    visibility even though the request itself still succeeds.
+    """
+    mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value={"active": True, "sub": "user-1"}))
+    result = ExtractionResult(
+        text="{...}",
+        outcome=Outcome.SUCCESS,
+        evaluations=_EVALUATIONS,
+        policy_version="",
+        policy_fetch_failed=True,
+    )
+    executor, sender, _agent = _executor(baseline_env, mocker, result=result)
+
+    _execute(executor, _context({"authorization": "Bearer good-token"}), mocker)
+
+    record = _sole_record(sender)
+    assert record.policy_version == ""
+    assert record.policy_fetch_failed is True
 
 
 def test_generates_a_request_id_when_the_caller_sends_none(baseline_env, mocker):

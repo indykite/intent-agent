@@ -63,7 +63,19 @@ def _agent(monkeypatch, mocker, baseline_env, answers):
     mock_ainvoke = mocker.AsyncMock(side_effect=responses)
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mock_ainvoke)))
     fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=_canbank_schema()))
-    return IntentAgent(Settings(_env_file=None), llm=fake_llm, schema_client=fake_schema_client), mock_ainvoke
+    # No policies (a successful fetch that found none) - these golden scenarios are about the
+    # schema-derived pipeline, not ENG-9671, and a real PolicyClient would otherwise hit the
+    # network against this fake settings' base_url on every scenario.
+    fake_policy_client = mocker.Mock(get_cached=mocker.Mock(return_value=[]))
+    return (
+        IntentAgent(
+            Settings(_env_file=None),
+            llm=fake_llm,
+            schema_client=fake_schema_client,
+            policy_client=fake_policy_client,
+        ),
+        mock_ainvoke,
+    )
 
 
 def _answer(*evaluations):
@@ -357,6 +369,75 @@ def test_golden_scenario_non_cel_filter_is_retried_until_it_parses(monkeypatch, 
     assert mock_ainvoke.call_count == _LLM_CALLS_WITH_ONE_RETRY
     feedback = json.loads(mock_ainvoke.call_args_list[-1].args[0][-1].content)
     assert "Malformed shape:\n- evaluations[0]: context.filters is not valid CEL (line 1, column" in feedback["reason"]
+
+
+def _agent_with_policies(monkeypatch, mocker, baseline_env, answers, policies):
+    """Like _agent, but with this request's PolicyClient.get_cached() returning `policies`
+    instead of the usual empty list - for the one golden scenario that actually exercises
+    ENG-9671's policy-derived action.name.
+    """
+    baseline_env()
+    responses = [
+        _llm_response(mocker, tool_calls=[_ACTIVATE_EXTRACT_INTENT_CALL]),
+        *(_llm_response(mocker, json.dumps(answer)) for answer in answers),
+    ]
+    mock_ainvoke = mocker.AsyncMock(side_effect=responses)
+    fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mock_ainvoke)))
+    fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=_canbank_schema()))
+    fake_policy_client = mocker.Mock(get_cached=mocker.Mock(return_value=policies))
+    return (
+        IntentAgent(
+            Settings(_env_file=None),
+            llm=fake_llm,
+            schema_client=fake_schema_client,
+            policy_client=fake_policy_client,
+        ),
+        mock_ainvoke,
+    )
+
+
+def test_golden_scenario_policy_derived_action_replays_a_real_captured_policy(monkeypatch, mocker, baseline_env):
+    """ENG-9671 end to end: a policy defines an action ("APPROVE_REFUND") that is not one of
+    the CanBank schema's own edge relations at all. Marked action_derivation_rule="policy_based",
+    it is accepted without a retry, and the marker survives verbatim into what the caller gets -
+    replaying the shape of a real GET /access/v1/policies response (subject.type/resource.type/
+    actions/condition), not a schema-only prompt.
+    """
+    policies = [
+        {
+            "policy": {
+                "meta": {"policy_version": "v1"},
+                "subject": {"type": "Customer"},
+                "actions": ["APPROVE_REFUND"],
+                "resource": {"type": "Account"},
+                "condition": {"cypher": "resource.balance > $max_price"},
+            },
+            "tags": ["refunds"],
+        },
+    ]
+    prompt = "Can customer rebecca approve a refund on account acc_ted_investing?"
+    answer = {
+        "action": {"name": "APPROVE_REFUND"},
+        "resource": {"type": "Account", "id": "acc_ted_investing"},
+        "context": {"parameters": {"action_derivation_rule": "policy_based"}},
+    }
+    agent, mock_ainvoke = _agent_with_policies(monkeypatch, mocker, baseline_env, [_answer(answer)], policies)
+
+    result = asyncio.run(agent.run_extraction(prompt, RequestSubject(id="rebecca", type="Customer")))
+
+    assert result.outcome == Outcome.SUCCESS
+    assert result.validation_retries == 0
+    assert mock_ainvoke.call_count == _LLM_CALLS_TO_FIRST_ANSWER
+    assert result.evaluations == [
+        {
+            "action": {"name": "APPROVE_REFUND"},
+            "resource": {"type": "Account", "id": "acc_ted_investing"},
+            "context": {"parameters": {"action_derivation_rule": "policy_based"}},
+            "subject": {"type": "Customer", "id": "rebecca"},
+        },
+    ]
+    assert result.policy_version
+    assert result.policy_fetch_failed is False
 
 
 def _skill_json_examples():

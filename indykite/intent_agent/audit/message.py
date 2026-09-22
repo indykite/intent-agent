@@ -8,7 +8,7 @@ carries the same text the caller received, so a record and the response it audit
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
@@ -45,10 +45,12 @@ class AuditMessage(BaseModel):
     prompt: str
     evaluations: list[dict[str, Any]]
     schema_version: str
+    policy_version: str
     llm_provider: str
     llm_model: str
     latency_ms: int
     validation_retries: int
+    policy_fetch_failed: bool
     outcome: Outcome
     message: str
 
@@ -90,6 +92,19 @@ def schema_version(schema: Mapping[str, Any] | None) -> str:
     if schema is None:
         return ""
     canonical = json.dumps(schema, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def policy_version(policies: Sequence[Mapping[str, Any]] | None) -> str:
+    """Hash of the fetched KBAC policies - "what policies were in effect for this
+    request", schema_version's companion field. Same canonical-JSON-then-SHA-256 pattern, same
+    stability guarantee regardless of key/entry order. Empty when no policies were fetched -
+    none exist for this subject_type, or the fetch failed after retries (see
+    AuditMessage.policy_fetch_failed for telling those two apart).
+    """
+    if not policies:
+        return ""
+    canonical = json.dumps(policies, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 

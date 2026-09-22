@@ -14,6 +14,7 @@ from indykite.intent_agent.agent import IntentAgent
 from indykite.intent_agent.audit.sender import Sender, build_sender
 from indykite.intent_agent.config import Settings
 from indykite.intent_agent.executor import IntentExecutor
+from indykite.intent_agent.policy import PolicyClient
 from indykite.intent_agent.schema import SchemaClient
 
 
@@ -22,6 +23,7 @@ def build_app(
     *,
     llm: BaseChatModel | None = None,
     schema_client: SchemaClient | None = None,
+    policy_client: PolicyClient | None = None,
     audit_sender: Sender | None = None,
 ) -> tuple[Starlette, IntentAgent]:
     """Construct the Starlette app and its backing IntentAgent for these settings.
@@ -30,7 +32,7 @@ def build_app(
     the app's lifespan on shutdown - which is what drains a buffered (AUDIT_ASYNC) queue
     before the process exits, the same guarantee the IAG's sender gives on stop.
     """
-    agent = IntentAgent(settings, llm=llm, schema_client=schema_client)
+    agent = IntentAgent(settings, llm=llm, schema_client=schema_client, policy_client=policy_client)
     agent.preload_schema()
     sender = audit_sender or build_sender(settings)
 

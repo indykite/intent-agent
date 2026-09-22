@@ -10,7 +10,9 @@ from indykite.intent_agent.audit.message import (
     utc_timestamp,
 )
 
-# TDD 4.9's field table, in its order - the record must carry exactly these, nothing else.
+# TDD 4.9's field table, in its order, plus ENG-9671's policy_version/policy_fetch_failed - a
+# deliberate, TDD-owner-confirmed pair of additions alongside their schema_version/(no failure
+# counterpart) siblings, not a departure from "exactly these, nothing else" otherwise.
 _TDD_FIELDS = (
     "timestamp",
     "request_id",
@@ -21,10 +23,12 @@ _TDD_FIELDS = (
     "prompt",
     "evaluations",
     "schema_version",
+    "policy_version",
     "llm_provider",
     "llm_model",
     "latency_ms",
     "validation_retries",
+    "policy_fetch_failed",
     "outcome",
     "message",
 )

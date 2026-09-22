@@ -93,10 +93,12 @@ class _RequestAudit:
             prompt=self.prompt,
             evaluations=result.evaluations,
             schema_version=result.schema_version,
+            policy_version=result.policy_version,
             llm_provider=_llm_provider(self._settings.gemini_model),
             llm_model=self._settings.gemini_model,
             latency_ms=latency_ms,
             validation_retries=result.validation_retries,
+            policy_fetch_failed=result.policy_fetch_failed,
             outcome=result.outcome,
             message=result.message,
         )

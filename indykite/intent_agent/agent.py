@@ -22,7 +22,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel
 
 from indykite.intent_agent import skills
-from indykite.intent_agent.audit.message import Outcome, schema_version
+from indykite.intent_agent.audit.message import Outcome, policy_version, schema_version
 from indykite.intent_agent.config import Settings
 from indykite.intent_agent.errors import (
     IntentValidationError,
@@ -35,8 +35,11 @@ from indykite.intent_agent.errors import (
     validation_feedback_error,
 )
 from indykite.intent_agent.input_schema import build_input_schema
+from indykite.intent_agent.policy import PolicyClient, build_policy_cache
 from indykite.intent_agent.schema import SchemaClient, build_schema_cache
 from indykite.intent_agent.subject_binding import (
+    PolicyContext,
+    RequestSubject,
     normalize_intent_response,
     schema_has_no_node_types,
     validate_subject_type,
@@ -63,17 +66,46 @@ def _dump(payload: dict[str, Any]) -> str:
     return json.dumps(payload, indent=2, ensure_ascii=False)
 
 
+def _policy_block(policies: list[dict[str, Any]] | None, preview_chars: int) -> str:
+    """Build the <policies> context block for extract-intent's activation (ENG-9671),
+    mirroring the <data_schema> block. Empty string when there are no policies - the fetch
+    failed, or none exist for this subject_type - so the LLM falls back to schema-only action
+    derivation exactly as it did before this feature existed.
+    """
+    if not policies:
+        return ""
+    policies_json = json.dumps(policies, indent=2, ensure_ascii=False)
+    return (
+        "\n\n<policies>\n"
+        + policies_json[:preview_chars]
+        + "\n</policies>\n\nUse the above policies, when relevant, to determine action.name - "
+        'mark such evaluations with context.parameters.action_derivation_rule set to "policy_based".'
+    )
+
+
 @dataclass(frozen=True, slots=True)
-class RequestSubject:
-    """The caller-supplied subject identity for one request (TDD 4.7) - resolved and sent by
-    IAG itself (see IntentExecutor._subject_params), not derived from the Bearer token, which
-    now authenticates the calling client rather than any subject. `id` may be blank (an
-    anonymous caller - a Subject Search is the LLM's per-evaluation marker instead, see
-    subject_binding._subject_search); `type` may not.
+class _RequestContext:
+    """This request's tool set and policy-fetch outcome, bundled - both come from the one
+    per-request PolicyClient.get_cached() call in run_extraction (policies vary by the
+    caller's subject_type, unlike the process-wide schema, so tools/policy_context can't be
+    built once at __init__ like they used to be), and _extract_with_retries/
+    _run_tool_call_loop/_dispatch_tool_call would otherwise each take on two more arguments,
+    pushing them over the lint limit.
     """
 
-    id: str | None
-    type: str
+    tools: list[StructuredTool]
+    policy_context: PolicyContext
+
+
+def _policy_audit_fields(policy_context: PolicyContext | None) -> tuple[str, bool]:
+    """(policy_version, policy_fetch_failed) for an ExtractionResult, from this request's
+    PolicyContext - None when the result was built before any policy fetch was attempted (the
+    fail-fast paths in run_extraction, before get_cached_policies is even called), same as
+    schema_version defaulting to "" for those same paths.
+    """
+    if policy_context is None:
+        return "", False
+    return policy_version(policy_context.policies), policy_context.fetch_failed
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +121,8 @@ class ExtractionResult:
     evaluations: list[dict[str, Any]] = field(default_factory=list)
     validation_retries: int = 0
     schema_version: str = ""
+    policy_version: str = ""
+    policy_fetch_failed: bool = False
 
     @classmethod
     def failed(
@@ -98,21 +132,33 @@ class ExtractionResult:
         *,
         schema_version: str = "",
         validation_retries: int = 0,
+        policy_context: PolicyContext | None = None,
     ) -> "ExtractionResult":
         """Wrap one of errors.py's 4.7 error shapes; its `reason` is the audit `message`."""
+        policy_ver, policy_failed = _policy_audit_fields(policy_context)
         return cls(
             text=_dump(error),
             outcome=outcome,
             message=error["reason"],
             schema_version=schema_version,
             validation_retries=validation_retries,
+            policy_version=policy_ver,
+            policy_fetch_failed=policy_failed,
         )
 
     @classmethod
-    def from_normalized(cls, text: str, *, schema_version: str, validation_retries: int) -> "ExtractionResult":
+    def from_normalized(
+        cls,
+        text: str,
+        *,
+        schema_version: str,
+        validation_retries: int,
+        policy_context: PolicyContext,
+    ) -> "ExtractionResult":
         """Classify normalize_intent_response()'s output: bound evaluations are a success, the
         4.7 no-intent shape (the LLM's own empty evaluations list) is `unmatched`.
         """
+        policy_ver, policy_failed = _policy_audit_fields(policy_context)
         data = json.loads(text)
         evaluations = data.get("evaluations")
         if isinstance(evaluations, list):
@@ -124,6 +170,8 @@ class ExtractionResult:
                 evaluations=evaluations,
                 schema_version=schema_version,
                 validation_retries=validation_retries,
+                policy_version=policy_ver,
+                policy_fetch_failed=policy_failed,
             )
         return cls(
             text=text,
@@ -131,19 +179,30 @@ class ExtractionResult:
             message=str(data.get("reason", "")),
             schema_version=schema_version,
             validation_retries=validation_retries,
+            policy_version=policy_ver,
+            policy_fetch_failed=policy_failed,
         )
 
     @classmethod
-    def free_text(cls, text: str, *, schema_version: str) -> "ExtractionResult":
+    def free_text(
+        cls,
+        text: str,
+        *,
+        schema_version: str,
+        policy_context: PolicyContext | None = None,
+    ) -> "ExtractionResult":
         """A conversation that never activated extract-intent: the LLM's free text (or the
         no-response placeholder) is passed through and audited as `unmatched`, since no
         intent was extracted - not as an error, since nothing failed.
         """
+        policy_ver, policy_failed = _policy_audit_fields(policy_context)
         return cls(
             text=text or _NO_RESPONSE_TEXT,
             outcome=Outcome.UNMATCHED,
             message=text or _NO_RESPONSE_TEXT,
             schema_version=schema_version,
+            policy_version=policy_ver,
+            policy_fetch_failed=policy_failed,
         )
 
 
@@ -156,8 +215,13 @@ class IntentAgent:
         *,
         llm: BaseChatModel | None = None,
         schema_client: SchemaClient | None = None,
+        policy_client: PolicyClient | None = None,
     ) -> None:
-        """Build the LLM, discover skills, and bind tools for this agent instance."""
+        """Build the LLM, discover skills, and set up the schema/policy clients for this
+        agent instance. Tools are built per-request (see _build_tools), not here - unlike the
+        schema, policies vary by the caller's subject_type, so there is nothing to bind them
+        to until a request arrives.
+        """
         self.settings = settings
         self._llm = llm or ChatGoogleGenerativeAI(
             model=settings.gemini_model,
@@ -170,19 +234,17 @@ class IntentAgent:
             timeout_seconds=settings.schema_fetch_timeout_seconds,
             cache=build_schema_cache(settings),
         )
+        self._policy_client = policy_client or PolicyClient(
+            str(settings.indykite_base_url),
+            settings.ik_app_agent_key.get_secret_value(),
+            timeout_seconds=settings.policy_fetch_timeout_seconds,
+            retry_attempts=settings.policy_fetch_retry_attempts,
+            cache=build_policy_cache(settings),
+        )
         self.discovered_skills = skills.discover_skills()
         self.system_prompt = skills.build_skill_catalog_prompt(self.discovered_skills)
         self.skill_registry = {s["name"]: s for s in self.discovered_skills}
         self.agent_skills = skills.build_agent_skill_catalog(self.discovered_skills)
-
-        self.tools = [
-            t
-            for t in (
-                self._make_activate_skill_tool(),
-                self._make_get_data_schema_tool(),
-            )
-            if t
-        ]
 
     def preload_schema(self) -> None:
         """Fetch and cache the schema once, at startup - best effort, does not block startup.
@@ -214,6 +276,13 @@ class IntentAgent:
         """Return the cached schema, fetching it once if not already cached."""
         return self._schema_client.get_cached()
 
+    def get_cached_policies(self, subject_type: str) -> list[dict[str, Any]] | None:
+        """Return this subject_type's cached AuthZEN policies (ENG-9671), fetching them once if
+        not already cached. None means the fetch failed after retries, not "no policies exist"
+        (an empty list) - run_extraction tells the two apart (see PolicyContext.fetch_failed).
+        """
+        return self._policy_client.get_cached(subject_type)
+
     def _make_get_data_schema_tool(self) -> StructuredTool:
         """Build the get_data_schema tool bound to this agent's cached schema."""
         agent = self
@@ -233,8 +302,45 @@ class IntentAgent:
 
         return get_data_schema
 
-    def _make_activate_skill_tool(self) -> StructuredTool | None:
-        """Create activate_skill; extract-intent injects the data schema."""
+    def _make_get_policies_tool(self, subject_type: str) -> StructuredTool:
+        """Build the get_policies tool bound to this request's subject_type (ENG-9671),
+        mirroring get_data_schema - fetches fresh (cached, see get_cached_policies) at
+        invocation time rather than baking a snapshot in at tool-build time.
+        """
+        agent = self
+
+        @tool
+        def get_policies() -> str:
+            """Return this request's AuthZEN policies as minified JSON: a list of
+            {"policy": <policy definition>, "tags": [...]}. A policy's "actions" may be used
+            as action.name when it applies to the resource in question (its resource.type
+            matches) - mark such an evaluation with context.parameters.action_derivation_rule
+            set to "policy_based".
+            """
+            policies = agent.get_cached_policies(subject_type)
+            return json.dumps(policies or [], separators=(",", ":"), ensure_ascii=False)
+
+        return get_policies
+
+    def _build_tools(self, subject_type: str) -> list[StructuredTool]:
+        """Build this request's tool set, fresh each call - activate_skill's extract-intent
+        injection and get_policies both need this request's subject_type, which varies
+        per-request unlike the schema, so this can no longer be built once at __init__.
+        """
+        return [
+            t
+            for t in (
+                self._make_activate_skill_tool(subject_type),
+                self._make_get_data_schema_tool(),
+                self._make_get_policies_tool(subject_type),
+            )
+            if t
+        ]
+
+    def _make_activate_skill_tool(self, subject_type: str) -> StructuredTool | None:
+        """Create activate_skill; extract-intent injects the data schema and, when available,
+        this request's policies.
+        """
         if not self.skill_registry:
             return None
         valid_names = sorted(self.skill_registry.keys())
@@ -263,9 +369,11 @@ class IntentAgent:
                     + schema_json[:preview_chars]
                     + "\n</data_schema>\n\nUse the above schema to map entity types."
                 )
+                policies = self.get_cached_policies(subject_type)
+                policy_block = _policy_block(policies, self.settings.policy_preview_chars)
                 return (
                     f"<skill_content name={name!r}>\n"
-                    f"{schema_block}\n\n{body}\n\n"
+                    f"{schema_block}{policy_block}\n\n{body}\n\n"
                     f"Skill directory: {skill_dir}\n</skill_content>"
                 )
 
@@ -350,6 +458,7 @@ class IntentAgent:
         self,
         call: dict[str, Any],
         messages: list[BaseMessage],
+        tools: list[StructuredTool],
         *,
         extract_intent_active: bool = False,
     ) -> bool:
@@ -364,7 +473,7 @@ class IntentAgent:
         args = call.get("args", {}) or {}
         call_id = call.get("id", "")
         activated_extract_intent = name == "activate_skill" and args.get("name") == "extract-intent"
-        tool_obj = next((t for t in self.tools if t.name == name), None)
+        tool_obj = next((t for t in tools if t.name == name), None)
         if activated_extract_intent and extract_intent_active:
             logger.info("Skipping repeat activation of extract-intent - already active")
             result = _SKILL_ALREADY_ACTIVE
@@ -438,10 +547,24 @@ class IntentAgent:
             )
             return ExtractionResult.failed(Outcome.ERROR, subject_type_mismatch_error(prompt), schema_version=version)
 
+        policies = self.get_cached_policies(subject.type)
+        policy_fetch_failed = policies is None
+        if policy_fetch_failed:
+            logger.warning(
+                "Policies unavailable for subject_type %r after retries; proceeding with "
+                "schema-only action derivation for prompt %r",
+                subject.type,
+                prompt,
+            )
+        tools = self._build_tools(subject.type)
         llm_with_tools = self._llm.bind_tools(
-            self.tools,
+            tools,
             response_mime_type="application/json",
-            response_schema=build_input_schema(schema),
+            response_schema=build_input_schema(schema, policies),
+        )
+        request = _RequestContext(
+            tools=tools,
+            policy_context=PolicyContext(policies=policies, fetch_failed=policy_fetch_failed),
         )
         try:
             async with asyncio.timeout(self.settings.request_timeout_seconds) as deadline:
@@ -450,7 +573,7 @@ class IntentAgent:
                     prompt,
                     subject=subject,
                     schema=schema,
-                    version=version,
+                    request=request,
                 )
         except TimeoutError:
             # Both the per-call and the whole-request limits raise TimeoutError; only the
@@ -467,7 +590,12 @@ class IntentAgent:
                     self.settings.llm_timeout_seconds,
                     prompt,
                 )
-            return ExtractionResult.failed(Outcome.ERROR, llm_timeout_error(prompt), schema_version=version)
+            return ExtractionResult.failed(
+                Outcome.ERROR,
+                llm_timeout_error(prompt),
+                schema_version=version,
+                policy_context=request.policy_context,
+            )
 
     async def _invoke_llm(self, llm: Runnable[Any, BaseMessage], messages: list[BaseMessage]) -> BaseMessage:
         """One LLM call, bounded by LLM_TIMEOUT_SECONDS - raises TimeoutError past it."""
@@ -478,6 +606,7 @@ class IntentAgent:
         self,
         llm: Runnable[Any, BaseMessage],
         messages: list[BaseMessage],
+        tools: list[StructuredTool],
         *,
         extract_intent_active: bool = False,
     ) -> tuple[BaseMessage | None, bool]:
@@ -495,7 +624,7 @@ class IntentAgent:
                 return response, extract_intent_active
             messages.append(response)
             for call in tool_calls:
-                if self._dispatch_tool_call(call, messages, extract_intent_active=extract_intent_active):
+                if self._dispatch_tool_call(call, messages, tools, extract_intent_active=extract_intent_active):
                     extract_intent_active = True
         return None, extract_intent_active
 
@@ -506,7 +635,7 @@ class IntentAgent:
         *,
         subject: RequestSubject,
         schema: dict[str, Any],
-        version: str,
+        request: _RequestContext,
     ) -> ExtractionResult:
         """Run the tool-call loop, validate the extraction, and retry with feedback (TDD 4.9).
 
@@ -520,7 +649,13 @@ class IntentAgent:
         gets no_intent_error, never the off-schema output. An extraction that exhausts the
         tool-call budget without ever answering gets no_intent_error too - the fixed 4.7
         shape, not the free-text placeholder reserved for a non-extraction conversation.
+
+        Recomputes schema_version(schema) rather than taking it as a separate parameter - the
+        caller already needs it for its own fail-fast paths, but threading it through here too
+        would push this method's arguments past the lint limit for no real benefit; hashing the
+        schema once per request is negligible.
         """
+        version = schema_version(schema)
         messages = self.build_initial_messages(prompt)
         activated_extract_intent = False
         max_retries = self.settings.validation_max_retries
@@ -529,11 +664,12 @@ class IntentAgent:
             response, activated_extract_intent = await self._run_tool_call_loop(
                 llm,
                 messages,
+                request.tools,
                 extract_intent_active=activated_extract_intent,
             )
             if response is None:
                 if not activated_extract_intent:
-                    return ExtractionResult.free_text("", schema_version=version)
+                    return ExtractionResult.free_text("", schema_version=version, policy_context=request.policy_context)
                 logger.error(
                     "Tool-call budget (%d) exhausted without an extraction answer; giving up on prompt %r",
                     self.settings.tool_call_max_iterations,
@@ -544,17 +680,22 @@ class IntentAgent:
                     no_intent_error(prompt),
                     schema_version=version,
                     validation_retries=retries,
+                    policy_context=request.policy_context,
                 )
             final_text = self._response_text(response)
             if not activated_extract_intent:
-                return ExtractionResult.free_text(final_text, schema_version=version)
+                return ExtractionResult.free_text(
+                    final_text,
+                    schema_version=version,
+                    policy_context=request.policy_context,
+                )
             try:
                 normalized = normalize_intent_response(
                     final_text,
                     prompt,
                     schema=schema,
-                    subject_id=subject.id,
-                    subject_type=subject.type,
+                    subject=subject,
+                    policy_context=request.policy_context,
                 )
             except IntentValidationError as exc:
                 logger.warning(
@@ -567,11 +708,17 @@ class IntentAgent:
                 feedback = _dump(validation_feedback_error(prompt, exc.errors))
                 messages.extend((response, HumanMessage(content=feedback)))
             else:
-                return ExtractionResult.from_normalized(normalized, schema_version=version, validation_retries=retries)
+                return ExtractionResult.from_normalized(
+                    normalized,
+                    schema_version=version,
+                    validation_retries=retries,
+                    policy_context=request.policy_context,
+                )
         logger.error("Extraction still off-schema after %d retries; giving up on prompt %r", max_retries, prompt)
         return ExtractionResult.failed(
             Outcome.VALIDATION_FAILED,
             no_intent_error(prompt),
             schema_version=version,
             validation_retries=max_retries,
+            policy_context=request.policy_context,
         )

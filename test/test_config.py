@@ -6,6 +6,8 @@ from indykite.intent_agent.config import Settings
 _DEFAULT_INTENT_PORT = 6003
 _DEFAULT_HEALTH_PORT = 8001
 _DEFAULT_SCHEMA_REFRESH_TTL_MINUTES = 5.0
+_DEFAULT_POLICY_REFRESH_TTL_MINUTES = 5.0
+_DEFAULT_POLICY_FETCH_RETRY_ATTEMPTS = 3
 _DEFAULT_LLM_TIMEOUT_SECONDS = 3.0
 _DEFAULT_VALIDATION_MAX_RETRIES = 1
 # PRD: a request must be answered within 10s end to end. REQUEST_TIMEOUT_SECONDS enforces it;
@@ -66,6 +68,8 @@ def test_defaults(monkeypatch):
     assert settings.gemini_model == "gemini-3.5-flash-lite"
     assert settings.redis_url is None
     assert settings.schema_refresh_ttl_minutes == _DEFAULT_SCHEMA_REFRESH_TTL_MINUTES
+    assert settings.policy_refresh_ttl_minutes == _DEFAULT_POLICY_REFRESH_TTL_MINUTES
+    assert settings.policy_fetch_retry_attempts == _DEFAULT_POLICY_FETCH_RETRY_ATTEMPTS
     assert settings.cache_backend == "memory"
     assert settings.llm_timeout_seconds == _DEFAULT_LLM_TIMEOUT_SECONDS
     assert settings.request_timeout_seconds == _PRD_REQUEST_BUDGET_SECONDS

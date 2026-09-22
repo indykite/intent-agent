@@ -19,10 +19,12 @@ _DEFAULTS: dict[str, Any] = {
     "prompt": "rent kitt",
     "evaluations": [{"action": {"name": "RENT"}, "resource": {"type": "Car", "id": "kitt"}}],
     "schema_version": "abc123",
+    "policy_version": "",
     "llm_provider": "gemini",
     "llm_model": "gemini-3.5-flash-lite",
     "latency_ms": 42,
     "validation_retries": 0,
+    "policy_fetch_failed": False,
     "outcome": Outcome.SUCCESS,
     "message": "",
 }
