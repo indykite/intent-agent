@@ -198,8 +198,14 @@ class PolicyClient:
 
         The refresh itself goes through the cache region's own get_or_create (review) rather
         than a manual get-then-set, so concurrent callers observing the same miss/expired
-        backoff coalesce into one _load() behind dogpile's own lock (a real distributed one
-        across instances when CACHE_BACKEND=redis) instead of each firing its own request.
+        backoff coalesce into one _load() behind dogpile's own lock instead of each firing its
+        own request - but only within this process (review): that lock is a plain
+        threading.Lock unless the Redis backend is configured with distributed_lock=True,
+        which build_policy_cache does not set, so it stays per-process even with
+        CACHE_BACKEND=redis. Separate instances behind a load balancer still share the same
+        cached policies (and the same short failure backoff) once one of them writes it, but
+        two instances observing a miss/expired backoff at the same moment can each fire their
+        own concurrent fetch rather than coalescing across the fleet.
 
         A failure is itself cached too, briefly (_FAILURE_CACHE_SECONDS) via the same
         get_or_create call - without this, every request during an outage would pay the full
