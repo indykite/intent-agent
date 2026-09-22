@@ -93,12 +93,12 @@ def _terminal_task_state(event_queue):
 def _history_summary_message(event_queue):
     """The summary message text that ends up as the task's last `history` entry (ENG-9804).
 
-    The terminal state is emitted twice - once carrying this message, then bare - so a2a's
-    TaskManager (which only archives a status's message into `history` once a *later*
-    TaskStatusUpdateEvent supersedes it) pushes the message into history and leaves the truly
-    final status message-free; see executor.py's _extract for the full mechanism. Asserts that
-    shape holds (the last status has no message of its own) rather than just reading whichever
-    status happens to carry one.
+    One last WORKING status carries this message, followed by a message-free terminal status -
+    a2a's TaskManager only archives a status's message into `history` once a *later*
+    TaskStatusUpdateEvent supersedes it, so the WORKING update's message ends up in history and
+    the truly final status is left message-free; see executor.py's _extract for the full
+    mechanism. Asserts that shape holds (the last status has no message of its own) rather than
+    just reading whichever status happens to carry one.
     """
     statuses = _status_events(event_queue)
     assert not statuses[-1].HasField("message"), "the final status must be message-free"

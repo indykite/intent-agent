@@ -228,7 +228,8 @@ class IntentExecutor(AgentExecutor):
         or failure - the detailed reason stays in the artifact JSON's `reason` field, not
         duplicated here) ends up as the task's last `history` entry, replacing the pre-extraction
         "Extracting intent..." placeholder as the final word instead of leaving it there - done
-        by emitting the terminal status twice (see the comment at the call site for why).
+        by emitting one last WORKING update carrying the message, then a message-free terminal
+        status (see the comment at the call site for why it has to be in that order).
         """
         logger.info(
             "Received message for %s: %s",
