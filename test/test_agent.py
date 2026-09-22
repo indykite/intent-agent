@@ -1597,6 +1597,8 @@ def test_run_extraction_enforces_request_deadline_across_calls(monkeypatch, mock
         _slow_tool_call,
         LLM_TIMEOUT_SECONDS=0.1,
         REQUEST_TIMEOUT_SECONDS=0.1,
+        SCHEMA_FETCH_TIMEOUT_SECONDS=0.1,
+        POLICY_FETCH_TIMEOUT_SECONDS=0.1,
         TOOL_CALL_MAX_ITERATIONS=_UNREACHABLE_TOOL_BUDGET,
     )
 
@@ -1619,6 +1621,8 @@ def test_run_extraction_timeout_mid_policy_fetch_reports_the_fetch_as_failed(mon
     """
     monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "0.02")
     monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "0.01")
+    monkeypatch.setenv("SCHEMA_FETCH_TIMEOUT_SECONDS", "0.02")
+    monkeypatch.setenv("POLICY_FETCH_TIMEOUT_SECONDS", "0.02")
     settings = _full_settings(monkeypatch)
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mocker.AsyncMock())))
     fake_schema_client = _fake_schema_client(mocker, get_cached=mocker.Mock(return_value=_load_schema_fixture()))

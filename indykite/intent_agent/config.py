@@ -55,9 +55,10 @@ class Settings(BaseSettings):
     # TOOL_CALL_MAX_ITERATIONS per attempt) add calls, and REQUEST_TIMEOUT_SECONDS is what
     # actually caps the whole request.
     llm_timeout_seconds: PositiveFloat = 3.0
-    # Whole-extraction deadline (PRD: answer within 10s end to end), spanning every LLM call,
-    # tool-call round and validation retry of one request. Introspection and a cold schema
-    # fetch happen before it starts and keep their own timeouts.
+    # Whole-extraction deadline (PRD: answer within 10s end to end), spanning the schema/policy
+    # fetch (ENG-9671: both moved inside this deadline, see IntentAgent.run_extraction) and
+    # every LLM call, tool-call round and validation retry of one request. Introspection keeps
+    # its own timeout, ahead of this one.
     request_timeout_seconds: PositiveFloat = 10.0
     # Extra attempts after the first, so the LLM is invoked at most 1 + this many times per
     # request on validation failure (TDD 4.9, open decision 1: default N=1). 0 disables retry.
@@ -65,12 +66,19 @@ class Settings(BaseSettings):
 
     indykite_base_url: HttpUrl
     ik_app_agent_key: SecretStr = Field(min_length=1)
-    schema_fetch_timeout_seconds: PositiveFloat = 30.0
+    # Per-fetch ceiling, same "must fit inside request_timeout_seconds" rule as
+    # llm_timeout_seconds (see _reject_fetch_timeouts_over_request_timeout) - sized to leave
+    # the LLM calls a real share of the 10s budget alongside it, not to be a generous allowance
+    # in its own right. Tune against the platform's actual observed latency.
+    schema_fetch_timeout_seconds: PositiveFloat = 3.0
     schema_refresh_ttl_minutes: PositiveFloat = 5.0
 
-    policy_fetch_timeout_seconds: PositiveFloat = 30.0
+    # Per-attempt ceiling, same rule as schema_fetch_timeout_seconds above - policy_fetch_retry_
+    # attempts multiplies it, so both are sized together to leave room for the schema fetch and
+    # the LLM calls in the same request_timeout_seconds budget, not just the first attempt.
+    policy_fetch_timeout_seconds: PositiveFloat = 2.0
     policy_refresh_ttl_minutes: PositiveFloat = 5.0
-    policy_fetch_retry_attempts: PositiveInt = 3
+    policy_fetch_retry_attempts: PositiveInt = 2
     policy_preview_chars: PositiveInt = 12000
 
     cache_backend: Literal["memory", "redis"] = "memory"
@@ -180,6 +188,20 @@ class Settings(BaseSettings):
         """
         if self.llm_timeout_seconds > self.request_timeout_seconds:
             message = "LLM_TIMEOUT_SECONDS must not exceed REQUEST_TIMEOUT_SECONDS"
+            raise ValueError(message)
+        return self
+
+    @model_validator(mode="after")
+    def _reject_fetch_timeouts_over_request_timeout(self) -> "Settings":
+        """Reject a schema/policy fetch timeout longer than the whole-request deadline - same
+        dead-config reasoning as _reject_llm_timeout_over_request_timeout, now that both fetches
+        run inside request_timeout_seconds too (ENG-9671, review).
+        """
+        if self.schema_fetch_timeout_seconds > self.request_timeout_seconds:
+            message = "SCHEMA_FETCH_TIMEOUT_SECONDS must not exceed REQUEST_TIMEOUT_SECONDS"
+            raise ValueError(message)
+        if self.policy_fetch_timeout_seconds > self.request_timeout_seconds:
+            message = "POLICY_FETCH_TIMEOUT_SECONDS must not exceed REQUEST_TIMEOUT_SECONDS"
             raise ValueError(message)
         return self
 
