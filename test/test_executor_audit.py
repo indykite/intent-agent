@@ -173,7 +173,6 @@ def test_audit_ordering_around_the_terminal_task_event(baseline_env, mocker):
     mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value={"active": True, "sub": "user-1"}))
     success_result = ExtractionResult(text="{...}", outcome=Outcome.SUCCESS, evaluations=_EVALUATIONS)
 
-    # 1. ordering: the audit write precedes the terminal event on an ordinary successful request.
     executor, sender, _agent = _executor(baseline_env, mocker, result=success_result)
     calls = []
     sender.send.side_effect = lambda *_args, **_kwargs: calls.append("audit")
@@ -189,7 +188,6 @@ def test_audit_ordering_around_the_terminal_task_event(baseline_env, mocker):
     asyncio.run(executor.execute(_context({"authorization": "Bearer good-token"}), event_queue))
     assert calls == ["audit", "terminal_event"]
 
-    # 2. idempotency: a failure right after the audit call must not produce a second record.
     executor, sender, _agent = _executor(baseline_env, mocker, result=success_result)
     status_events_seen = 0
     post_audit_status_event = 2  # the WORKING update _emit_terminal_status enqueues first

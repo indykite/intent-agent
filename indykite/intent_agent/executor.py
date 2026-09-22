@@ -279,12 +279,19 @@ class IntentExecutor(AgentExecutor):
         a successful extraction, TASK_STATE_FAILED for every other outcome (validation failure,
         no-intent/unmatched, timeout, schema unavailable, ...) - the caller's artifact JSON
         still carries the fixed {prompt, error, reason, obligation} shape (errors.py) either way,
-        this only changes what the task's own status reports. A fixed summary message (success
-        or failure - the detailed reason stays in the artifact JSON's `reason` field, not
-        duplicated here) ends up as the task's last `history` entry, replacing the pre-extraction
-        "Extracting intent..." placeholder as the final word instead of leaving it there - done
-        by emitting one last WORKING update carrying the message, then a message-free terminal
-        status (see the comment below for why it has to be in that order).
+        this only changes what the task's own status reports.
+
+        A fixed summary message (the detailed reason stays in the artifact JSON's `reason`
+        field, not duplicated here) must land in the task's `history`, not just sit on the
+        terminal status - a2a's TaskManager only archives a status's message into history once
+        a *later* TaskStatusUpdateEvent supersedes it. So the message is carried on one last
+        WORKING update first, replacing the pre-extraction "Extracting intent..." placeholder as
+        the final word instead of leaving it there, and the truly final status is left
+        message-free - never the terminal one itself: DefaultRequestHandler.on_message_send
+        returns on the *first* terminal-state Task snapshot it sees, so a message on that event
+        would never get superseded/archived, it would just sit unread in `status.message`. The
+        caller gets back the bare terminal event, with the summary text already archived as
+        history's last entry.
 
         Called only after `execute` has already audited `result`, never before: `ActiveTask.
         _run_producer` awaits `execute` in full before it ever looks at the outcome, but
@@ -298,19 +305,6 @@ class IntentExecutor(AgentExecutor):
         dropping the record while the response the caller got was already correct. Auditing first
         makes the record exist before a caller can possibly observe "done".
         """
-        # ENG-9804: the task's own terminal state must tell success from failure - a caller
-        # otherwise has no way to know without parsing the artifact JSON for an "error" key.
-        # VALIDATION_FAILED/UNMATCHED/ERROR (no_intent_error, timeouts, schema unavailable, ...)
-        # all surface as TASK_STATE_FAILED; only SUCCESS is TASK_STATE_COMPLETED. A fixed summary
-        # message (the detailed reason stays in the artifact JSON's `reason` field, not
-        # duplicated here) must land in the task's `history`, not just sit on the terminal status -
-        # a2a's TaskManager only archives a status's message into history once a *later*
-        # TaskStatusUpdateEvent supersedes it, so the message is carried on one last WORKING
-        # update first (never on the terminal one itself: DefaultRequestHandler.on_message_send
-        # returns on the *first* terminal-state Task snapshot it sees, so a message on that event
-        # would never get superseded/archived - it would just sit unread in `status.message`).
-        # The final, bare terminal event is what the caller actually gets back, with the summary
-        # text already archived as history's last entry instead of "Extracting intent...".
         is_success = result.outcome == Outcome.SUCCESS
         terminal_state = TaskState.TASK_STATE_COMPLETED if is_success else TaskState.TASK_STATE_FAILED
         terminal_text = _EXTRACTION_SUCCEEDED_MESSAGE if is_success else _EXTRACTION_FAILED_MESSAGE
