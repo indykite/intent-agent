@@ -619,6 +619,59 @@ def test_validate_evaluations_still_accepts_schema_edges_when_policies_are_prese
     assert validate_evaluations(_load_schema_fixture(), evaluations, _CAR_POLICY) == []
 
 
+_EMPTY_SCHEMA_POLICY = [{"policy": {"actions": ["APPROVE_REFUND"], "resource": {"type": "_Application"}}}]
+_EMPTY_SCHEMA_POLICY_WRONG_RESOURCE = [
+    {"policy": {"actions": ["APPROVE_REFUND"], "resource": {"type": "OtherResource"}}}
+]
+_EMPTY_SCHEMA_POLICY_ACTION_ERROR = "evaluations[0]: action.name 'APPROVE_REFUND' is not defined in the data schema"
+
+
+@pytest.mark.parametrize(
+    ("policies", "marked", "expected_errors"),
+    [
+        pytest.param(_EMPTY_SCHEMA_POLICY, True, [], id="marked_matching_resource_accepted"),
+        pytest.param(
+            _EMPTY_SCHEMA_POLICY,
+            False,
+            [_EMPTY_SCHEMA_POLICY_ACTION_ERROR],
+            id="unmarked_rejected_even_with_no_schema_edges",
+        ),
+        pytest.param(
+            _EMPTY_SCHEMA_POLICY_WRONG_RESOURCE,
+            True,
+            [_EMPTY_SCHEMA_POLICY_ACTION_ERROR],
+            id="marked_but_wrong_resource_type_rejected",
+        ),
+    ],
+)
+def test_validate_evaluations_empty_edges_still_enforces_policy_membership(policies, marked, expected_errors):
+    """A schema with no edges at all (a real IndyKite environment with no data model yet - see
+    _load_empty_schema_fixture) used to leave action.name entirely unconstrained: _vocabulary_
+    reason's own "nothing to check against" rule for an empty edge_relations set returned None
+    for any non-blank name, bypassing the policy/marker check below it. Once policies are
+    fetched, that carve-out must not apply any more - an unmarked (or wrong-resource) policy
+    action must still be rejected exactly like it would be against a schema that does have
+    edges (test_validate_evaluations_policy_derived_action). resource.type is fixed to the one
+    real node type this fixture has (_Application) throughout, so only the policy's own scoping
+    - not the unrelated resource.type-vocabulary check - varies between cases.
+    """
+    evaluation = {"action": {"name": "APPROVE_REFUND"}, "resource": {"type": "_Application"}}
+    if marked:
+        evaluation["context"] = {"parameters": {"action_derivation_rule": "policy_based"}}
+    assert validate_evaluations(_load_empty_schema_fixture(), [evaluation], policies) == expected_errors
+
+
+def test_validate_evaluations_empty_edges_without_policies_stays_unconstrained():
+    """The pre-ENG-9671 behavior (a schema with no edges yet leaves action.name entirely
+    unconstrained) must still hold when no policies were fetched at all - the carve-out this
+    fix narrows is "no vocabulary to check against", not "policies happen to be absent", but the
+    absent case is exactly what the original, pre-ENG-9671 behavior needs preserved.
+    """
+    evaluations = [{"action": {"name": "ANYTHING"}, "resource": {"type": "_Application"}}]
+    assert validate_evaluations(_load_empty_schema_fixture(), evaluations, None) == []
+    assert validate_evaluations(_load_empty_schema_fixture(), evaluations, []) == []
+
+
 def test_validation_feedback_error_lists_every_error_in_fixed_shape():
     """The follow-up message must be the fixed 4.7 error shape and carry each error verbatim
     in `reason`, one per line, plus the corrective instruction in `obligation` - not just the

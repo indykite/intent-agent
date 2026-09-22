@@ -171,19 +171,37 @@ def _action_name_error(
     to be an object (see _evaluation_errors); `marker` is the evaluation's own
     context.parameters.action_derivation_rule value (_action_derivation_rule).
 
-    Valid two ways: as a schema edge relation, always (marked or not - unchanged from before
-    ENG-9671), or as a policy-derived action for this evaluation's resource.type, but only when
-    marker == "policy_based". Unmarked, a policy-only action name is rejected the same as any
-    other off-schema value - the retry loop (validation_feedback_error) is what pushes the LLM
-    to add the marker, not a silent acceptance of an unmarked claim.
+    Valid three ways: as a schema edge relation, always (marked or not - unchanged from before
+    ENG-9671); as a policy-derived action for this evaluation's resource.type, but only when
+    marker == "policy_based"; or, when the schema has no edges at all *and* no policies were
+    fetched, unconstrained - the pre-ENG-9671 behavior for a schema with nodes but no edges yet
+    (see _vocabulary_reason). Unmarked, or against the wrong resource.type, a policy-only action
+    name is rejected the same as any other off-schema value - the retry loop
+    (validation_feedback_error) is what pushes the LLM to add the marker, not a silent
+    acceptance of an unmarked claim.
+
+    This checks schema and policy membership directly rather than delegating to
+    _vocabulary_reason: that helper's own "empty allowed set" carve-out (for a schema with no
+    edges yet) returns None for any non-blank name regardless of policies, which would silently
+    skip the policy-membership/marker check below whenever the schema simply has no edges -
+    letting an arbitrary action, or a policy action against the wrong resource.type, through
+    unmarked. The unconstrained carve-out here only applies when there is truly no vocabulary
+    (schema or policy) to validate against at all.
     """
     name = action.get("name")
-    reason = _vocabulary_reason("action.name", name, edge_relations)
-    if reason is None or _blank(name) or not isinstance(resource_type, str):
-        return reason
-    if name in _policy_actions_for_resource(policies, resource_type) and marker == _ACTION_DERIVATION_POLICY:
+    if _blank(name):
+        return f"action.name {SCHEMA_BLANK_SUFFIX}"
+    if name in edge_relations:
         return None
-    return reason
+    if (
+        isinstance(resource_type, str)
+        and marker == _ACTION_DERIVATION_POLICY
+        and name in _policy_actions_for_resource(policies, resource_type)
+    ):
+        return None
+    if not edge_relations and not policies:
+        return None
+    return f"action.name {name!r} {SCHEMA_MEMBERSHIP_SUFFIX}"
 
 
 # The PRD's context sub-shapes (TDD 3.2) and what each must be when present - the same three
