@@ -97,14 +97,22 @@ def schema_version(schema: Mapping[str, Any] | None) -> str:
 
 def policy_version(policies: Sequence[Mapping[str, Any]] | None) -> str:
     """Hash of the fetched KBAC policies - "what policies were in effect for this
-    request", schema_version's companion field. Same canonical-JSON-then-SHA-256 pattern, same
-    stability guarantee regardless of key/entry order. Empty when no policies were fetched -
-    none exist for this subject_type, or the fetch failed after retries (see
-    AuditMessage.policy_fetch_failed for telling those two apart).
+    request", schema_version's companion field. Same stability guarantee regardless of
+    key/entry order - unlike schema_version, this also sorts the top-level list itself
+    (review): sort_keys=True alone only canonicalizes dict keys within each entry, so if the
+    endpoint ever returns the same policies in a different order, the naive approach would
+    still hash to a different value for identical policy state. Each entry is first
+    canonicalized on its own (sort_keys=True), then the entries themselves are sorted by that
+    canonical string before being joined, making the result independent of the original list
+    order too. Empty when no policies were fetched - none exist for this subject_type, or the
+    fetch failed after retries (see AuditMessage.policy_fetch_failed for telling those apart).
     """
     if not policies:
         return ""
-    canonical = json.dumps(policies, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    canonical_entries = sorted(
+        json.dumps(policy, sort_keys=True, separators=(",", ":"), ensure_ascii=False) for policy in policies
+    )
+    canonical = "[" + ",".join(canonical_entries) + "]"
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 

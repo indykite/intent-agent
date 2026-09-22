@@ -283,9 +283,17 @@ class IntentAgent:
         """
         return self._policy_client.get_cached(subject_type)
 
-    def _make_get_data_schema_tool(self) -> StructuredTool:
-        """Build the get_data_schema tool bound to this agent's cached schema."""
-        agent = self
+    def _make_get_data_schema_tool(self, schema: dict[str, Any]) -> StructuredTool:
+        """Build the get_data_schema tool, returning this request's own schema snapshot
+        (review) - the exact one run_extraction already used to build the response schema's
+        enums - rather than an independent get_cached_schema() call. A fresh call could return
+        whatever the TTL has since refreshed to: a schema the bound response schema's enum and
+        validate_evaluations were never built against, so the tool could show the LLM a type it
+        can neither emit (outside its own structured-output enum) nor have accepted
+        (validate_evaluations still checks the original snapshot) - and leave the audit's
+        schema_version hash out of step with what the tool actually told the model.
+        """
+        schema_json = json.dumps(schema, separators=(",", ":"), ensure_ascii=False)
 
         @tool
         def get_data_schema() -> str:
@@ -297,17 +305,21 @@ class IntentAgent:
             node type can be a Resource. Nodes with system_labels containing DigitalTwin
             can also be Subjects.
             """
-            schema = agent.get_cached_schema()
-            return json.dumps(schema, separators=(",", ":"), ensure_ascii=False)
+            return schema_json
 
         return get_data_schema
 
-    def _make_get_policies_tool(self, subject_type: str) -> StructuredTool:
-        """Build the get_policies tool bound to this request's subject_type (ENG-9671),
-        mirroring get_data_schema - fetches fresh (cached, see get_cached_policies) at
-        invocation time rather than baking a snapshot in at tool-build time.
+    def _make_get_policies_tool(self, policies: list[dict[str, Any]] | None) -> StructuredTool:
+        """Build the get_policies tool (ENG-9671), returning this request's own policies
+        snapshot - the exact one run_extraction already used to build request.policy_context
+        and the response schema's action enum - rather than an independent
+        get_cached_policies() call (review). Same rationale as _make_get_data_schema_tool: a
+        fresh call could return a cache entry refreshed or evicted since that snapshot was
+        taken, showing the LLM a policy action neither in its own enum nor accepted by
+        validate_evaluations, with the audit's policy_version hash left describing a
+        different, stale policy set than what the tool actually told the model.
         """
-        agent = self
+        policies_json = json.dumps(policies or [], separators=(",", ":"), ensure_ascii=False)
 
         @tool
         def get_policies() -> str:
@@ -317,28 +329,23 @@ class IntentAgent:
             matches) - mark such an evaluation with context.parameters.action_derivation_rule
             set to "policy_based".
             """
-            policies = agent.get_cached_policies(subject_type)
-            return json.dumps(policies or [], separators=(",", ":"), ensure_ascii=False)
+            return policies_json
 
         return get_policies
 
-    def _build_tools(self, subject_type: str, policies: list[dict[str, Any]] | None) -> list[StructuredTool]:
-        """Build this request's tool set, fresh each call - activate_skill's extract-intent
-        injection and get_policies both need this request's subject_type, which varies
-        per-request unlike the schema, so this can no longer be built once at __init__.
-
-        `policies` is run_extraction's own already-fetched snapshot, passed straight into
-        activate_skill's injection (see _make_activate_skill_tool) rather than fetched again -
-        get_policies is the one exception, deliberately fetching fresh at invocation time since
-        it exists for the LLM to pull an up-to-date view on demand, not to describe what this
-        request's own validation/audit already committed to.
+    def _build_tools(self, schema: dict[str, Any], policies: list[dict[str, Any]] | None) -> list[StructuredTool]:
+        """Build this request's tool set, fresh each call from the exact schema/policies
+        snapshot run_extraction already fetched once and built the response schema's enums,
+        policy_context, and validate_evaluations from - every tool here returns that same
+        snapshot rather than an independently re-fetched one (review), so what the LLM is
+        shown, what gets validated, and what gets audited can never disagree.
         """
         return [
             t
             for t in (
                 self._make_activate_skill_tool(policies),
-                self._make_get_data_schema_tool(),
-                self._make_get_policies_tool(subject_type),
+                self._make_get_data_schema_tool(schema),
+                self._make_get_policies_tool(policies),
             )
             if t
         ]
@@ -608,7 +615,7 @@ class IntentAgent:
                         subject.type,
                         prompt,
                     )
-                tools = self._build_tools(subject.type, policies)
+                tools = self._build_tools(schema, policies)
                 llm_with_tools = self._llm.bind_tools(
                     tools,
                     response_mime_type="application/json",

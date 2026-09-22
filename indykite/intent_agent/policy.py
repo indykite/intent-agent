@@ -73,7 +73,9 @@ def build_policy_cache(settings: Settings) -> CacheRegion:
 def _cache_key(app_agent_key: str, subject_type: str) -> str:
     """Build a cache key scoped to this IndyKite environment *and* subject_type - two requests
     for different subject types must never read each other's policies, the same non-collision
-    rule schema.py's _cache_key applies to environments alone.
+    rule schema.py's _cache_key applies to environments alone. subject_type is a graph schema
+    node type label and never contains a ":", so joining it after the environment scope (which
+    does, e.g. "gid:AAAA...") with the same delimiter schema.py uses stays unambiguous.
     """
     gid = app_agent_key_gid(app_agent_key)
     scope = "unconfigured" if gid is None else gid

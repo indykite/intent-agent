@@ -5,6 +5,7 @@ from datetime import datetime
 from indykite.intent_agent.audit.message import (
     FIELD_NAMES,
     Outcome,
+    policy_version,
     request_id_from_headers,
     schema_version,
     utc_timestamp,
@@ -81,6 +82,27 @@ def test_schema_version_is_canonical_and_stable():
     assert schema_version(schema_a) != schema_version(schema_c)
     assert re.fullmatch(r"[0-9a-f]{64}", schema_version(schema_a))
     assert schema_version(None) == ""
+
+
+def test_policy_version_is_canonical_and_stable_regardless_of_entry_order():
+    """Key order within an entry, and the entries' own order in the list, must not change the
+    hash (review: sort_keys=True alone only canonicalizes dict keys, not list order - the same
+    policy state fetched in a different order must still hash identically); content must;
+    empty/None both hash to "".
+    """
+    policy_a = {"policy": {"actions": ["RENT"], "resource": {"type": "Car"}}, "tags": []}
+    policy_b = {"policy": {"actions": ["OWN"], "resource": {"type": "Car"}}, "tags": []}
+    policies_ab = [policy_a, policy_b]
+    policies_ba = [policy_b, policy_a]
+    policy_a_reordered_keys = {"tags": [], "policy": {"resource": {"type": "Car"}, "actions": ["RENT"]}}
+    policies_different_content = [policy_a]
+
+    assert policy_version(policies_ab) == policy_version(policies_ba)
+    assert policy_version([policy_a_reordered_keys, policy_b]) == policy_version(policies_ab)
+    assert policy_version(policies_ab) != policy_version(policies_different_content)
+    assert re.fullmatch(r"[0-9a-f]{64}", policy_version(policies_ab))
+    assert policy_version(None) == ""
+    assert policy_version([]) == ""
 
 
 def test_request_id_prefers_a_sane_incoming_header():

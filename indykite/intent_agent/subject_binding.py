@@ -33,7 +33,7 @@ class PolicyContext:
     action.name when the evaluation is marked action_derivation_rule="policy_based", see
     _action_name_error - and whether the fetch itself failed after retries, which
     normalize_intent_response tags onto every evaluation's context.parameters (see
-    _mark_policy_fetch_failed) so the receiving agent knows this answer used the data schema
+    _set_policy_fetch_failed) so the receiving agent knows this answer used the data schema
     only. Bundled together since both come from one per-request PolicyClient.get_cached() call
     and normalize_intent_response needs both; separately they would push its own argument count
     over the lint limit.
@@ -341,27 +341,33 @@ def normalize_intent_response(
 
     _bind_subject(data, subject_id=subject.id, subject_type=subject.type)
     _normalize_contexts(data)
-    if policy_context.fetch_failed:
-        _mark_policy_fetch_failed(data)
+    _set_policy_fetch_failed(data, fetch_failed=policy_context.fetch_failed)
     return json.dumps(data, indent=2, ensure_ascii=False)
 
 
-def _mark_policy_fetch_failed(data: dict[str, Any]) -> None:
-    """Tag every evaluation's context.parameters.policy_fetch_failed - a system-set flag, never
-    the LLM's to produce, so the receiving agent knows this response's action derivation used
-    the data schema only: the policies fetch failed after retries (ENG-9671,
-    PolicyClient.get_cached). Runs after _normalize_contexts, so context is already settled
-    into an object on every evaluation.
+def _set_policy_fetch_failed(data: dict[str, Any], *, fetch_failed: bool) -> None:
+    """Set every evaluation's context.parameters.policy_fetch_failed to reflect fetch_failed -
+    a system-set flag, never the LLM's to produce (ENG-9671, review). context.parameters is an
+    open object in the structured output, so without this an unmarked/hallucinated
+    policy_fetch_failed the model puts there on a successful-fetch response would pass through
+    untouched, contradicting policy_context/the audit record. On success (fetch_failed=False),
+    any LLM-supplied value for this reserved key is stripped rather than trusted; on failure,
+    every evaluation is unconditionally marked True regardless of what the model produced.
+    Runs after _normalize_contexts, so context is already settled into an object on every
+    evaluation.
     """
     for evaluation in data.get("evaluations", []):
         if not isinstance(evaluation, dict):
             continue
         context = evaluation["context"]
         parameters = context.get("parameters")
-        if not isinstance(parameters, dict):
-            parameters = {}
-            context["parameters"] = parameters
-        parameters[_POLICY_FETCH_FAILED_KEY] = True
+        if fetch_failed:
+            if not isinstance(parameters, dict):
+                parameters = {}
+                context["parameters"] = parameters
+            parameters[_POLICY_FETCH_FAILED_KEY] = True
+        elif isinstance(parameters, dict):
+            parameters.pop(_POLICY_FETCH_FAILED_KEY, None)
 
 
 def _normalize_contexts(data: dict[str, Any]) -> None:

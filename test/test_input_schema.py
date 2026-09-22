@@ -121,7 +121,7 @@ def test_build_input_schema_ignores_non_string_relations():
                 {"policy": {"actions": ["APPROVE_REFUND", "ESCALATE"], "resource": {"type": "Company"}}},
             ],
             ["APPROVE_REFUND", "ESCALATE", "OWN", "RENT", "WORKS_AT"],
-            id="widens_with_every_fetched_policys_actions",
+            id="widens_with_every_fetched_policies_actions",
         ),
         pytest.param(
             [

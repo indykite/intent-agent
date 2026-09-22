@@ -799,27 +799,35 @@ def test_normalize_intent_response_accepts_a_marked_policy_derived_action_end_to
 
 
 @pytest.mark.parametrize(
-    ("fetch_failed", "expect_marker"),
+    ("fetch_failed", "llm_supplied_value", "expected_marker"),
     [
-        pytest.param(True, True, id="fetch_failed_marks_every_evaluation"),
-        pytest.param(False, False, id="fetch_succeeded_omits_the_marker"),
+        pytest.param(True, None, True, id="fetch_failed_marks_every_evaluation"),
+        pytest.param(False, None, None, id="fetch_succeeded_omits_the_marker"),
+        pytest.param(False, True, None, id="fetch_succeeded_strips_llm_spoofed_true"),
+        pytest.param(True, False, True, id="fetch_failed_overrides_llm_supplied_false"),
     ],
 )
-def test_normalize_intent_response_policy_fetch_failed_marker(fetch_failed, expect_marker):
-    """PolicyContext.fetch_failed=True (ENG-9671, retries exhausted) tags every evaluation with
-    the system-set context.parameters.policy_fetch_failed - never the LLM's to produce, added
-    after validation/subject binding so it can't be spoofed by the model's own output and can't
-    be lost by _normalize_contexts settling the context shape. A successful fetch (the default)
-    must not add the key at all - it's a failure signal, not a routine status field.
+def test_normalize_intent_response_policy_fetch_failed_marker(fetch_failed, llm_supplied_value, expected_marker):
+    """policy_fetch_failed is a system-set flag, never the LLM's to produce (ENG-9671, review):
+    context.parameters is an open object in the structured output, so the model could supply
+    its own value there - it must never be trusted either way. A successful fetch strips it
+    out even if the model set it to True (spoofing a failure that never happened); a failed
+    fetch overrides it to True on every evaluation even if the model happened to set it to
+    False. Set after validation/subject binding so it can't be spoofed by the model's own
+    output and can't be lost by _normalize_contexts settling the context shape.
     """
-    llm_text = json.dumps({"evaluations": [{"action": {"name": "RENT"}, "resource": {"type": "Car", "id": "kitt"}}]})
+    parameters = {"policy_fetch_failed": llm_supplied_value} if llm_supplied_value is not None else {}
+    evaluation = {"action": {"name": "RENT"}, "resource": {"type": "Car", "id": "kitt"}}
+    if parameters:
+        evaluation["context"] = {"parameters": parameters}
+    llm_text = json.dumps({"evaluations": [evaluation]})
     policy_context = PolicyContext(policies=None, fetch_failed=fetch_failed)
     data = json.loads(_normalize(llm_text, policy_context=policy_context))
-    parameters = data["evaluations"][0].get("context", {}).get("parameters", {})
-    if expect_marker:
-        assert parameters["policy_fetch_failed"] is True
+    result_parameters = data["evaluations"][0].get("context", {}).get("parameters", {})
+    if expected_marker is None:
+        assert "policy_fetch_failed" not in result_parameters
     else:
-        assert "policy_fetch_failed" not in parameters
+        assert result_parameters["policy_fetch_failed"] is expected_marker
 
 
 def test_normalize_intent_response_passes_context_through_verbatim():
@@ -1015,55 +1023,49 @@ def test_build_schema_cache_uses_redis_backend_when_configured(monkeypatch):
 
 
 def test_get_data_schema_tool_returns_cached_schema(monkeypatch, mocker):
-    """The get_data_schema tool must return the cached schema as minified JSON."""
+    """The get_data_schema tool must return the exact schema snapshot it was built with, as
+    minified JSON - not an independently re-fetched one (review): run_extraction already used
+    this same snapshot to build the response schema's enums, so a fresh get_cached_schema()
+    call here could return something the LLM's own enum and validate_evaluations were never
+    built against.
+    """
     settings = _full_settings(monkeypatch)
     schema = _load_schema_fixture()
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock()))
-    fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=schema))
-    agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client)
+    agent = IntentAgent(settings, llm=fake_llm)
 
-    result = agent._make_get_data_schema_tool().invoke({})
+    result = agent._make_get_data_schema_tool(schema).invoke({})
 
     assert json.loads(result) == schema
 
 
 @pytest.mark.parametrize(
-    ("cached_policies", "expected_json"),
+    ("policies", "expected_json"),
     [
         pytest.param(
             [{"policy": {"actions": ["APPROVE_REFUND"], "resource": {"type": "Car"}}, "tags": []}],
             [{"policy": {"actions": ["APPROVE_REFUND"], "resource": {"type": "Car"}}, "tags": []}],
-            id="returns_cached_policies",
+            id="returns_the_given_policies",
         ),
-        pytest.param(None, [], id="failed_fetch_returns_empty_list_not_null"),
+        pytest.param(None, [], id="none_returns_empty_list_not_null"),
     ],
 )
-def test_get_policies_tool_returns_cached_policies_for_the_requests_subject_type(
-    monkeypatch,
-    mocker,
-    cached_policies,
-    expected_json,
-):
-    """The get_policies tool (ENG-9671) must return this request's cached policies as minified
-    JSON, fetched via the subject_type it was built for - mirroring get_data_schema. A failed
-    fetch (get_cached returns None, see PolicyClient.get_cached) must still hand the LLM valid
-    JSON - an empty array, not the string "null".
+def test_get_policies_tool_returns_the_request_snapshot(monkeypatch, mocker, policies, expected_json):
+    """The get_policies tool (ENG-9671) must return the exact policies snapshot it was built
+    with, as minified JSON - not an independently re-fetched one (review): run_extraction
+    already used this same snapshot to build request.policy_context and the response schema's
+    action enum, so a fresh get_cached_policies() call here could return a cache entry
+    refreshed or evicted since, one that snapshot and validate_evaluations were never checked
+    against. None (no policies fetched) must still hand the LLM valid JSON - an empty array,
+    not the string "null".
     """
     settings = _full_settings(monkeypatch)
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock()))
-    fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=_load_schema_fixture()))
-    fake_policy_client = mocker.Mock(get_cached=mocker.Mock(return_value=cached_policies))
-    agent = IntentAgent(
-        settings,
-        llm=fake_llm,
-        schema_client=fake_schema_client,
-        policy_client=fake_policy_client,
-    )
+    agent = IntentAgent(settings, llm=fake_llm)
 
-    result = agent._make_get_policies_tool("Customer").invoke({})
+    result = agent._make_get_policies_tool(policies).invoke({})
 
     assert json.loads(result) == expected_json
-    fake_policy_client.get_cached.assert_called_with("Customer")
 
 
 def test_run_extraction_binds_structured_output_schema_derived_from_current_schema(monkeypatch, mocker):
