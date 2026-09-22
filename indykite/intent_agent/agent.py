@@ -255,7 +255,7 @@ class IntentAgent:
             str(settings.indykite_base_url),
             settings.ik_app_agent_key.get_secret_value(),
             timeout_seconds=settings.schema_fetch_timeout_seconds,
-            cache=build_schema_cache(settings),
+            cache=build_schema_cache(settings, _fetch_executor),
         )
         self._policy_client = policy_client or PolicyClient(
             str(settings.indykite_base_url),

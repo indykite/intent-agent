@@ -1,6 +1,7 @@
 """Tests for SchemaClient: fetching, caching, and TTL-driven on-demand refresh."""
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx2
 import jwt
@@ -8,7 +9,7 @@ import pytest
 from dogpile.cache.region import make_region
 
 from indykite.intent_agent.errors import InvalidAppAgentKeyError
-from indykite.intent_agent.schema import SchemaClient, _cache_key
+from indykite.intent_agent.schema import SchemaClient, _cache_key, _make_async_creation_runner
 
 _SCHEMA = {"graph": {"nodes": {}, "edges": []}}
 _EXPECTED_FETCH_COUNT_AFTER_REFRESH = 2
@@ -61,6 +62,28 @@ def _expire(cache):
     """
     for key, cached in cache.backend._cache.items():
         cache.backend._cache[key] = cached._replace(metadata={**cached.metadata, "ct": 0})
+
+
+def _memory_cache_with_async_refresh():
+    """Build a Memory-backed CacheRegion wired with the real async_creation_runner (review),
+    matching how build_schema_cache actually configures it - a test exercising the "expired but
+    present" path needs this, or get_cached's return (the immediate stale value) would race the
+    background refresh it kicks off. A test asserting on that refresh's own side effects (a
+    re-fetch, a failure log) must wait for it deterministically - see _wait_for_async_refresh -
+    rather than assert right after get_cached() returns.
+    """
+    executor = ThreadPoolExecutor(max_workers=1)
+    cache = make_region(async_creation_runner=_make_async_creation_runner(executor)).configure(
+        "dogpile.cache.memory", expiration_time=100
+    )
+    return cache, executor
+
+
+def _wait_for_async_refresh(executor):
+    """Block until every refresh already submitted to `executor` has finished - see
+    _memory_cache_with_async_refresh.
+    """
+    executor.shutdown(wait=True)
 
 
 def _mock_redis_client(mocker):
@@ -237,8 +260,14 @@ def test_peek_cached_never_fetches(mocker):
 
 
 def test_get_cached_refreshes_on_demand_when_entry_expired(mocker):
-    """An expired cache entry must trigger a fresh load() and re-cache, not just sit stale."""
-    cache = make_region().configure("dogpile.cache.memory", expiration_time=100)
+    """An expired cache entry must trigger a fresh load() and re-cache, not just sit stale.
+
+    get_cached() itself returns the still-present stale value immediately (review,
+    async_creation_runner - see SchemaClient.get_cached's docstring) rather than waiting on
+    that refresh, so the second _load() this proves happened is only observable once the
+    background refresh it kicked off has actually finished.
+    """
+    cache, executor = _memory_cache_with_async_refresh()
     client_mock = _mock_sync_client(mocker, response=_mock_response(mocker))
     client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
     client.preload()
@@ -247,6 +276,7 @@ def test_get_cached_refreshes_on_demand_when_entry_expired(mocker):
     _expire(cache)
 
     assert client.get_cached() == _SCHEMA
+    _wait_for_async_refresh(executor)
     assert client_mock.get.call_count == _EXPECTED_FETCH_COUNT_AFTER_REFRESH
 
 
@@ -254,9 +284,14 @@ def test_get_cached_falls_back_to_stale_schema_when_refresh_fails(mocker, caplog
     """Per TDD 4.4: if the on-demand refresh fails, the expired-but-last-known-good schema
     must still be served (not None) and schema_refresh_failed logged - a transient platform
     outage must not take down an already-running agent.
+
+    get_cached() returns that stale value immediately, before the (about to fail) refresh
+    this test mocks even runs (review, async_creation_runner) - the failure log is only
+    observable once that background refresh has actually finished, see
+    _memory_cache_with_async_refresh.
     """
     caplog.set_level("ERROR")
-    cache = make_region().configure("dogpile.cache.memory", expiration_time=100)
+    cache, executor = _memory_cache_with_async_refresh()
     client_mock = _mock_sync_client(mocker, response=_mock_response(mocker))
     client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
     client.preload()
@@ -265,4 +300,5 @@ def test_get_cached_falls_back_to_stale_schema_when_refresh_fails(mocker, caplog
     client_mock.get.side_effect = httpx2.HTTPError("platform unreachable")
 
     assert client.get_cached() == _SCHEMA
+    _wait_for_async_refresh(executor)
     assert any("schema_refresh_failed" in record.getMessage() for record in caplog.records)

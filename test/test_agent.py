@@ -1063,7 +1063,7 @@ def _fake_audit_sender(mocker):
 def test_build_schema_cache_uses_memory_backend_by_default(monkeypatch):
     """CACHE_BACKEND defaults to memory - the in-process Memory cache - with no REDIS_URL set."""
     settings = _full_settings(monkeypatch)
-    assert isinstance(build_schema_cache(settings).backend, MemoryBackend)
+    assert isinstance(build_schema_cache(settings, _fetch_executor).backend, MemoryBackend)
 
 
 def test_build_schema_cache_uses_redis_backend_when_configured(monkeypatch):
@@ -1076,7 +1076,7 @@ def test_build_schema_cache_uses_redis_backend_when_configured(monkeypatch):
     monkeypatch.setenv("REDIS_URL", redis_url)
     monkeypatch.setenv("SCHEMA_REFRESH_TTL_MINUTES", "2.0")
     settings = _full_settings(monkeypatch)
-    cache = build_schema_cache(settings)
+    cache = build_schema_cache(settings, _fetch_executor)
     assert isinstance(cache.backend, RedisBackend)
     assert cache.backend.url == redis_url
     assert cache.expiration_time == 2.0 * 60
