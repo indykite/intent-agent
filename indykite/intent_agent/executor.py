@@ -78,6 +78,7 @@ class _RequestAudit:
         self.prompt = _prompt_from_context(context)
         self.subject_id = ""
         self.subject_type = ""
+        self.audited = False
 
     def record(self, result: ExtractionResult) -> AuditMessage:
         """Build the audit record for this request from what the pipeline produced."""
@@ -136,13 +137,29 @@ class IntentExecutor(AgentExecutor):
             raise
 
     async def _audit(self, audit_record: _RequestAudit, result: ExtractionResult) -> None:
-        """Record the request's outcome; never raises.
+        """Record the request's outcome exactly once; never raises.
 
         The sender contract is already "log, don't raise", but building the record or a
         misbehaving sender could still fail - and that must not override what the request
         itself produced: the 401 / exception being re-raised in `execute`, or a result whose
         artifact the caller already has. An audit failure is logged with the request id instead.
+
+        `_extract` calls this before its own final two task-status events (so the record exists
+        before a caller can possibly observe the terminal one, see `_extract`'s docstring) - a
+        request whose success was already audited there can still raise afterwards (e.g. one of
+        those enqueue_event calls failing), which `execute`'s `except` handlers would otherwise
+        turn into a second, synthetic error record for the same request. `audit_record.audited`
+        makes this idempotent per request instead of relying on every caller to track whether
+        the first audit already happened.
         """
+        if audit_record.audited:
+            logger.error(
+                "Suppressed a duplicate audit attempt for request %s (outcome %s)",
+                audit_record.request_id,
+                result.outcome,
+            )
+            return
+        audit_record.audited = True
         try:
             await self._audit_sender.send(audit_record.record(result))
         except Exception:

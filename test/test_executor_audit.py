@@ -184,6 +184,42 @@ def test_audit_is_recorded_before_the_terminal_task_event_is_enqueued(baseline_e
     assert calls == ["audit", "terminal_event"]
 
 
+def test_a_failure_after_the_audit_write_does_not_double_audit(baseline_env, mocker, caplog):
+    """Auditing before the trailing task-status events (see the test above) opens a window
+    where one of those events can still fail to enqueue after the record was already written -
+    execute()'s `except Exception` handler would otherwise treat that as a fresh failure and
+    write a second, synthetic error record for the same request, violating the exactly-once
+    audit guarantee (TDD 4.9). `_audit` must be idempotent per request instead: the record is
+    sent once, the later failure is still logged and still propagates to the caller, but no
+    second record is sent.
+    """
+    caplog.set_level("ERROR")
+    mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value={"active": True, "sub": "user-1"}))
+    executor, sender, _agent = _executor(
+        baseline_env, mocker, result=ExtractionResult(text="{...}", outcome=Outcome.SUCCESS, evaluations=_EVALUATIONS)
+    )
+    status_events_seen = 0
+    post_audit_status_event = 2  # the WORKING update _extract enqueues right after _audit
+    queue_closed = RuntimeError("queue closed")
+
+    async def _fail_the_status_event_right_after_the_audit_call(event):
+        nonlocal status_events_seen
+        if isinstance(event, TaskStatusUpdateEvent):
+            status_events_seen += 1
+            if status_events_seen == post_audit_status_event:
+                raise queue_closed
+
+    event_queue = mocker.Mock(
+        enqueue_event=mocker.AsyncMock(side_effect=_fail_the_status_event_right_after_the_audit_call)
+    )
+
+    with pytest.raises(RuntimeError, match="queue closed"):
+        asyncio.run(executor.execute(_context({"authorization": "Bearer good-token"}), event_queue))
+
+    assert sender.send.await_count == _MAX_RECORDS_PER_REQUEST
+    assert "Suppressed a duplicate audit attempt" in caplog.text
+
+
 @pytest.mark.parametrize(
     "outcome",
     [Outcome.VALIDATION_FAILED, Outcome.UNMATCHED, Outcome.ERROR],
