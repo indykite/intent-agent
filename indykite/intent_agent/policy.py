@@ -9,6 +9,8 @@ preload() at all, and its cache key includes the subject_type alongside the envi
 """
 
 import logging
+import time
+from dataclasses import dataclass
 from typing import Any
 
 import httpx2
@@ -22,6 +24,30 @@ from indykite.intent_agent.schema import app_agent_key_gid
 logger = logging.getLogger(__name__)
 
 _SECONDS_PER_MINUTE = 60
+_CLIENT_ERROR_STATUS_RANGE = range(400, 500)
+# How long a failed fetch is cached before the next request tries again (review: without this,
+# every request during an outage pays the full retry_attempts x timeout_seconds cost). Deliberately
+# much shorter than the success TTL (POLICY_REFRESH_TTL_MINUTES, minutes) - a recovered platform
+# should be retried again soon, not left "marked down" for minutes on the strength of one failure.
+_FAILURE_CACHE_SECONDS = 30.0
+
+
+def _is_client_error(exc: httpx2.HTTPStatusError) -> bool:
+    """True for a 4xx - a client error (review: e.g. the AppAgent lacks ReadAuthZConfigs, or a
+    404) that retrying identically will not fix, unlike a 5xx or connection issue, which might
+    be a transient platform blip worth one more try.
+    """
+    return exc.response.status_code in _CLIENT_ERROR_STATUS_RANGE
+
+
+@dataclass(frozen=True, slots=True)
+class _FailedFetch:
+    """A cached failure (review) - carries its own short expiry rather than the region's normal
+    (much longer) success TTL, checked manually in get_cached since dogpile.cache applies one
+    expiration_time per region, not per entry.
+    """
+
+    expires_at: float
 
 
 def build_policy_cache(settings: Settings) -> CacheRegion:
@@ -97,9 +123,12 @@ class PolicyClient:
 
         Retries up to retry_attempts times (bounded by timeout_seconds each) before giving up -
         a transient platform blip must not cost the caller a policy-derived answer it could
-        have had a moment later. Every attempt's failure is logged; only the final one at
-        WARNING, since a policies outage is never fatal to extraction (run_extraction proceeds
-        without policy context, see subject_binding._bind_subject/_policy_fetch_failed).
+        have had a moment later. A 4xx is the one exception (review): a client error (wrong
+        scope, not found, ...) will not succeed on retry, so it fails fast after a single
+        attempt instead of spending the same retry budget a transient failure gets. Every
+        attempt's failure is logged; only the final one at WARNING, since a policies outage is
+        never fatal to extraction (run_extraction proceeds without policy context, see
+        subject_binding._bind_subject/_policy_fetch_failed).
         """
         if not self._base_url or not self._app_agent_key:
             logger.warning("IK base URL/app-agent key not set - policies unavailable")
@@ -108,6 +137,7 @@ class PolicyClient:
         headers = {"X-IK-ClientKey": self._app_agent_key}
         params = {"subject_type": subject_type}
         last_error: Exception | None = None
+        attempt = 0
         for attempt in range(1, self._retry_attempts + 1):
             logger.debug("Requesting policies from %s (attempt %d/%d)", url, attempt, self._retry_attempts)
             try:
@@ -116,25 +146,42 @@ class PolicyClient:
                     logger.debug("Policy response: status=%s body[:500]=%r", resp.status_code, resp.text[:500])
                     resp.raise_for_status()
                     results = _parse_results(resp)
+            except httpx2.HTTPStatusError as exc:
+                last_error = exc
+                if _is_client_error(exc):
+                    logger.warning(
+                        "Policy fetch from %s got %s - a client error will not succeed on retry: %s",
+                        url,
+                        exc.response.status_code,
+                        exc,
+                    )
+                    break
+                continue
             except (httpx2.HTTPError, ValueError, TypeError) as exc:
                 last_error = exc
                 continue
             logger.info("Loaded %d polic%s from %s", len(results), "y" if len(results) == 1 else "ies", url)
             return results
-        logger.warning("Failed to load policies from %s after %d attempts: %s", url, self._retry_attempts, last_error)
+        logger.warning(
+            "Failed to load policies from %s after %d attempt%s: %s",
+            url,
+            attempt,
+            "" if attempt == 1 else "s",
+            last_error,
+        )
         return None
 
     def get_cached(self, subject_type: str) -> list[dict[str, Any]] | None:
-        """Return the cached policies for this subject_type. A cache miss - never fetched, or
-        the cache region's TTL has expired the entry - triggers an on-demand refresh here, the
-        same request-driven-not-a-timer refresh schema.get_cached() uses.
+        """Return the cached policies for this subject_type. A cache miss - never fetched, the
+        cache region's TTL has expired the success entry, or a cached failure's own shorter
+        backoff has elapsed - triggers an on-demand refresh here, the same
+        request-driven-not-a-timer refresh schema.get_cached() uses.
 
-        Unlike the schema, a failed refresh here falls back to None, not a stale value: there
-        is no "last known good" to preserve on the very first request for a given subject_type
-        (no preload happened), and by the time a later request's entry could go stale, a fresh
-        attempt (with its own retry budget) is exactly as cheap as serving something stale
-        would be - policies are used at request scope, unlike the schema's process-lifetime
-        assumption of "some schema is better than none".
+        A failure is itself cached, briefly (review, _FAILURE_CACHE_SECONDS) - without this,
+        every request during an outage would pay the full retry_attempts x timeout_seconds cost
+        again; this never blocks or raises for the caller either way; it only changes whether
+        get_cached retries right now or returns None immediately from a still-fresh failure -
+        run_extraction proceeds exactly the same (policy_fetch_failed=True), just faster.
         """
         try:
             cache_key = _cache_key(self._app_agent_key, subject_type)
@@ -142,10 +189,17 @@ class PolicyClient:
             logger.warning("IK_APP_AGENT_KEY is not a valid JWT - policies unavailable")
             return None
         cached = self._cache.get(cache_key)
+        if isinstance(cached, _FailedFetch):
+            if time.monotonic() < cached.expires_at:
+                logger.debug("cache_key=%s hit=recent-failure (backoff active)", cache_key)
+                return None
+            cached = NO_VALUE
         logger.debug("cache_key=%s hit=%s", cache_key, cached is not NO_VALUE)
         if cached is not NO_VALUE:
             return cached
         policies = self._load(subject_type)
         if policies is not None:
             self._cache.set(cache_key, policies)
+        else:
+            self._cache.set(cache_key, _FailedFetch(expires_at=time.monotonic() + _FAILURE_CACHE_SECONDS))
         return policies

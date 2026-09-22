@@ -1,13 +1,14 @@
 """Tests for PolicyClient: fetching, per-subject_type caching, and retry-then-give-up (ENG-9671)."""
 
 import json
+import time
 
 import httpx2
 import jwt
 import pytest
 from dogpile.cache.region import make_region
 
-from indykite.intent_agent.policy import PolicyClient, _cache_key
+from indykite.intent_agent.policy import _FAILURE_CACHE_SECONDS, PolicyClient, _cache_key
 
 _POLICIES = [
     {
@@ -79,6 +80,19 @@ def _mock_malformed_response(mocker, *, json_value=None, json_error=None):
         response.json = mocker.Mock(side_effect=json_error)
     else:
         response.json = mocker.Mock(return_value=json_value)
+    return response
+
+
+def _mock_status_error_response(mocker, status_code):
+    """A response whose raise_for_status() raises a real httpx2.HTTPStatusError carrying that
+    status_code - for testing the 4xx-vs-5xx retry distinction (review).
+    """
+    response = mocker.Mock()
+    response.status_code = status_code
+    response.text = "error body"
+    response.raise_for_status = mocker.Mock(
+        side_effect=httpx2.HTTPStatusError("error", request=mocker.Mock(), response=response)
+    )
     return response
 
 
@@ -189,6 +203,66 @@ def test_get_cached_returns_none_after_exhausting_retries(mocker, caplog, kind):
     assert client.get_cached(_SUBJECT_TYPE) is None
     assert client_mock.get.call_count == _RETRY_ATTEMPTS
     assert "after 3 attempts" in caplog.text
+
+
+def test_get_cached_does_not_retry_a_4xx_response(mocker, caplog):
+    """A 4xx (review: e.g. the AppAgent lacks ReadAuthZConfigs, or a plain 404) will not
+    succeed on retry, so it must fail fast after a single attempt instead of spending the same
+    retry budget a transient 5xx/connection error gets.
+    """
+    caplog.set_level("WARNING")
+    forbidden = _mock_status_error_response(mocker, 403)
+    client_mock = _mock_sync_client(mocker, response=forbidden)
+    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=3, cache=_memory_cache())
+
+    assert client.get_cached(_SUBJECT_TYPE) is None
+    assert client_mock.get.call_count == 1
+    assert "after 1 attempt" in caplog.text
+    assert "after 1 attempts" not in caplog.text
+
+
+def test_get_cached_still_retries_a_5xx_response(mocker):
+    """Unlike a 4xx, a 5xx is the platform's own problem and might clear up by the next
+    attempt, so it keeps the same retry tolerance as a connection error.
+    """
+    server_error = _mock_status_error_response(mocker, 503)
+    client_mock = _mock_sync_client(mocker, side_effect=[server_error] * _RETRY_ATTEMPTS)
+    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=3, cache=_memory_cache())
+
+    assert client.get_cached(_SUBJECT_TYPE) is None
+    assert client_mock.get.call_count == _RETRY_ATTEMPTS
+
+
+def test_get_cached_caches_a_failure_briefly(mocker):
+    """A failed fetch is itself cached for a short backoff (review) - without this, every
+    request during an outage would pay the full retry_attempts x timeout_seconds cost again.
+    A second call within that window must return None without attempting any new request.
+    """
+    error = httpx2.ConnectTimeout("connect timed out")
+    client_mock = _mock_sync_client(mocker, side_effect=error)
+    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=3, cache=_memory_cache())
+
+    assert client.get_cached(_SUBJECT_TYPE) is None
+    assert client_mock.get.call_count == _RETRY_ATTEMPTS
+
+    assert client.get_cached(_SUBJECT_TYPE) is None
+    assert client_mock.get.call_count == _RETRY_ATTEMPTS  # no new attempts - backoff still active
+
+
+def test_get_cached_retries_again_once_the_failure_backoff_expires(mocker):
+    """The cached-failure backoff is short and must itself expire - a platform that recovers
+    should be retried again soon, not left "marked down" for the full success TTL.
+    """
+    error = httpx2.ConnectTimeout("connect timed out")
+    client_mock = _mock_sync_client(mocker, side_effect=[error] * _RETRY_ATTEMPTS + [_mock_response(mocker)])
+    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=3, cache=_memory_cache())
+    assert client.get_cached(_SUBJECT_TYPE) is None
+    assert client_mock.get.call_count == _RETRY_ATTEMPTS
+
+    mocker.patch("indykite.intent_agent.policy.time.monotonic", return_value=time.monotonic() + _FAILURE_CACHE_SECONDS)
+
+    assert client.get_cached(_SUBJECT_TYPE) == _POLICIES
+    assert client_mock.get.call_count == _RETRY_ATTEMPTS + 1
 
 
 def test_get_cached_caches_per_subject_type(mocker):

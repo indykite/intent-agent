@@ -470,7 +470,7 @@ class IntentAgent:
             return " ".join(parts) if parts else ""
         return str(raw_response_text or raw_content or "")
 
-    def _dispatch_tool_call(
+    async def _dispatch_tool_call(
         self,
         call: dict[str, Any],
         messages: list[BaseMessage],
@@ -484,6 +484,13 @@ class IntentAgent:
         reminder instead of the full skill body plus schema again: re-injecting those every
         round bloats the context and is what an LLM stuck re-activating the skill until
         TOOL_CALL_MAX_ITERATIONS runs out looks like in practice.
+
+        Uses ainvoke, not invoke (review): every tool here (activate_skill, get_data_schema,
+        get_policies) can call into a synchronous SchemaClient/PolicyClient - StructuredTool's
+        own ainvoke() runs a plain sync-defined tool via a thread-pool executor rather than
+        directly on the event loop, so a slow/hung fetch triggered by an on-demand tool call
+        can no longer block every other concurrent request either, the same fix already
+        applied to the schema/policy pre-checks in run_extraction.
         """
         name = call.get("name", "")
         args = call.get("args", {}) or {}
@@ -495,7 +502,7 @@ class IntentAgent:
             result = _SKILL_ALREADY_ACTIVE
         elif tool_obj:
             try:
-                result = tool_obj.invoke(args)
+                result = await tool_obj.ainvoke(args)
             except Exception as exc:  # noqa: BLE001 - tool errors are fed back to the LLM, not raised
                 result = f"Error: {exc}"
         else:
@@ -664,7 +671,7 @@ class IntentAgent:
                 return response, extract_intent_active
             messages.append(response)
             for call in tool_calls:
-                if self._dispatch_tool_call(call, messages, tools, extract_intent_active=extract_intent_active):
+                if await self._dispatch_tool_call(call, messages, tools, extract_intent_active=extract_intent_active):
                     extract_intent_active = True
         return None, extract_intent_active
 

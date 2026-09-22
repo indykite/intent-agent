@@ -1577,6 +1577,53 @@ def test_run_extraction_slow_schema_fetch_does_not_block_the_event_loop(monkeypa
     assert concurrent_elapsed < 0.15  # noqa: PLR2004 - loop kept ticking, not frozen for the fetch's 0.3s
 
 
+def test_run_extraction_get_policies_tool_call_does_not_block_the_event_loop(monkeypatch, mocker):
+    """The on-demand get_policies tool (ENG-9671) can call into PolicyClient.get_cached, a
+    synchronous httpx2 call, exactly like run_extraction's own pre-check fetch - but this call
+    happens later, when the LLM decides to invoke the tool mid-conversation, so it needs its
+    own fix: _dispatch_tool_call now awaits ainvoke() rather than calling invoke() directly.
+    StructuredTool's ainvoke() runs a plain sync-defined tool via a thread-pool executor, so a
+    slow/hung fetch triggered by this on-demand tool call cannot block every other concurrent
+    request either - proven here the same way as the pre-check fetch: a concurrent, unrelated
+    coroutine completes well before the slow tool call does.
+    """
+    settings = _full_settings(monkeypatch)
+    get_policies_call = {"name": "get_policies", "args": {}, "id": "call-2"}
+    mock_ainvoke = mocker.AsyncMock(
+        side_effect=[
+            _llm_response(mocker, tool_calls=[_ACTIVATE_EXTRACT_INTENT_CALL]),
+            _llm_response(mocker, tool_calls=[get_policies_call]),
+            _llm_response(mocker, _ON_SCHEMA_ANSWER),
+        ],
+    )
+    fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mock_ainvoke)))
+    fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=_load_schema_fixture()))
+
+    call_count = 0
+
+    def _get_cached(_subject_type):
+        nonlocal call_count
+        call_count += 1
+        if call_count > 1:  # the on-demand get_policies tool call, not run_extraction's own pre-check
+            time.sleep(0.3)
+        return []
+
+    fake_policy_client = mocker.Mock(get_cached=mocker.Mock(side_effect=_get_cached))
+    agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client, policy_client=fake_policy_client)
+
+    async def _scenario():
+        slow_task = asyncio.create_task(agent.run_extraction("rent kitt", RequestSubject(id="user-1", type="Customer")))
+        started = time.perf_counter()
+        await asyncio.sleep(0.05)  # the loop must still service this while the tool call blocks its own thread
+        concurrent_elapsed = time.perf_counter() - started
+        await slow_task  # let the slow request finish so no task is left dangling
+        return concurrent_elapsed
+
+    concurrent_elapsed = asyncio.run(_scenario())
+
+    assert concurrent_elapsed < 0.15  # noqa: PLR2004 - loop kept ticking, not frozen for the tool call's 0.3s
+
+
 def test_run_extraction_times_out_during_retry_too(monkeypatch, mocker):
     """LLM_TIMEOUT_SECONDS bounds every call, the validation retry included: a retry that
     hangs surfaces as llm_timeout_error - never the rejected off-schema answer, and never a
