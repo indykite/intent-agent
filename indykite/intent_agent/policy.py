@@ -91,6 +91,9 @@ def _cache_key(app_agent_key: str, subject_type: str) -> str:
     return f"ikg_policies:{scope}:{subject_type}"
 
 
+_ERROR_BODY_PREVIEW_CHARS = 500
+
+
 def _parse_results(resp: httpx2.Response) -> list[dict[str, Any]]:
     """Parse and validate a 2xx policy response's body, raising on anything that isn't the
     documented {"results": [...]} envelope (review: a malformed body must count as a failed
@@ -98,14 +101,19 @@ def _parse_results(resp: httpx2.Response) -> list[dict[str, Any]]:
     get_cached() as an uncaught exception, and not silently become a successful empty policy
     set that hides a real problem from the caller). Callers must catch TypeError alongside
     ValueError (resp.json() itself raises the latter, a json.JSONDecodeError, on invalid JSON).
+
+    The body preview in either message is truncated the same as the DEBUG-level response log
+    above (review) - unlike that one, _load() logs this exception's own text at WARNING once
+    retries are exhausted, a level that is always on; a malformed 2xx response's body, however
+    large, must not reach a log at that level unbounded.
     """
     body = resp.json()
     if not isinstance(body, dict):
-        msg = f"policy response body is not a JSON object: {body!r}"
+        msg = f"policy response body is not a JSON object: {body!r:.{_ERROR_BODY_PREVIEW_CHARS}}"
         raise TypeError(msg)
     results = body.get("results")
     if not isinstance(results, list):
-        msg = f"policy response 'results' is missing or not an array: {body!r}"
+        msg = f"policy response 'results' is missing or not an array: {body!r:.{_ERROR_BODY_PREVIEW_CHARS}}"
         raise TypeError(msg)
     return results
 

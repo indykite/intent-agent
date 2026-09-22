@@ -206,6 +206,24 @@ def test_get_cached_returns_none_after_exhausting_retries(mocker, caplog, kind):
     assert "after 3 attempts" in caplog.text
 
 
+def test_get_cached_truncates_a_malformed_body_in_the_warning_log(mocker, caplog):
+    """A malformed 2xx response's body must not reach the retry-exhausted WARNING log
+    unbounded (review) - that level is always on, unlike the DEBUG-level per-attempt response
+    preview, which already truncates the same way; a large or sensitive body must not bypass
+    that just because it came from _parse_results's own error message instead.
+    """
+    huge_body_size = 10_000
+    truncation_ceiling = 1_000  # comfortably above _ERROR_BODY_PREVIEW_CHARS, well below huge_body_size
+    caplog.set_level("WARNING")
+    huge_body = {"not_results": "x" * huge_body_size}
+    _mock_sync_client(mocker, response=_mock_malformed_response(mocker, json_value=huge_body))
+    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=1, cache=_memory_cache())
+
+    assert client.get_cached(_SUBJECT_TYPE) is None
+    assert "xxxxxxxxxx" in caplog.text
+    assert caplog.text.count("x") < truncation_ceiling
+
+
 def test_get_cached_does_not_retry_a_4xx_response(mocker, caplog):
     """A 4xx (review: e.g. the AppAgent lacks ReadAuthZConfigs, or a plain 404) will not
     succeed on retry, so it must fail fast after a single attempt instead of spending the same
