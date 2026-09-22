@@ -49,25 +49,22 @@ from indykite.intent_agent.subject_binding import (
 
 logger = logging.getLogger(__name__)
 
-# Dedicated, bounded pool for the schema/policy fetch (review, ENG-9671): asyncio.to_thread
-# always runs on the event loop's shared default executor, the same one every tool call
-# (agent._dispatch_tool_call) and the audit sender's file write use. A stuck/unreachable policy
-# or schema endpoint cannot be preempted once its worker thread has started (see
-# run_extraction's docstring) - it keeps running for its own timeout x retry course even after
-# asyncio.timeout has already given up on the awaiting request. Enough concurrent requests
-# hitting a genuinely down endpoint could pile up orphaned workers and exhaust the *shared*
-# default executor, starving unrelated concurrent requests' tool calls and audit writes too.
-# Routing these two fetches through their own small pool instead contains that pile-up to
-# fetches specifically - which already degrade gracefully (schema_unavailable_error, or
-# policy_fetch_failed=True proceeding schema-only) - without it ever touching the pool
-# everything else in a request depends on.
 _FETCH_EXECUTOR_MAX_WORKERS = 8
 _fetch_executor = ThreadPoolExecutor(max_workers=_FETCH_EXECUTOR_MAX_WORKERS, thread_name_prefix="intent-agent-fetch")
 
 
 async def _run_in_fetch_executor[T](func: Callable[..., T], *args: object) -> T:
     """Run a blocking schema/policy fetch call on the dedicated `_fetch_executor`, not the
-    event loop's shared default one (see the comment above `_fetch_executor`).
+    event loop's shared default one that every tool call and the audit sender's file write also
+    use (review, ENG-9671). Python cannot preempt an already-running synchronous call, so a
+    stuck/unreachable schema or policy endpoint keeps its worker running for its own timeout x
+    retry course even after asyncio.timeout has given up on the awaiting request - see
+    run_extraction's docstring. Enough concurrent requests against a genuinely down endpoint
+    could pile up orphaned workers and exhaust a *shared* executor, starving unrelated
+    concurrent requests' tool calls and audit writes too; a small, dedicated pool for fetches
+    specifically (which already degrade gracefully - schema_unavailable_error, or
+    policy_fetch_failed=True proceeding schema-only) contains that pile-up instead of spreading
+    it to everything else a request depends on.
     """
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(_fetch_executor, func, *args)
@@ -574,34 +571,25 @@ class IntentAgent:
         tool-call loop, not once per iteration) satisfies "derived ... each time it reloads"
         without a second cache to keep in sync.
 
-        Schema/policy fetch, both moved inside REQUEST_TIMEOUT_SECONDS below, run on the
-        dedicated `_fetch_executor` rather than directly - both clients call the platform over a
-        synchronous httpx2.Client, so run directly on the event loop a slow/unreachable
-        platform would stall every concurrent request this process is serving, not just this
-        one. Running the blocking call on a worker thread instead fixes that, and folds the
-        fetch into the same deadline the LLM calls already share, so a slow fetch no longer gets
-        unlimited extra time on top of the request budget - but Python cannot preempt an
+        Schema/policy fetch, both moved inside REQUEST_TIMEOUT_SECONDS below, run via
+        `_run_in_fetch_executor` rather than directly (see its docstring), folding the fetch
+        into the same deadline the LLM calls already share - but Python cannot preempt an
         already-running synchronous call, so *this* request's own worst-case latency still
         tracks that client's own timeout x retry settings once the fetch has started, not a hard
-        cutoff at REQUEST_TIMEOUT_SECONDS; a dedicated executor (rather than asyncio.to_thread's
-        shared default one) at least keeps that orphaned worker from also starving unrelated
-        concurrent requests' tool calls and audit writes - see `_fetch_executor`.
+        cutoff at REQUEST_TIMEOUT_SECONDS.
+
+        `version`/`policy_context` are set before the `try` so the `except TimeoutError` block
+        below has values even when the timeout fires mid-fetch, before either is assigned inside
+        it. `policy_context`'s default has `fetch_failed=True` (review): the real PolicyContext
+        further down only replaces it once get_cached_policies() actually returns, so a timeout
+        firing while that fetch is still in flight must fall back to a default that already
+        says the fetch failed, not one that looks like a successful fetch that just found no
+        policies.
         """
-        # Defaults for the except TimeoutError block below - a timeout can fire while awaiting
-        # the schema/policy fetch itself, before either is assigned inside the try.
         version = ""
-        policy_context = PolicyContext(policies=None, fetch_failed=False)
+        policy_context = PolicyContext(policies=None, fetch_failed=True)
         try:
             async with asyncio.timeout(self.settings.request_timeout_seconds) as deadline:
-                # ENG-9671 review: both SchemaClient and PolicyClient hit the platform over a
-                # synchronous httpx2.Client - run on the dedicated _fetch_executor so a slow/
-                # unreachable fetch can't stall every other concurrent request this process is
-                # serving, and so it counts against this same deadline rather than getting
-                # unlimited extra time before the LLM-call budget even starts. Cannot cut this
-                # request's own latency off mid-fetch though - Python cannot preempt a running
-                # thread, so a stuck fetch still runs its own timeout x retry course before this
-                # fires; the dedicated (rather than shared default) executor at least keeps that
-                # from also starving unrelated requests' tool calls and audit writes.
                 schema = await _run_in_fetch_executor(self.get_cached_schema)
                 if schema is None:
                     logger.error(

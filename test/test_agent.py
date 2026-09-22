@@ -1594,6 +1594,29 @@ def test_run_extraction_enforces_request_deadline_across_calls(monkeypatch, mock
     assert "LLM call exceeded" not in caplog.text
 
 
+def test_run_extraction_timeout_mid_policy_fetch_reports_the_fetch_as_failed(monkeypatch, mocker):
+    """A request deadline firing while get_cached_policies() is still running (review) must not
+    report the audit's policy_context as a *successful* fetch that found no policies - it never
+    finished at all. The real PolicyContext only replaces run_extraction's own default once that
+    fetch actually returns, so a timeout mid-fetch falls back to the default instead; that
+    default must itself already say fetch_failed=True, or the audit record would claim a policy
+    fetch that never completed was healthy, with an empty policy hash to match.
+    """
+    monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "0.02")
+    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "0.01")
+    settings = _full_settings(monkeypatch)
+    fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mocker.AsyncMock())))
+    fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=_load_schema_fixture()))
+    fake_policy_client = mocker.Mock(get_cached=mocker.Mock(side_effect=lambda _subject_type: time.sleep(0.1) or []))
+    agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client, policy_client=fake_policy_client)
+
+    result = asyncio.run(agent.run_extraction("rent kitt", RequestSubject(id="user-1", type="Customer")))
+
+    assert result.outcome == Outcome.ERROR
+    assert result.policy_fetch_failed is True
+    assert result.policy_version == ""
+
+
 def test_run_extraction_slow_schema_fetch_does_not_block_the_event_loop(monkeypatch, mocker):
     """SchemaClient/PolicyClient hit the platform over a synchronous httpx2.Client, so a
     slow/unreachable fetch run directly on the event loop would stall every concurrent request
