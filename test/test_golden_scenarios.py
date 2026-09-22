@@ -51,6 +51,19 @@ def _llm_response(mocker, text="", tool_calls=()):
     return mocker.Mock(text=text, content=text, tool_calls=list(tool_calls))
 
 
+def _fake_schema_client(mocker, **kwargs):
+    """A fake SchemaClient whose peek_cached() always misses, so get_cached() - however a test
+    configures it below - is what run_extraction actually exercises, matching this suite's
+    behavior from before peek_cached_schema's cache-hit shortcut existed (review, ENG-9671).
+    """
+    return mocker.Mock(peek_cached=mocker.Mock(return_value=None), **kwargs)
+
+
+def _fake_policy_client(mocker, **kwargs):
+    """A fake PolicyClient whose peek_cached() always reports a miss - see _fake_schema_client."""
+    return mocker.Mock(peek_cached=mocker.Mock(return_value=(False, None)), **kwargs)
+
+
 def _agent(monkeypatch, mocker, baseline_env, answers):
     """An IntentAgent over the CanBank schema whose LLM activates extract-intent and then
     answers with `answers` (dicts, serialized) in order.
@@ -62,11 +75,11 @@ def _agent(monkeypatch, mocker, baseline_env, answers):
     ]
     mock_ainvoke = mocker.AsyncMock(side_effect=responses)
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mock_ainvoke)))
-    fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=_canbank_schema()))
+    fake_schema_client = _fake_schema_client(mocker, get_cached=mocker.Mock(return_value=_canbank_schema()))
     # No policies (a successful fetch that found none) - these golden scenarios are about the
     # schema-derived pipeline, not ENG-9671, and a real PolicyClient would otherwise hit the
     # network against this fake settings' base_url on every scenario.
-    fake_policy_client = mocker.Mock(get_cached=mocker.Mock(return_value=[]))
+    fake_policy_client = _fake_policy_client(mocker, get_cached=mocker.Mock(return_value=[]))
     return (
         IntentAgent(
             Settings(_env_file=None),
@@ -383,8 +396,8 @@ def _agent_with_policies(monkeypatch, mocker, baseline_env, answers, policies):
     ]
     mock_ainvoke = mocker.AsyncMock(side_effect=responses)
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mock_ainvoke)))
-    fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=_canbank_schema()))
-    fake_policy_client = mocker.Mock(get_cached=mocker.Mock(return_value=policies))
+    fake_schema_client = _fake_schema_client(mocker, get_cached=mocker.Mock(return_value=_canbank_schema()))
+    fake_policy_client = _fake_policy_client(mocker, get_cached=mocker.Mock(return_value=policies))
     return (
         IntentAgent(
             Settings(_env_file=None),

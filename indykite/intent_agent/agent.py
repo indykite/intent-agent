@@ -299,12 +299,24 @@ class IntentAgent:
         """Return the cached schema, fetching it once if not already cached."""
         return self._schema_client.get_cached()
 
+    def peek_cached_schema(self) -> dict[str, Any] | None:
+        """Return the cached schema without ever fetching - None means a genuine miss, and
+        get_cached_schema() must run instead (see SchemaClient.peek_cached).
+        """
+        return self._schema_client.peek_cached()
+
     def get_cached_policies(self, subject_type: str) -> list[dict[str, Any]] | None:
         """Return this subject_type's cached AuthZEN policies (ENG-9671), fetching them once if
         not already cached. None means the fetch failed after retries, not "no policies exist"
         (an empty list) - run_extraction tells the two apart (see PolicyContext.fetch_failed).
         """
         return self._policy_client.get_cached(subject_type)
+
+    def peek_cached_policies(self, subject_type: str) -> tuple[bool, list[dict[str, Any]] | None]:
+        """(resolved, policies) for subject_type without ever fetching - resolved=False means
+        a genuine miss, and get_cached_policies() must run instead (see PolicyClient.peek_cached).
+        """
+        return self._policy_client.peek_cached(subject_type)
 
     def _make_get_data_schema_tool(self, schema: dict[str, Any]) -> StructuredTool:
         """Build the get_data_schema tool, returning this request's own schema snapshot
@@ -571,12 +583,13 @@ class IntentAgent:
         tool-call loop, not once per iteration) satisfies "derived ... each time it reloads"
         without a second cache to keep in sync.
 
-        Schema/policy fetch, both moved inside REQUEST_TIMEOUT_SECONDS below, run via
-        `_run_in_fetch_executor` rather than directly (see its docstring), folding the fetch
-        into the same deadline the LLM calls already share - but Python cannot preempt an
-        already-running synchronous call, so *this* request's own worst-case latency still
-        tracks that client's own timeout x retry settings once the fetch has started, not a hard
-        cutoff at REQUEST_TIMEOUT_SECONDS.
+        Schema/policy fetch, both moved inside REQUEST_TIMEOUT_SECONDS below, first try a cheap
+        cache-only peek directly on the event loop (`peek_cached_schema`/`peek_cached_policies`)
+        - only a genuine miss falls through to `_run_in_fetch_executor` (see its docstring),
+        which folds the fetch into the same deadline the LLM calls already share. Python cannot
+        preempt an already-running synchronous call, so *this* request's own worst-case latency
+        still tracks that client's own timeout x retry settings once a fetch has actually
+        started, not a hard cutoff at REQUEST_TIMEOUT_SECONDS.
 
         `version`/`policy_context` are set before the `try` so the `except TimeoutError` block
         below has values even when the timeout fires mid-fetch, before either is assigned inside
@@ -590,7 +603,9 @@ class IntentAgent:
         policy_context = PolicyContext(policies=None, fetch_failed=True)
         try:
             async with asyncio.timeout(self.settings.request_timeout_seconds) as deadline:
-                schema = await _run_in_fetch_executor(self.get_cached_schema)
+                schema = self.peek_cached_schema()
+                if schema is None:
+                    schema = await _run_in_fetch_executor(self.get_cached_schema)
                 if schema is None:
                     logger.error(
                         "Schema unavailable - cannot verify subject_type %r; skipping extraction for prompt %r",
@@ -623,7 +638,9 @@ class IntentAgent:
                         Outcome.ERROR, subject_type_mismatch_error(prompt), schema_version=version
                     )
 
-                policies = await _run_in_fetch_executor(self.get_cached_policies, subject.type)
+                policy_resolved, policies = self.peek_cached_policies(subject.type)
+                if not policy_resolved:
+                    policies = await _run_in_fetch_executor(self.get_cached_policies, subject.type)
                 policy_fetch_failed = policies is None
                 policy_context = PolicyContext(policies=policies, fetch_failed=policy_fetch_failed)
                 if policy_fetch_failed:

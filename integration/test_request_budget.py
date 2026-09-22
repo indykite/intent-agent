@@ -42,6 +42,7 @@ def test_hung_llm_call_is_cut_off_within_request_budget(monkeypatch, mocker, tmp
     )
     fake_schema_client = mocker.Mock(
         preload=mocker.Mock(),
+        peek_cached=mocker.Mock(return_value=None),
         get_cached=mocker.Mock(return_value=load_schema_fixture()),
     )
 

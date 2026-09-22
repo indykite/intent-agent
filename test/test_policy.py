@@ -265,6 +265,30 @@ def test_get_cached_retries_again_once_the_failure_backoff_expires(mocker):
     assert client_mock.get.call_count == _RETRY_ATTEMPTS + 1
 
 
+def test_peek_cached_never_fetches(mocker):
+    """peek_cached() must resolve purely from the cache, without ever calling _load() - a
+    caller (review, ENG-9671: run_extraction) uses this to skip the dedicated fetch executor
+    entirely once the cache already has an answer, whether that answer is a real hit or a
+    still-fresh cached failure's backoff.
+    """
+    client_mock = _mock_sync_client(mocker, response=_mock_response(mocker))
+    cache = _memory_cache()
+    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
+
+    assert client.peek_cached(_SUBJECT_TYPE) == (False, None)
+    client_mock.get.assert_not_called()
+
+    client.get_cached(_SUBJECT_TYPE)
+    assert client.peek_cached(_SUBJECT_TYPE) == (True, _POLICIES)
+    assert client_mock.get.call_count == 1
+
+    error = httpx2.ConnectTimeout("connect timed out")
+    client_mock.get.side_effect = error
+    failing_client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=1, cache=_memory_cache())
+    failing_client.get_cached(_SUBJECT_TYPE)
+    assert failing_client.peek_cached(_SUBJECT_TYPE) == (True, None)
+
+
 def test_get_cached_caches_per_subject_type(mocker):
     """Two different subject_types must each trigger their own fetch and be cached separately -
     a shared cache entry would leak one subject_type's policies into another's request.

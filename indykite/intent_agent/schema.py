@@ -138,9 +138,8 @@ class SchemaClient:
         falls back to the expired-but-still-present value instead of returning None,
         so a transient platform outage doesn't take down an already-running agent.
         """
-        cached = self._cache.get(self._cache_key)
-        logger.debug("cache_key=%s hit=%s", self._cache_key, cached is not NO_VALUE)
-        if cached is not NO_VALUE:
+        cached = self.peek_cached()
+        if cached is not None:
             return cached
         schema = self.load()
         if schema is not None:
@@ -149,3 +148,14 @@ class SchemaClient:
         logger.error("schema_refresh_failed - keeping last known good schema")
         stale = self._cache.get(self._cache_key, ignore_expiration=True)
         return None if stale is NO_VALUE else stale
+
+    def peek_cached(self) -> dict[str, Any] | None:
+        """Return the cached schema if present, without ever calling load(). A cheap, bounded
+        cache lookup (a dict or Redis round-trip, not the platform's synchronous HTTP call),
+        safe for a caller to run directly on the event loop instead of paying a thread-pool
+        dispatch for every request regardless of whether a fetch is actually needed (review) -
+        only a genuine miss (None here) needs get_cached()'s slower load()-on-miss path.
+        """
+        cached = self._cache.get(self._cache_key)
+        logger.debug("cache_key=%s hit=%s", self._cache_key, cached is not NO_VALUE)
+        return None if cached is NO_VALUE else cached

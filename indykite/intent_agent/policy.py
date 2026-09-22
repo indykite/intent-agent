@@ -194,23 +194,41 @@ class PolicyClient:
         get_cached retries right now or returns None immediately from a still-fresh failure -
         run_extraction proceeds exactly the same (policy_fetch_failed=True), just faster.
         """
-        try:
-            cache_key = _cache_key(self._app_agent_key, subject_type)
-        except InvalidAppAgentKeyError:
-            logger.warning("IK_APP_AGENT_KEY is not a valid JWT - policies unavailable")
-            return None
-        cached = self._cache.get(cache_key)
-        if isinstance(cached, _FailedFetch):
-            if time.time() < cached.expires_at:
-                logger.debug("cache_key=%s hit=recent-failure (backoff active)", cache_key)
-                return None
-            cached = NO_VALUE
-        logger.debug("cache_key=%s hit=%s", cache_key, cached is not NO_VALUE)
-        if cached is not NO_VALUE:
-            return cached
+        resolved, cached_result = self.peek_cached(subject_type)
+        if resolved:
+            return cached_result
+        cache_key = _cache_key(self._app_agent_key, subject_type)
         policies = self._load(subject_type)
         if policies is not None:
             self._cache.set(cache_key, policies)
         else:
             self._cache.set(cache_key, _FailedFetch(expires_at=time.time() + _FAILURE_CACHE_SECONDS))
         return policies
+
+    def peek_cached(self, subject_type: str) -> tuple[bool, list[dict[str, Any]] | None]:
+        """Try to resolve subject_type's policies from the cache alone, without ever calling
+        _load(). A cheap, bounded cache lookup (a dict or Redis round-trip, not the platform's
+        synchronous HTTP call), safe for a caller to run directly on the event loop instead of
+        paying a thread-pool dispatch for every request regardless of whether a fetch is
+        actually needed (review).
+
+        Returns (True, value) once resolved purely from the cache - an actual hit, or a
+        still-fresh cached failure's own backoff (value is None, same as get_cached()'s own
+        fast-reject) - no fetch needed either way. Returns (False, None) on a genuine miss:
+        get_cached() must still run (via the executor) to call _load() and populate the cache.
+        """
+        try:
+            cache_key = _cache_key(self._app_agent_key, subject_type)
+        except InvalidAppAgentKeyError:
+            logger.warning("IK_APP_AGENT_KEY is not a valid JWT - policies unavailable")
+            return True, None
+        cached = self._cache.get(cache_key)
+        if isinstance(cached, _FailedFetch):
+            if time.time() < cached.expires_at:
+                logger.debug("cache_key=%s hit=recent-failure (backoff active)", cache_key)
+                return True, None
+            return False, None
+        logger.debug("cache_key=%s hit=%s", cache_key, cached is not NO_VALUE)
+        if cached is not NO_VALUE:
+            return True, cached
+        return False, None

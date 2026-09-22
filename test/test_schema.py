@@ -219,6 +219,23 @@ def test_get_cached_fetches_on_demand_when_not_already_cached(mocker, caplog):
     assert unconfigured_client.get_cached() is None
 
 
+def test_peek_cached_never_fetches(mocker):
+    """peek_cached() must return None on a miss without ever calling load() - a caller (review,
+    ENG-9671: run_extraction) uses this to skip the dedicated fetch executor entirely on a
+    cache hit, so it must never itself trigger the fetch get_cached() would.
+    """
+    client_mock = _mock_sync_client(mocker, response=_mock_response(mocker))
+    cache = _memory_cache()
+    client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
+
+    assert client.peek_cached() is None
+    client_mock.get.assert_not_called()
+
+    client.preload()
+    assert client.peek_cached() == _SCHEMA
+    client_mock.get.assert_called_once()
+
+
 def test_get_cached_refreshes_on_demand_when_entry_expired(mocker):
     """An expired cache entry must trigger a fresh load() and re-cache, not just sit stale."""
     cache = make_region().configure("dogpile.cache.memory", expiration_time=100)
