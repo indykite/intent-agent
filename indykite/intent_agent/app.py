@@ -10,7 +10,7 @@ from a2a.utils.constants import DEFAULT_RPC_URL
 from langchain_core.language_models import BaseChatModel
 from starlette.applications import Starlette
 
-from indykite.intent_agent.agent import IntentAgent
+from indykite.intent_agent.agent import IntentAgent, _fetch_executor
 from indykite.intent_agent.audit.sender import Sender, build_sender
 from indykite.intent_agent.config import Settings
 from indykite.intent_agent.executor import IntentExecutor
@@ -31,6 +31,13 @@ def build_app(
     The audit sender is built from AUDIT_DELIVERY here (or injected, for tests) and closed by
     the app's lifespan on shutdown - which is what drains a buffered (AUDIT_ASYNC) queue
     before the process exits, the same guarantee the IAG's sender gives on stop.
+
+    The lifespan also shuts down agent.py's shared _fetch_executor (review) - schema/policy
+    fetches and their async_creation_runner refreshes all run on it, and Python cannot preempt
+    an already-running synchronous call, so a stuck one could otherwise hang process shutdown
+    waiting for it via the executor's own atexit handler. wait=False, cancel_futures=True drops
+    anything still queued and does not block on whatever is already running - acceptable here
+    since the whole process is exiting anyway, not something a live request would ever see.
     """
     agent = IntentAgent(settings, llm=llm, schema_client=schema_client, policy_client=policy_client)
     agent.preload_schema()
@@ -48,6 +55,7 @@ def build_app(
         try:
             yield
         finally:
+            _fetch_executor.shutdown(wait=False, cancel_futures=True)
             await sender.close()
 
     app = Starlette(

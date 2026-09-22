@@ -1,6 +1,7 @@
 import asyncio
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import httpx2
@@ -119,15 +120,25 @@ def test_build_app_registers_routes(monkeypatch, mocker):
 def test_build_app_closes_audit_sender_on_shutdown(monkeypatch, mocker):
     """The app's lifespan closes the audit sender on shutdown - that is what drains a buffered
     (AUDIT_ASYNC) queue before the process exits, so nothing audited is lost on a rollout.
+
+    Patches agent.py's shared _fetch_executor with a throwaway one for this test only (review:
+    the lifespan also shuts that executor down) - it is a process-lifetime singleton other
+    tests depend on staying usable, and ThreadPoolExecutor.shutdown() is not reversible, so
+    letting this test's real lifespan shutdown reach the actual shared instance would corrupt
+    every test that runs after it in the same process.
     """
     settings = _full_settings(monkeypatch)
     fake_schema_client = mocker.Mock(preload=mocker.Mock(), get_cached=mocker.Mock(return_value=_load_schema_fixture()))
     sender = _fake_audit_sender(mocker)
+    disposable_executor = ThreadPoolExecutor(max_workers=1)
+    mocker.patch("indykite.intent_agent.app._fetch_executor", disposable_executor)
     app, _agent = build_app(settings, schema_client=fake_schema_client, audit_sender=sender)
 
     with TestClient(app):
         sender.close.assert_not_awaited()
+        assert not disposable_executor._shutdown
     sender.close.assert_awaited_once()
+    assert disposable_executor._shutdown
 
 
 def test_build_app_starts_when_schema_unavailable_at_cold_start(monkeypatch, mocker):
