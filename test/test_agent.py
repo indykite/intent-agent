@@ -1618,7 +1618,8 @@ def test_run_extraction_reuses_one_schema_snapshot_for_the_whole_request(monkeyp
     fake_schema_client = _fake_schema_client(
         mocker, get_cached=mocker.Mock(side_effect=[first_fetch_schema, second_fetch_schema])
     )
-    agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client)
+    fake_policy_client = _fake_policy_client(mocker, get_cached=mocker.Mock(return_value=[]))
+    agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client, policy_client=fake_policy_client)
 
     asyncio.run(agent.run_extraction("rent kitt", RequestSubject(id="user-1", type="Customer")))
 
