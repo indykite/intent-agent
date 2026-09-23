@@ -79,7 +79,7 @@ def _agent(monkeypatch, mocker, baseline_env, answers):
     # No policies (a successful fetch that found none) - these golden scenarios are about the
     # schema-derived pipeline, not ENG-9671, and a real PolicyClient would otherwise hit the
     # network against this fake settings' base_url on every scenario.
-    fake_policy_client = _fake_policy_client(mocker, get_cached=mocker.Mock(return_value=[]))
+    fake_policy_client = _fake_policy_client(mocker, get_cached=mocker.Mock(return_value=([], False)))
     return (
         IntentAgent(
             Settings(_env_file=None),
@@ -397,7 +397,7 @@ def _agent_with_policies(monkeypatch, mocker, baseline_env, answers, policies):
     mock_ainvoke = mocker.AsyncMock(side_effect=responses)
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mock_ainvoke)))
     fake_schema_client = _fake_schema_client(mocker, get_cached=mocker.Mock(return_value=_canbank_schema()))
-    fake_policy_client = _fake_policy_client(mocker, get_cached=mocker.Mock(return_value=policies))
+    fake_policy_client = _fake_policy_client(mocker, get_cached=mocker.Mock(return_value=(policies, False)))
     return (
         IntentAgent(
             Settings(_env_file=None),

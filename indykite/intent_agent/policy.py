@@ -220,11 +220,23 @@ class PolicyClient:
         )
         return None, reason
 
-    def get_cached(self, subject_type: str) -> list[dict[str, Any]] | None:
-        """Return the cached policies for this subject_type. A cache miss - never fetched, the
-        cache region's TTL has expired the success entry, or a cached failure's own shorter
+    def get_cached(self, subject_type: str) -> tuple[list[dict[str, Any]] | None, bool]:
+        """Return (policies, fetch_failed) for this subject_type. A cache miss - never fetched,
+        the cache region's TTL has expired the success entry, or a cached failure's own shorter
         backoff has elapsed - triggers an on-demand refresh here, the same
         request-driven-not-a-timer refresh schema.get_cached() uses.
+
+        fetch_failed is True whenever the live fetch this call made (or the cached failure it
+        served instead of making one) did not succeed - including when policies is still a real,
+        non-None list served from the stale-fallback path below (review, High: an earlier
+        version of this method inferred fetch_failed as `policies is None` at the call site,
+        which the stale-fallback path made wrong - a failed refresh that fell back to a real
+        stale list was silently reported as a successful one, so the caller-facing
+        policy_fetch_failed marker and the audit trail both said the fetch succeeded when it
+        had not, and the LLM was never told the policies it saw might be stale). A `nonlocal`
+        flag inside _fetch_or_cache_failure below, not an instance attribute, is what carries
+        this - scoped to one call of get_cached(), so it is unaffected by concurrent calls for
+        other subject_types (or the same one) sharing this same PolicyClient instance.
 
         The refresh itself goes through the cache region's own get_or_create (review) rather
         than a manual get-then-set, so concurrent callers observing the same miss/expired
@@ -288,21 +300,26 @@ class PolicyClient:
 
         Any cache backend failure (e.g. CACHE_BACKEND=redis genuinely unreachable, not just a
         miss) is treated the same as a policy fetch failure rather than left to escape as an
-        unhandled exception (review) - run_extraction proceeds schema-only either way.
+        unhandled exception (review) - run_extraction proceeds schema-only either way, and
+        fetch_failed is True.
         """
         try:
             resolved, cached_result = self.peek_cached(subject_type)
             if resolved:
-                return cached_result
+                return cached_result, cached_result is None
             cache_key = _cache_key(self._app_agent_key, subject_type)
             current = self._cache.get(cache_key, ignore_expiration=True)
             if isinstance(current, _FailedFetch) and time.time() >= current.expires_at:
                 self._cache.delete(cache_key)
 
+            fetch_failed = False
+
             def _fetch_or_cache_failure() -> list[dict[str, Any]] | _FailedFetch:
+                nonlocal fetch_failed
                 policies, reason = self._load(subject_type)
                 if policies is not None:
                     return policies
+                fetch_failed = True
                 if isinstance(current, list):
                     logger.warning(
                         "Policy fetch failed for subject_type %r, serving last known-good policies instead: %s",
@@ -320,8 +337,10 @@ class PolicyClient:
             result = self._cache.get_or_create(cache_key, _fetch_or_cache_failure)
         except Exception:
             logger.exception("Cache backend failed while fetching policies for subject_type %r", subject_type)
-            return None
-        return None if isinstance(result, _FailedFetch) else result
+            return None, True
+        if isinstance(result, _FailedFetch):
+            return None, True
+        return result, fetch_failed
 
     def peek_cached(self, subject_type: str) -> tuple[bool, list[dict[str, Any]] | None]:
         """Try to resolve subject_type's policies from the cache alone, without ever calling

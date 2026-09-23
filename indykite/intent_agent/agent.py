@@ -322,10 +322,12 @@ class IntentAgent:
         """
         return self._schema_client.get_cached()
 
-    def get_cached_policies(self, subject_type: str) -> list[dict[str, Any]] | None:
-        """Return this subject_type's cached AuthZEN policies (ENG-9671), fetching them once if
-        not already cached. None means the fetch failed after retries, not "no policies exist"
-        (an empty list) - run_extraction tells the two apart (see PolicyContext.fetch_failed).
+    def get_cached_policies(self, subject_type: str) -> tuple[list[dict[str, Any]] | None, bool]:
+        """Return (policies, fetch_failed) for this subject_type's cached AuthZEN policies
+        (ENG-9671), fetching them once if not already cached. fetch_failed, not `policies is
+        None` (review, High) - PolicyClient.get_cached can serve a real, non-None stale policy
+        list even when the live fetch that would have refreshed it just failed, so `policies is
+        None` alone is no longer a reliable failure signal; see that method's own docstring.
 
         Always dispatched through `_run_in_fetch_executor`, never called directly on the event
         loop - see get_cached_schema's docstring; the same Redis-backend risk applies here too.
@@ -358,7 +360,9 @@ class IntentAgent:
 
         return get_data_schema
 
-    def _make_get_policies_tool(self, policies: list[dict[str, Any]] | None) -> StructuredTool:
+    def _make_get_policies_tool(
+        self, policies: list[dict[str, Any]] | None, *, policy_fetch_failed: bool
+    ) -> StructuredTool:
         """Build the get_policies tool (ENG-9671), returning this request's own policies
         snapshot - the exact one run_extraction already used to build request.policy_context
         and the response schema's action enum - rather than an independent
@@ -368,12 +372,14 @@ class IntentAgent:
         validate_evaluations, with the audit's policy_version hash left describing a
         different, stale policy set than what the tool actually told the model.
 
-        `policies is None` (the fetch failed, not "genuinely no policies") still returns `[]`
-        to the model, same as _policy_block's own convention (see run_extraction's
+        A failed fetch (policy_fetch_failed, not `policies is None` - review, High: the latter
+        misses PolicyClient's own stale-fallback case, where a real, non-None list is served
+        despite the live fetch having just failed) still returns whatever `policies` holds to
+        the model - `[]` on a genuine failure with nothing to fall back on, or the stale list
+        otherwise - same as _policy_block's own convention (see run_extraction's
         policy_fetch_failed handling for how the caller learns about the failure instead) - but
-        this is logged server-side when the tool is actually invoked (review), so a failed
-        fetch that the LLM went on to ask about isn't silently indistinguishable from a
-        genuinely empty policy set in the logs.
+        this is logged server-side when the tool is actually invoked, so a failed fetch the LLM
+        went on to ask about isn't silently indistinguishable from a healthy one in the logs.
         """
         policies_json = json.dumps(policies or [], separators=(",", ":"), ensure_ascii=False)
 
@@ -385,13 +391,15 @@ class IntentAgent:
             matches) - mark such an evaluation with context.parameters.action_derivation_rule
             set to "policy_based".
             """
-            if policies is None:
+            if policy_fetch_failed:
                 logger.warning("get_policies invoked but this request's policy fetch had failed")
             return policies_json
 
         return get_policies
 
-    def _build_tools(self, schema: dict[str, Any], policies: list[dict[str, Any]] | None) -> list[StructuredTool]:
+    def _build_tools(
+        self, schema: dict[str, Any], policies: list[dict[str, Any]] | None, *, policy_fetch_failed: bool
+    ) -> list[StructuredTool]:
         """Build this request's tool set, fresh each call from the exact schema/policies
         snapshot run_extraction already fetched once and built the response schema's enums,
         policy_context, and validate_evaluations from - every tool here returns that same
@@ -403,7 +411,7 @@ class IntentAgent:
             for t in (
                 self._make_activate_skill_tool(schema, policies),
                 self._make_get_data_schema_tool(schema),
-                self._make_get_policies_tool(policies),
+                self._make_get_policies_tool(policies, policy_fetch_failed=policy_fetch_failed),
             )
             if t
         ]
@@ -671,17 +679,30 @@ class IntentAgent:
                     )
 
                 phase = "policy fetch"
-                policies = await self._run_in_fetch_executor(self.get_cached_policies, subject.type)
-                policy_fetch_failed = policies is None
+                policies, policy_fetch_failed = await self._run_in_fetch_executor(
+                    self.get_cached_policies, subject.type
+                )
                 policy_context = PolicyContext(policies=policies, fetch_failed=policy_fetch_failed)
                 if policy_fetch_failed:
-                    logger.warning(
-                        "Policies unavailable for subject_type %r after retries; proceeding with "
-                        "schema-only action derivation for prompt %r",
-                        subject.type,
-                        prompt,
-                    )
-                tools = self._build_tools(schema, policies)
+                    # policies is not None here means PolicyClient fell back to a real,
+                    # last-known-good stale list rather than losing it (review) - the log must
+                    # say so, not claim schema-only derivation when policies are actually still
+                    # in play, just not freshly confirmed this request.
+                    if policies is not None:
+                        logger.warning(
+                            "Policy fetch failed for subject_type %r; proceeding with last "
+                            "known-good policies for prompt %r",
+                            subject.type,
+                            prompt,
+                        )
+                    else:
+                        logger.warning(
+                            "Policies unavailable for subject_type %r after retries; proceeding with "
+                            "schema-only action derivation for prompt %r",
+                            subject.type,
+                            prompt,
+                        )
+                tools = self._build_tools(schema, policies, policy_fetch_failed=policy_fetch_failed)
                 llm_with_tools = self._llm.bind_tools(
                     tools,
                     response_mime_type="application/json",
