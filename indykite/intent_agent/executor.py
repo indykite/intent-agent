@@ -182,19 +182,24 @@ class IntentExecutor(AgentExecutor):
         resolves the caller's own identity itself and supplies both per request, instead of
         subject_id coming from a token's `sub` claim and subject_type from static config.
 
-        subject_type is required - 400 (HTTPException) if missing or blank (whitespace-only
-        counts as blank), since every evaluation needs one. subject_id may be blank (TDD 4.7
-        doesn't require the caller to have one - a Subject Search never binds it either way,
-        see subject_binding._subject_search), so it isn't required here. Either present but not a
-        string (e.g. a nested object) is also a 400 - str(some_dict) would otherwise silently
-        coerce it into a Python repr and bind that into every evaluation and audit record,
-        instead of surfacing the malformed request to the caller.
+        Both are required (ENG-9810) - 400 (HTTPException) if either is missing or blank
+        (whitespace-only counts as blank). subject_id used to be reliably populated from the
+        token's own `sub` claim, so a real authenticated caller was never actually anonymous in
+        practice; now that IAG must supply it explicitly instead, a missing subject_id is a
+        caller-side bug (it forgot to resolve/attach the caller's identity), not a legitimate
+        anonymous-caller request, and must be rejected the same as a missing subject_type rather
+        than silently proceeding with an unidentified caller. Either present but not a string
+        (e.g. a nested object) is also a 400 - str(some_dict) would otherwise silently coerce it
+        into a Python repr and bind that into every evaluation and audit record, instead of
+        surfacing the malformed request to the caller.
         """
         metadata = dict(context.message.metadata) if context.message and context.message.metadata else {}
         subject_type = self._require_metadata_string(metadata, "subject_type")
         subject_id = self._require_metadata_string(metadata, "subject_id")
         if not subject_type:
             raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail="subject_type is required")
+        if not subject_id:
+            raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail="subject_id is required")
         return subject_type, subject_id
 
     @staticmethod
