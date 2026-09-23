@@ -197,28 +197,25 @@ class Settings(BaseSettings):
         dead-config reasoning as _reject_llm_timeout_over_request_timeout, now that both fetches
         run inside request_timeout_seconds too (ENG-9671, review).
 
-        Also rejects the combined worst case, not just each field alone (review): a policy fetch
-        can retry POLICY_FETCH_RETRY_ATTEMPTS times, each bounded by POLICY_FETCH_TIMEOUT_SECONDS,
-        and run_extraction spends the schema fetch and the policy fetch sequentially inside the
-        same request_timeout_seconds budget before the LLM even gets a turn. A schema timeout of
-        9s plus two 9s policy attempts (27s) would each individually pass the checks above (each
-        is under a 10s request_timeout_seconds) while being nowhere close to fitting together -
-        this catches that combination even when neither field alone looks wrong.
+        Deliberately per-field only, not a combined/retry-multiplied budget (review: a prior
+        version of this validator also rejected schema_fetch_timeout_seconds +
+        policy_fetch_timeout_seconds x policy_fetch_retry_attempts exceeding
+        request_timeout_seconds - reverted, since that check was inconsistent with this exact
+        sibling validator and every other budget knob here: LLM_TIMEOUT_SECONDS is checked the
+        same single-field way despite TOOL_CALL_MAX_ITERATIONS/VALIDATION_MAX_RETRIES letting
+        several LLM calls multiply its own worst case well past request_timeout_seconds too, and
+        nothing rejects that combination either. The one property every one of these fields
+        actually needs is "could this single call ever fire before the whole request already
+        timed out" - asyncio.timeout(request_timeout_seconds) is what truly enforces the total
+        budget, cutting off whichever phase is in flight and reporting it correctly (see
+        run_extraction's phase tracking), not a requirement that every possible combination of
+        retries/iterations mathematically sums to fit underneath it.
         """
         if self.schema_fetch_timeout_seconds > self.request_timeout_seconds:
             message = "SCHEMA_FETCH_TIMEOUT_SECONDS must not exceed REQUEST_TIMEOUT_SECONDS"
             raise ValueError(message)
         if self.policy_fetch_timeout_seconds > self.request_timeout_seconds:
             message = "POLICY_FETCH_TIMEOUT_SECONDS must not exceed REQUEST_TIMEOUT_SECONDS"
-            raise ValueError(message)
-        worst_case_fetch_seconds = self.schema_fetch_timeout_seconds + (
-            self.policy_fetch_timeout_seconds * self.policy_fetch_retry_attempts
-        )
-        if worst_case_fetch_seconds > self.request_timeout_seconds:
-            message = (
-                "SCHEMA_FETCH_TIMEOUT_SECONDS plus POLICY_FETCH_TIMEOUT_SECONDS times "
-                "POLICY_FETCH_RETRY_ATTEMPTS must not exceed REQUEST_TIMEOUT_SECONDS"
-            )
             raise ValueError(message)
         return self
 

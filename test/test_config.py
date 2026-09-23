@@ -356,19 +356,23 @@ def test_rejects_a_fetch_or_llm_timeout_longer_than_request_timeout(monkeypatch,
         Settings(_env_file=None)
 
 
-def test_rejects_a_combined_fetch_worst_case_even_when_each_field_alone_fits(monkeypatch):
-    """A schema timeout plus policy_fetch_timeout_seconds x policy_fetch_retry_attempts can
-    exceed request_timeout_seconds even when each field individually stays under it (review) -
-    e.g. a 9s schema fetch plus two 9s policy attempts is 27s, nowhere near a 10s request
-    deadline, though 9 <= 10 passes the single-field checks above on its own.
+def test_accepts_fetch_timeouts_whose_retry_multiplied_sum_exceeds_the_request_budget(monkeypatch):
+    """The fetch-timeout validator is deliberately per-field only, not a combined/retry-
+    multiplied budget (review) - a schema timeout of 9s plus two 9s policy attempts (27s worst
+    case) must be accepted here, same as LLM_TIMEOUT_SECONDS is never checked against
+    TOOL_CALL_MAX_ITERATIONS/VALIDATION_MAX_RETRIES multiplying its own worst case either.
+    asyncio.timeout(REQUEST_TIMEOUT_SECONDS) is what actually enforces the total budget by
+    cutting off whichever phase is in flight, not a requirement that every possible combination
+    of retries mathematically sums to fit underneath it.
     """
     _set_baseline_env(monkeypatch)
     monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "10")
     monkeypatch.setenv("SCHEMA_FETCH_TIMEOUT_SECONDS", "9")
     monkeypatch.setenv("POLICY_FETCH_TIMEOUT_SECONDS", "9")
     monkeypatch.setenv("POLICY_FETCH_RETRY_ATTEMPTS", "2")
-    with pytest.raises(ValidationError, match="POLICY_FETCH_RETRY_ATTEMPTS must not exceed REQUEST_TIMEOUT_SECONDS"):
-        Settings(_env_file=None)
+    settings = Settings(_env_file=None)
+    assert settings.schema_fetch_timeout_seconds == 9.0  # noqa: PLR2004 - the env value just set
+    assert settings.policy_fetch_timeout_seconds == 9.0  # noqa: PLR2004 - the env value just set
 
 
 _DEFAULT_AUDIT_ASYNC_BUFFER_SIZE = 512
