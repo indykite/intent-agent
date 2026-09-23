@@ -228,6 +228,26 @@ def test_missing_subject_type_is_audited_as_error_and_rejected(baseline_env, moc
     agent.run_extraction.assert_not_awaited()
 
 
+def test_missing_subject_id_is_audited_as_error_and_rejected(baseline_env, mocker):
+    """A caller-supplied subject_id is required too (ENG-9810) - it used to come reliably from
+    the token's own sub claim, so a missing one now is a caller-side bug (IAG forgot to resolve
+    and attach the caller's identity), not a legitimate anonymous-caller request. Missing/blank
+    is a 400, audited the same way a missing subject_type is.
+    """
+    mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value={"active": True}))
+    executor, sender, agent = _executor(baseline_env, mocker)
+
+    context = _context({"authorization": "Bearer good-token"}, metadata={"subject_type": "Customer"})
+    with pytest.raises(HTTPException) as excinfo:
+        _execute(executor, context, mocker)
+
+    assert excinfo.value.status_code == HTTP_400_BAD_REQUEST
+    record = _sole_record(sender)
+    assert record.outcome == Outcome.ERROR
+    assert record.message == excinfo.value.detail == "subject_id is required"
+    agent.run_extraction.assert_not_awaited()
+
+
 def test_whitespace_only_subject_type_is_audited_as_error_and_rejected(baseline_env, mocker):
     """A whitespace-only subject_type must count as blank - the same 400 as a missing one, not
     a value that happens to be truthy and slips past the check.

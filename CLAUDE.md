@@ -225,10 +225,12 @@ test): JSON-RPC method name is `SendMessage`, not `message/send`; requests need
 <token>` required and validated via RFC 7662 introspection against the external IdP (real network
 call - a valid-looking-but-fake token, like the old JWT-decode design accepted, is now rejected) -
 this authenticates the calling client, not any subject, so `subject_type`/`subject_id` are no
-longer derived from it. Both are required in the request's `message.metadata` instead (`subject_type`
-missing/blank is a 400; `subject_id` may be blank - an anonymous caller, not a way to request a
-Subject Search, which the LLM marks per evaluation instead: `subject_binding._subject_search`) -
-see `IntentExecutor._subject_params`.
+longer derived from it. Both are required in the request's `message.metadata` instead (ENG-9810:
+missing/blank is a 400 for either one now, since `subject_id` used to come reliably from the
+token's own `sub` claim, so a missing one is a caller-side bug, not a legitimate anonymous-caller
+request) - see `IntentExecutor._subject_params`. A Subject Search ("Who can do Y on Z?") is
+unrelated to this: it is marked per evaluation by the LLM (`subject_binding._subject_search`),
+not by the caller omitting `subject_id`.
 
 ## Docker
 
