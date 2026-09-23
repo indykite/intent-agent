@@ -42,6 +42,13 @@ def _make_async_creation_runner(executor: ThreadPoolExecutor) -> AsyncCreator:
                     cache.set(key, schema)
                 else:
                     logger.error("schema_refresh_failed - keeping last known good schema")
+            except Exception:
+                # Covers a cache.set() failure too (review), e.g. a Redis write dropping mid-
+                # refresh even though the fetch that just preceded it succeeded - not just
+                # creator()'s own exceptions. Either way this thread is fire-and-forget (nobody
+                # calls .result() on the future it runs in), so an uncaught exception here would
+                # otherwise vanish with nothing logged at all.
+                logger.exception("schema_refresh_failed - keeping last known good schema")
             finally:
                 mutex.release()
 

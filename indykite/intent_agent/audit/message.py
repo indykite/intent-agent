@@ -50,7 +50,13 @@ class AuditMessage(BaseModel):
     llm_model: str
     latency_ms: int
     validation_retries: int
-    policy_fetch_failed: bool
+    # None means no policy fetch was ever attempted for this request (review) - the fail-fast
+    # paths in run_extraction that never reach get_cached_policies at all (schema unavailable,
+    # a timeout mid-schema-fetch). Distinct from False (attempted and succeeded, possibly with
+    # zero policies) - collapsing "never attempted" into False would make it indistinguishable
+    # from a real success, understating how often policy fetches actually happen versus how
+    # often the request never got that far.
+    policy_fetch_failed: bool | None
     outcome: Outcome
     message: str
 
@@ -104,8 +110,10 @@ def policy_version(policies: Sequence[Mapping[str, Any]] | None) -> str:
     still hash to a different value for identical policy state. Each entry is first
     canonicalized on its own (sort_keys=True), then the entries themselves are sorted by that
     canonical string before being joined, making the result independent of the original list
-    order too. Empty when no policies were fetched - none exist for this subject_type, or the
-    fetch failed after retries (see AuditMessage.policy_fetch_failed for telling those apart).
+    order too. Empty when no policies were fetched - none exist for this subject_type, the
+    fetch failed after retries, or no fetch was ever attempted at all (see
+    AuditMessage.policy_fetch_failed - False, True, and None respectively - for telling those
+    three apart).
     """
     if not policies:
         return ""

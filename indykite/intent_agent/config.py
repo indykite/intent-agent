@@ -196,12 +196,29 @@ class Settings(BaseSettings):
         """Reject a schema/policy fetch timeout longer than the whole-request deadline - same
         dead-config reasoning as _reject_llm_timeout_over_request_timeout, now that both fetches
         run inside request_timeout_seconds too (ENG-9671, review).
+
+        Also rejects the combined worst case, not just each field alone (review): a policy fetch
+        can retry POLICY_FETCH_RETRY_ATTEMPTS times, each bounded by POLICY_FETCH_TIMEOUT_SECONDS,
+        and run_extraction spends the schema fetch and the policy fetch sequentially inside the
+        same request_timeout_seconds budget before the LLM even gets a turn. A schema timeout of
+        9s plus two 9s policy attempts (27s) would each individually pass the checks above (each
+        is under a 10s request_timeout_seconds) while being nowhere close to fitting together -
+        this catches that combination even when neither field alone looks wrong.
         """
         if self.schema_fetch_timeout_seconds > self.request_timeout_seconds:
             message = "SCHEMA_FETCH_TIMEOUT_SECONDS must not exceed REQUEST_TIMEOUT_SECONDS"
             raise ValueError(message)
         if self.policy_fetch_timeout_seconds > self.request_timeout_seconds:
             message = "POLICY_FETCH_TIMEOUT_SECONDS must not exceed REQUEST_TIMEOUT_SECONDS"
+            raise ValueError(message)
+        worst_case_fetch_seconds = self.schema_fetch_timeout_seconds + (
+            self.policy_fetch_timeout_seconds * self.policy_fetch_retry_attempts
+        )
+        if worst_case_fetch_seconds > self.request_timeout_seconds:
+            message = (
+                "SCHEMA_FETCH_TIMEOUT_SECONDS plus POLICY_FETCH_TIMEOUT_SECONDS times "
+                "POLICY_FETCH_RETRY_ATTEMPTS must not exceed REQUEST_TIMEOUT_SECONDS"
+            )
             raise ValueError(message)
         return self
 

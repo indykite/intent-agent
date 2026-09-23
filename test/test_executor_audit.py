@@ -123,6 +123,7 @@ def test_success_records_the_extraction(baseline_env, mocker):
         validation_retries=1,
         schema_version="deadbeef",
         policy_version="cafef00d",
+        policy_fetch_failed=False,
     )
     executor, sender, _agent = _executor(baseline_env, mocker, result=result)
 

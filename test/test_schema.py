@@ -377,3 +377,23 @@ def test_async_refresh_logs_a_malformed_response_instead_of_swallowing_it(mocker
     _wait_for_async_refresh(executor)
     assert any("schema_refresh_failed" in record.getMessage() for record in caplog.records)
     assert any("Failed to load data schema" in record.getMessage() for record in caplog.records)
+
+
+def test_async_refresh_logs_when_the_cache_write_itself_fails(mocker, caplog):
+    """Review finding: a successful fetch's own cache.set() can still raise (e.g. a Redis write
+    dropping mid-refresh even though the fetch that just preceded it succeeded), separate from
+    creator() failing - the same fire-and-forget reasoning as the malformed-response case above
+    means this would otherwise vanish uncaught with nothing logged either.
+    """
+    caplog.set_level("ERROR")
+    cache, executor = _memory_cache_with_async_refresh()
+    _mock_sync_client(mocker, response=_mock_response(mocker))
+    client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
+    client.preload()
+    _expire(cache)
+
+    mocker.patch.object(cache, "set", side_effect=ConnectionError("redis write failed"))
+
+    assert client.get_cached() == _SCHEMA
+    _wait_for_async_refresh(executor)
+    assert any("schema_refresh_failed" in record.getMessage() for record in caplog.records)

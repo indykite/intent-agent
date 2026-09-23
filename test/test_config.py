@@ -356,6 +356,21 @@ def test_rejects_a_fetch_or_llm_timeout_longer_than_request_timeout(monkeypatch,
         Settings(_env_file=None)
 
 
+def test_rejects_a_combined_fetch_worst_case_even_when_each_field_alone_fits(monkeypatch):
+    """A schema timeout plus policy_fetch_timeout_seconds x policy_fetch_retry_attempts can
+    exceed request_timeout_seconds even when each field individually stays under it (review) -
+    e.g. a 9s schema fetch plus two 9s policy attempts is 27s, nowhere near a 10s request
+    deadline, though 9 <= 10 passes the single-field checks above on its own.
+    """
+    _set_baseline_env(monkeypatch)
+    monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "10")
+    monkeypatch.setenv("SCHEMA_FETCH_TIMEOUT_SECONDS", "9")
+    monkeypatch.setenv("POLICY_FETCH_TIMEOUT_SECONDS", "9")
+    monkeypatch.setenv("POLICY_FETCH_RETRY_ATTEMPTS", "2")
+    with pytest.raises(ValidationError, match="POLICY_FETCH_RETRY_ATTEMPTS must not exceed REQUEST_TIMEOUT_SECONDS"):
+        Settings(_env_file=None)
+
+
 _DEFAULT_AUDIT_ASYNC_BUFFER_SIZE = 512
 _DEFAULT_AUDIT_ROTATION_INTERVAL_SECONDS = 24 * 60 * 60.0
 _DEFAULT_AUDIT_ROTATION_MAX_BYTES = 100 * 1024 * 1024

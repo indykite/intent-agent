@@ -33,14 +33,18 @@ def build_app(
     before the process exits, the same guarantee the IAG's sender gives on stop.
 
     The lifespan also shuts down this agent's own _fetch_executor (review) - schema/policy
-    fetches and their async_creation_runner refreshes all run on it, and Python cannot preempt
-    an already-running synchronous call, so a stuck one could otherwise hang process shutdown
-    waiting for it via the executor's own atexit handler. wait=False, cancel_futures=True drops
-    anything still queued and does not block on whatever is already running - acceptable here
-    since the whole process is exiting anyway, not something a live request would ever see.
-    Each IntentAgent owns its own executor rather than sharing one process-wide singleton, so
-    this only ever tears down the instance this specific app is backed by - a second app (or
-    any other embedded caller) built on its own IntentAgent is unaffected.
+    fetches and their async_creation_runner refreshes all run on it. wait=False,
+    cancel_futures=True only drops work still queued and returns immediately rather than
+    blocking this coroutine on whatever is already running - it does not, and cannot, stop an
+    in-flight synchronous fetch already underway in a worker thread (review: Python cannot
+    preempt one, and a genuinely stuck call could still leave that thread running past this
+    point, for concurrent.futures' own atexit machinery to join later at interpreter exit - the
+    bounded SCHEMA_FETCH_TIMEOUT_SECONDS/POLICY_FETCH_TIMEOUT_SECONDS x retries is what actually
+    guarantees such a thread eventually finishes on its own, not this call). What this genuinely
+    achieves: the lifespan handler itself never blocks on a slow/stuck fetch, and, since each
+    IntentAgent owns its own executor rather than sharing one process-wide singleton, this only
+    ever touches the instance this specific app is backed by - a second app (or any other
+    embedded caller) built on its own IntentAgent is unaffected.
     """
     agent = IntentAgent(settings, llm=llm, schema_client=schema_client, policy_client=policy_client)
     agent.preload_schema()

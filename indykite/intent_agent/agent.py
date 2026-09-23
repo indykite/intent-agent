@@ -103,14 +103,17 @@ class _RequestContext:
     policy_context: PolicyContext
 
 
-def _policy_audit_fields(policy_context: PolicyContext | None) -> tuple[str, bool]:
+def _policy_audit_fields(policy_context: PolicyContext | None) -> tuple[str, bool | None]:
     """(policy_version, policy_fetch_failed) for an ExtractionResult, from this request's
-    PolicyContext - None when the result was built before any policy fetch was attempted (the
-    fail-fast paths in run_extraction, before get_cached_policies is even called), same as
-    schema_version defaulting to "" for those same paths.
+    PolicyContext - None (for policy_context) when the result was built before any policy
+    fetch was attempted (the fail-fast paths in run_extraction, before get_cached_policies is
+    even called), same as schema_version defaulting to "" for those same paths. That case's
+    policy_fetch_failed is None too (review), not False - False means the fetch was actually
+    attempted and succeeded, which "never attempted" is not, and collapsing the two would make
+    an audit record indistinguishable from a real success it never was.
     """
     if policy_context is None:
-        return "", False
+        return "", None
     return policy_version(policy_context.policies), policy_context.fetch_failed
 
 
@@ -128,7 +131,9 @@ class ExtractionResult:
     validation_retries: int = 0
     schema_version: str = ""
     policy_version: str = ""
-    policy_fetch_failed: bool = False
+    # None = no policy fetch was attempted this request, distinct from False (attempted and
+    # succeeded) - see _policy_audit_fields.
+    policy_fetch_failed: bool | None = None
 
     @classmethod
     def failed(
@@ -362,6 +367,13 @@ class IntentAgent:
         taken, showing the LLM a policy action neither in its own enum nor accepted by
         validate_evaluations, with the audit's policy_version hash left describing a
         different, stale policy set than what the tool actually told the model.
+
+        `policies is None` (the fetch failed, not "genuinely no policies") still returns `[]`
+        to the model, same as _policy_block's own convention (see run_extraction's
+        policy_fetch_failed handling for how the caller learns about the failure instead) - but
+        this is logged server-side when the tool is actually invoked (review), so a failed
+        fetch that the LLM went on to ask about isn't silently indistinguishable from a
+        genuinely empty policy set in the logs.
         """
         policies_json = json.dumps(policies or [], separators=(",", ":"), ensure_ascii=False)
 
@@ -373,6 +385,8 @@ class IntentAgent:
             matches) - mark such an evaluation with context.parameters.action_derivation_rule
             set to "policy_based".
             """
+            if policies is None:
+                logger.warning("get_policies invoked but this request's policy fetch had failed")
             return policies_json
 
         return get_policies
