@@ -24,6 +24,11 @@ from indykite.intent_agent.schema import app_agent_key_gid
 logger = logging.getLogger(__name__)
 
 _SECONDS_PER_MINUTE = 60
+# 4xx codes that are transient despite the 4xx range in general meaning "don't retry" - 408
+# (the platform itself timed out on that attempt) and 429 (rate-limited) both describe conditions
+# a subsequent attempt can plausibly succeed at, unlike e.g. a 401/403/404, which describe the
+# request itself as invalid and would fail identically every time (review).
+_RETRYABLE_CLIENT_ERROR_STATUSES = frozenset({408, 429})
 _CLIENT_ERROR_STATUS_RANGE = range(400, 500)
 # How long a failed fetch is cached before the next request tries again (review: without this,
 # every request during an outage pays the full retry_attempts x timeout_seconds cost). Deliberately
@@ -35,9 +40,24 @@ _FAILURE_CACHE_SECONDS = 30.0
 def _is_client_error(exc: httpx2.HTTPStatusError) -> bool:
     """True for a 4xx - a client error (review: e.g. the AppAgent lacks ReadAuthZConfigs, or a
     404) that retrying identically will not fix, unlike a 5xx or connection issue, which might
-    be a transient platform blip worth one more try.
+    be a transient platform blip worth one more try. 408/429 are the exception (review): both
+    describe a condition a subsequent attempt can plausibly clear, so they get the same retry
+    treatment as a 5xx instead of failing fast after one attempt.
     """
-    return exc.response.status_code in _CLIENT_ERROR_STATUS_RANGE
+    status = exc.response.status_code
+    return status in _CLIENT_ERROR_STATUS_RANGE and status not in _RETRYABLE_CLIENT_ERROR_STATUSES
+
+
+def _failure_backoff_seconds(cache: CacheRegion) -> float:
+    """_FAILURE_CACHE_SECONDS, but never longer than the region's own success TTL (review): a
+    POLICY_REFRESH_TTL_MINUTES configured under 30 seconds would otherwise let dogpile's own
+    (shorter) freshness check expire a cached _FailedFetch before its own backoff does -
+    peek_cached()'s plain cache.get() would then report a miss early, triggering a fresh fetch
+    attempt well before the intended backoff window has actually elapsed, defeating the point
+    of caching the failure at all in that configuration.
+    """
+    ttl = cache.expiration_time
+    return _FAILURE_CACHE_SECONDS if ttl is None else min(_FAILURE_CACHE_SECONDS, ttl)
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,9 +74,13 @@ class _FailedFetch:
     host booted first, the backoff could be ignored entirely or treated as active for the
     region's full (much longer) success TTL. Wall-clock time is what every instance actually
     shares, the same assumption dogpile.cache's own Redis TTL already relies on.
+
+    reason (review) is _load's own short failure summary, carried along so get_cached can log
+    the specific cause of a fresh failure right where it happens, not just the fact of it.
     """
 
     expires_at: float
+    reason: str
 
 
 def build_policy_cache(settings: Settings) -> CacheRegion:
@@ -137,8 +161,12 @@ class PolicyClient:
         self._retry_attempts = retry_attempts
         self._cache = cache
 
-    def _load(self, subject_type: str) -> list[dict[str, Any]] | None:
-        """Fetch this subject_type's policies from the Indykite platform, or None on failure.
+    def _load(self, subject_type: str) -> tuple[list[dict[str, Any]] | None, str]:
+        """Fetch this subject_type's policies from the Indykite platform. Returns
+        (policies, "") on success, or (None, reason) on failure - reason is a short,
+        human-readable summary of the last error, threaded back into get_cached (review) so a
+        cached failure can carry and later log its own specific cause (an 401 vs. a timeout vs.
+        a malformed body), not just the fact that something failed.
 
         Retries up to retry_attempts times (bounded by timeout_seconds each) before giving up -
         a transient platform blip must not cost the caller a policy-derived answer it could
@@ -150,8 +178,9 @@ class PolicyClient:
         subject_binding._bind_subject/_policy_fetch_failed).
         """
         if not self._base_url or not self._app_agent_key:
-            logger.warning("IK base URL/app-agent key not set - policies unavailable")
-            return None
+            reason = "IK base URL/app-agent key not set"
+            logger.warning("%s - policies unavailable", reason)
+            return None, reason
         url = f"{self._base_url.rstrip('/')}/access/v1/policies"
         headers = {"X-IK-ClientKey": self._app_agent_key}
         params = {"subject_type": subject_type}
@@ -180,15 +209,16 @@ class PolicyClient:
                 last_error = exc
                 continue
             logger.info("Loaded %d polic%s from %s", len(results), "y" if len(results) == 1 else "ies", url)
-            return results
+            return results, ""
+        reason = f"{last_error}"
         logger.warning(
             "Failed to load policies from %s after %d attempt%s: %s",
             url,
             attempt,
             "" if attempt == 1 else "s",
-            last_error,
+            reason,
         )
-        return None
+        return None, reason
 
     def get_cached(self, subject_type: str) -> list[dict[str, Any]] | None:
         """Return the cached policies for this subject_type. A cache miss - never fetched, the
@@ -207,14 +237,28 @@ class PolicyClient:
         two instances observing a miss/expired backoff at the same moment can each fire their
         own concurrent fetch rather than coalescing across the fleet.
 
-        A failure is itself cached too, briefly (_FAILURE_CACHE_SECONDS) via the same
-        get_or_create call - without this, every request during an outage would pay the full
+        A refresh that fails keeps serving the last known-good policies for this subject_type
+        if one is cached (review) - an earlier version of this method discarded it in favor of
+        a failure marker, reasoning that "a fresh attempt is exactly as cheap as serving
+        something stale" (true when failures went uncached), but that stopped being true once
+        the backoff below was added: every request during the whole backoff window would then
+        get schema-only derivation instead of a policy set that was perfectly usable moments
+        earlier. Falling back to the stale value re-caches it (its own freshness clock resets
+        to now), so the next actual retry is up to POLICY_REFRESH_TTL_MINUTES away rather than
+        on literally the next request the way schema.py's async refresh manages - an accepted
+        trade against hammering a down platform on every request, not an oversight. Only when
+        there is truly nothing cached yet (the very first request for this subject_type) does a
+        failure fall back to the marker below instead.
+
+        A failure - the marker case above - is itself cached too, briefly (_failure_backoff_
+        seconds, review) - without this, every request during an outage would pay the full
         retry_attempts x timeout_seconds cost again, and, just as importantly, a waiting
         concurrent caller would see nothing cached once it is their turn and retry the fetch
         itself rather than reusing the winner's failure. That still never blocks or raises for
         the caller either way - run_extraction proceeds exactly the same
         (policy_fetch_failed=True) whether this returns fast from a fresh backoff or slow from
-        a real attempt.
+        a real attempt. Either fallback logs the specific reason _load() failed with (review),
+        not just the fact that it did.
 
         That short backoff is enforced manually rather than through get_or_create's own
         expiration check, since dogpile applies one expiration_time per region (the much longer
@@ -249,10 +293,22 @@ class PolicyClient:
                 self._cache.delete(cache_key)
 
             def _fetch_or_cache_failure() -> list[dict[str, Any]] | _FailedFetch:
-                policies = self._load(subject_type)
+                policies, reason = self._load(subject_type)
                 if policies is not None:
                     return policies
-                return _FailedFetch(expires_at=time.time() + _FAILURE_CACHE_SECONDS)
+                if isinstance(current, list):
+                    logger.warning(
+                        "Policy fetch failed for subject_type %r, serving last known-good policies instead: %s",
+                        subject_type,
+                        reason,
+                    )
+                    return current
+                logger.warning(
+                    "Policy fetch failed for subject_type %r, no prior policies to fall back on: %s",
+                    subject_type,
+                    reason,
+                )
+                return _FailedFetch(expires_at=time.time() + _failure_backoff_seconds(self._cache), reason=reason)
 
             result = self._cache.get_or_create(cache_key, _fetch_or_cache_failure)
         except Exception:

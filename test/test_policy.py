@@ -9,7 +9,13 @@ import jwt
 import pytest
 from dogpile.cache.region import make_region
 
-from indykite.intent_agent.policy import _FAILURE_CACHE_SECONDS, PolicyClient, _cache_key, _FailedFetch
+from indykite.intent_agent.policy import (
+    _FAILURE_CACHE_SECONDS,
+    PolicyClient,
+    _cache_key,
+    _FailedFetch,
+    _failure_backoff_seconds,
+)
 
 _POLICIES = [
     {
@@ -262,6 +268,21 @@ def test_get_cached_still_retries_a_5xx_response(mocker):
     assert client_mock.get.call_count == _RETRY_ATTEMPTS
 
 
+@pytest.mark.parametrize("status", [408, 429], ids=["request_timeout", "too_many_requests"])
+def test_get_cached_still_retries_408_and_429(mocker, status):
+    """408 (the platform itself timed out on that attempt) and 429 (rate-limited) both describe
+    a condition a subsequent attempt can plausibly clear (review) - unlike e.g. a 401/403/404,
+    identical retries are not doomed to fail the same way, so these get the same retry
+    tolerance as a 5xx instead of failing fast after a single attempt.
+    """
+    transient = _mock_status_error_response(mocker, status)
+    client_mock = _mock_sync_client(mocker, side_effect=[transient] * _RETRY_ATTEMPTS)
+    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=3, cache=_memory_cache())
+
+    assert client.get_cached(_SUBJECT_TYPE) is None
+    assert client_mock.get.call_count == _RETRY_ATTEMPTS
+
+
 def test_get_cached_caches_a_failure_briefly(mocker):
     """A failed fetch is itself cached for a short backoff (review) - without this, every
     request during an outage would pay the full retry_attempts x timeout_seconds cost again.
@@ -294,6 +315,21 @@ def test_get_cached_retries_again_once_the_failure_backoff_expires(mocker):
     assert client_mock.get.call_count == _RETRY_ATTEMPTS + 1
 
 
+def test_failure_backoff_is_clamped_to_a_shorter_success_ttl():
+    """A POLICY_REFRESH_TTL_MINUTES configured under 30 seconds must not let a cached failure
+    outlive what dogpile's own (shorter) freshness check would already consider stale (review) -
+    otherwise peek_cached()'s plain cache.get() would report a miss before the failure's own
+    backoff elapses, defeating the point of caching it at all in that configuration.
+    """
+    short_ttl_seconds = 5
+    short_ttl_cache = make_region().configure("dogpile.cache.memory", expiration_time=short_ttl_seconds)
+    assert _failure_backoff_seconds(short_ttl_cache) == short_ttl_seconds
+
+    long_ttl_seconds = 300
+    long_ttl_cache = make_region().configure("dogpile.cache.memory", expiration_time=long_ttl_seconds)
+    assert _failure_backoff_seconds(long_ttl_cache) == _FAILURE_CACHE_SECONDS
+
+
 def test_get_cached_does_not_delete_a_concurrently_recovered_entry(mocker):
     """If a concurrent caller already cached a fresh value between this call's own read and the
     re-check right before evicting an expired failure, that eviction must not destroy the fresh
@@ -304,7 +340,7 @@ def test_get_cached_does_not_delete_a_concurrently_recovered_entry(mocker):
     """
     cache = _memory_cache()
     cache_key = _cache_key(_APP_AGENT_KEY, _SUBJECT_TYPE)
-    cache.set(cache_key, _FailedFetch(expires_at=time.time() - 1))
+    cache.set(cache_key, _FailedFetch(expires_at=time.time() - 1, reason="connect timed out"))
     client_mock = _mock_sync_client(mocker, response=_mock_response(mocker))
     client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
 
@@ -460,12 +496,14 @@ def test_get_cached_refreshes_on_demand_when_entry_expired(mocker):
     assert client_mock.get.call_count == _EXPECTED_FETCH_COUNT_AFTER_REFRESH
 
 
-def test_get_cached_returns_none_when_refresh_fails_after_expiry(mocker):
-    """Unlike the schema (which falls back to a stale-but-present value), an expired policy
-    entry whose refresh fails returns None - there is no preload-time "last known good" to
-    preserve for a given subject_type, and a failed refresh is exactly as costly to retry on
-    the next request as serving something stale would have been.
+def test_get_cached_falls_back_to_stale_policies_when_refresh_fails(mocker, caplog):
+    """Per the same TDD 4.4 principle schema.py already follows (review): a refresh that fails
+    for an entry with a still-cached, only-just-expired value must keep serving it rather than
+    discarding it for a failure marker - the request currently in flight, and every other one
+    during the platform outage, still get a genuinely usable policy set instead of degrading
+    to schema-only derivation for no reason. The specific failure reason must still be logged.
     """
+    caplog.set_level("WARNING")
     cache = make_region().configure("dogpile.cache.memory", expiration_time=100)
     client_mock = _mock_sync_client(mocker, response=_mock_response(mocker))
     client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=1, cache=cache)
@@ -474,4 +512,5 @@ def test_get_cached_returns_none_when_refresh_fails_after_expiry(mocker):
 
     client_mock.get.side_effect = httpx2.HTTPError("platform unreachable")
 
-    assert client.get_cached(_SUBJECT_TYPE) is None
+    assert client.get_cached(_SUBJECT_TYPE) == _POLICIES
+    assert "platform unreachable" in caplog.text
