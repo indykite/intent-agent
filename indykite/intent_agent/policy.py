@@ -11,6 +11,7 @@ preload() at all, and its cache key includes the subject_type alongside the envi
 import logging
 import time
 from dataclasses import dataclass
+from http import HTTPStatus
 from typing import Any
 
 import httpx2
@@ -28,8 +29,8 @@ _SECONDS_PER_MINUTE = 60
 # (the platform itself timed out on that attempt) and 429 (rate-limited) both describe conditions
 # a subsequent attempt can plausibly succeed at, unlike e.g. a 401/403/404, which describe the
 # request itself as invalid and would fail identically every time (review).
-_RETRYABLE_CLIENT_ERROR_STATUSES = frozenset({408, 429})
-_CLIENT_ERROR_STATUS_RANGE = range(400, 500)
+_RETRYABLE_CLIENT_ERROR_STATUSES = frozenset({HTTPStatus.REQUEST_TIMEOUT, HTTPStatus.TOO_MANY_REQUESTS})
+_CLIENT_ERROR_STATUS_RANGE = range(HTTPStatus.BAD_REQUEST, HTTPStatus.INTERNAL_SERVER_ERROR)
 # How long a failed fetch is cached before the next request tries again (review: without this,
 # every request during an outage pays the full retry_attempts x timeout_seconds cost). Deliberately
 # much shorter than the success TTL (POLICY_REFRESH_TTL_MINUTES, minutes) - a recovered platform

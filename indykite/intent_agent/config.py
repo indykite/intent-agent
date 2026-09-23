@@ -46,6 +46,13 @@ class Settings(BaseSettings):
 
     gemini_api_key: SecretStr = Field(min_length=1)
     gemini_model: str = Field(min_length=1, default="gemini-3.5-flash-lite")
+    # Size of IntentAgent's dedicated schema/policy-fetch thread pool (review: was a hardcoded
+    # module constant). 8 is not a request-concurrency limit - it only bounds how many
+    # schema/policy fetches can be in flight at once; a slow/unreachable platform ties up a
+    # worker for its own timeout x retry course (see IntentAgent._run_in_fetch_executor), so
+    # this is sized to absorb a burst of concurrent cold caches without spending as many threads
+    # as the LLM client's own connection pool, not to cap overall request throughput.
+    fetch_executor_max_workers: PositiveInt = 8
     tool_call_max_iterations: PositiveInt = 5
     schema_preview_chars: PositiveInt = 12000
     # Per-LLM-call ceiling - mirrors the other *_TIMEOUT_SECONDS fields, which each bound a

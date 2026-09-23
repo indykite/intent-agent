@@ -129,7 +129,7 @@ def policy_version(policies: Sequence[Mapping[str, Any]] | None) -> str:
     canonical_entries = sorted(
         json.dumps(policy, sort_keys=True, separators=(",", ":"), ensure_ascii=False) for policy in policies
     )
-    canonical = "[" + ",".join(canonical_entries) + "]"
+    canonical = json.dumps(canonical_entries, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 

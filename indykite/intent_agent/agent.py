@@ -12,6 +12,7 @@ import logging
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -50,7 +51,17 @@ from indykite.intent_agent.subject_binding import (
 
 logger = logging.getLogger(__name__)
 
-_FETCH_EXECUTOR_MAX_WORKERS = 8
+
+class _Phase(StrEnum):
+    """Which of run_extraction's three sections was underway when a TimeoutError fired (review:
+    was three bare string literals) - see _timeout_result's docstring for why this needs to be
+    more specific than "the model". Values are the human-readable form logged/reported as-is
+    (e.g. via .capitalize()), not a separate code.
+    """
+
+    SCHEMA_FETCH = "schema fetch"
+    POLICY_FETCH = "policy fetch"
+    LLM_INTERACTION = "LLM interaction"
 
 
 _NO_RESPONSE_TEXT = "(No response generated)"
@@ -241,7 +252,7 @@ class IntentAgent:
         """
         self.settings = settings
         self._fetch_executor = ThreadPoolExecutor(
-            max_workers=_FETCH_EXECUTOR_MAX_WORKERS, thread_name_prefix="intent-agent-fetch"
+            max_workers=settings.fetch_executor_max_workers, thread_name_prefix="intent-agent-fetch"
         )
         self._llm = llm or ChatGoogleGenerativeAI(
             model=settings.gemini_model,
@@ -642,7 +653,7 @@ class IntentAgent:
         """
         version = ""
         policy_context = PolicyContext(policies=None, fetch_failed=True)
-        phase = "schema fetch"
+        phase = _Phase.SCHEMA_FETCH
         try:
             async with asyncio.timeout(self.settings.request_timeout_seconds) as deadline:
                 schema = await self._run_in_fetch_executor(self.get_cached_schema)
@@ -678,7 +689,7 @@ class IntentAgent:
                         Outcome.ERROR, subject_type_mismatch_error(prompt), schema_version=version
                     )
 
-                phase = "policy fetch"
+                phase = _Phase.POLICY_FETCH
                 policies, policy_fetch_failed = await self._run_in_fetch_executor(
                     self.get_cached_policies, subject.type
                 )
@@ -709,7 +720,7 @@ class IntentAgent:
                     response_schema=build_input_schema(schema, policies),
                 )
                 request = _RequestContext(tools=tools, policy_context=policy_context)
-                phase = "LLM interaction"
+                phase = _Phase.LLM_INTERACTION
                 return await self._extract_with_retries(
                     llm_with_tools,
                     prompt,
@@ -722,7 +733,7 @@ class IntentAgent:
 
     def _timeout_result(
         self,
-        phase: str,
+        phase: _Phase,
         prompt: str,
         deadline: asyncio.Timeout,
         version: str,
@@ -741,14 +752,14 @@ class IntentAgent:
         both, since the schema is already known and policy_context's own `fetch_failed=True`
         default already correctly says that fetch was never completed.
         """
-        if phase != "LLM interaction":
+        if phase != _Phase.LLM_INTERACTION:
             logger.error(
                 "%s exceeded the %.1fs end-to-end budget; giving up on prompt %r",
                 phase.capitalize(),
                 self.settings.request_timeout_seconds,
                 prompt,
             )
-            if phase == "schema fetch":
+            if phase == _Phase.SCHEMA_FETCH:
                 return ExtractionResult.failed(Outcome.ERROR, request_timeout_error(prompt))
             return ExtractionResult.failed(
                 Outcome.ERROR,
