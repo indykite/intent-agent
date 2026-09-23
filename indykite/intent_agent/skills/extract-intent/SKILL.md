@@ -165,6 +165,22 @@ Policies never expand which resource types or subjects are valid, only which act
 apply once the resource's type is already schema-valid - everything else (Subject binding,
 resource typing, Step 1 below) works exactly as already described.
 
+User prompt: *"Can I get the annual fee waived on my account since I've had it for over a year?"*
+(a policy defines `WAIVE_FEE` for `Account` resources, an action no schema edge label names).
+No specific account is named, so this is a Resource Search (no `resource.id`), with the policy's
+own "over a year" condition expressed as a `filters` clause:
+
+```json
+{
+  "action": { "name": "WAIVE_FEE" },
+  "resource": { "type": "Account" },
+  "context": {
+    "parameters": { "action_derivation_rule": "policy_based" },
+    "filters": "resource.create_time < timestamp('2024-09-23T00:00:00Z')"
+  }
+}
+```
+
 ## Step 2: Construct AuthZEN statements
 
 Produce one or more AuthZEN request objects:

@@ -410,29 +410,36 @@ def _agent_with_policies(monkeypatch, mocker, baseline_env, answers, policies):
 
 
 def test_golden_scenario_policy_derived_action_replays_a_real_captured_policy(monkeypatch, mocker, baseline_env):
-    """ENG-9671 end to end: a policy defines an action ("APPROVE_REFUND") that is not one of
-    the CanBank schema's own edge relations at all. Marked action_derivation_rule="policy_based",
-    it is accepted without a retry, and the marker survives verbatim into what the caller gets -
-    replaying the shape of a real GET /access/v1/policies response (subject.type/resource.type/
-    actions/condition), not a schema-only prompt.
+    """ENG-9671 end to end, replaying a policy actually captured from a live RC environment's
+    GET /access/v1/policies (not a synthetic shape): a KBAC policy defines "WAIVE_FEE", an
+    action that is not one of the CanBank schema's own edge relations at all. The prompt names
+    no specific account, so this is a Resource Search (no resource.id) with the "over a year"
+    condition expressed as a filters CEL clause, mirroring the policy's own cypher condition.
+    Marked action_derivation_rule="policy_based", it is accepted without a retry, and the
+    marker survives verbatim into what the caller gets.
     """
     policies = [
         {
             "policy": {
-                "meta": {"policy_version": "v1"},
+                "meta": {"policy_version": "2.0-kbac"},
                 "subject": {"type": "Customer"},
-                "actions": ["APPROVE_REFUND"],
+                "actions": ["WAIVE_FEE"],
                 "resource": {"type": "Account"},
-                "condition": {"cypher": "resource.balance > $max_price"},
+                "condition": {
+                    "cypher": "MATCH (subject:Customer), (resource:Account) WHERE resource.create_time < $one_year_ago"
+                },
             },
-            "tags": ["refunds"],
+            "tags": [],
         },
     ]
-    prompt = "Can customer rebecca approve a refund on account acc_ted_investing?"
+    prompt = "Can I get the annual fee waived on my account since I've had it for over a year?"
     answer = {
-        "action": {"name": "APPROVE_REFUND"},
-        "resource": {"type": "Account", "id": "acc_ted_investing"},
-        "context": {"parameters": {"action_derivation_rule": "policy_based"}},
+        "action": {"name": "WAIVE_FEE"},
+        "resource": {"type": "Account"},
+        "context": {
+            "parameters": {"action_derivation_rule": "policy_based"},
+            "filters": "resource.create_time < timestamp('2024-09-23T00:00:00Z')",
+        },
     }
     agent, mock_ainvoke = _agent_with_policies(monkeypatch, mocker, baseline_env, [_answer(answer)], policies)
 
@@ -443,9 +450,12 @@ def test_golden_scenario_policy_derived_action_replays_a_real_captured_policy(mo
     assert mock_ainvoke.call_count == _LLM_CALLS_TO_FIRST_ANSWER
     assert result.evaluations == [
         {
-            "action": {"name": "APPROVE_REFUND"},
-            "resource": {"type": "Account", "id": "acc_ted_investing"},
-            "context": {"parameters": {"action_derivation_rule": "policy_based"}},
+            "action": {"name": "WAIVE_FEE"},
+            "resource": {"type": "Account"},
+            "context": {
+                "parameters": {"action_derivation_rule": "policy_based"},
+                "filters": "resource.create_time < timestamp('2024-09-23T00:00:00Z')",
+            },
             "subject": {"type": "Customer", "id": "rebecca"},
         },
     ]
