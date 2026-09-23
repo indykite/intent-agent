@@ -52,6 +52,9 @@ _LLM_CALLS_TO_FIRST_ANSWER = 2
 _LLM_CALLS_WITH_ONE_RETRY = 3
 # A tool-call budget no test will exhaust, so a request-deadline test can't hit it first.
 _UNREACHABLE_TOOL_BUDGET = 100
+# Well under the 0.3s a blocked fetch/tool call sleeps for in the event-loop-not-blocked tests
+# below, but generous enough that scheduler jitter never makes a passing run flaky.
+_LOOP_NOT_BLOCKED_THRESHOLD_SECONDS = 0.15
 _ACTIVATE_EXTRACT_INTENT_CALL = {"name": "activate_skill", "args": {"name": "extract-intent"}, "id": "call-1"}
 # Vocabulary from test/fixtures/mock_ikg_schema.json: nodes Car/Company/Customer/_Application,
 # edge relations OWN/RENT/WORKS_AT.
@@ -84,16 +87,16 @@ def _load_empty_schema_fixture():
 
 
 def _fake_schema_client(mocker, **kwargs):
-    """A fake SchemaClient whose peek_cached() always misses, so get_cached() - however a test
-    configures it below - is what run_extraction actually exercises, matching this suite's
-    behavior from before peek_cached_schema's cache-hit shortcut existed (review, ENG-9671).
+    """A fake SchemaClient - run_extraction only ever calls get_cached() on it (dispatched
+    through the fetch executor), never peek_cached(), so every behavior a test needs must be
+    configured via kwargs here (typically get_cached=...).
     """
-    return mocker.Mock(peek_cached=mocker.Mock(return_value=None), **kwargs)
+    return mocker.Mock(**kwargs)
 
 
 def _fake_policy_client(mocker, **kwargs):
-    """A fake PolicyClient whose peek_cached() always reports a miss - see _fake_schema_client."""
-    return mocker.Mock(peek_cached=mocker.Mock(return_value=(False, None)), **kwargs)
+    """A fake PolicyClient - see _fake_schema_client."""
+    return mocker.Mock(**kwargs)
 
 
 def test_discovers_extract_intent_skill():
@@ -1746,7 +1749,7 @@ def test_run_extraction_slow_schema_fetch_does_not_block_the_event_loop(monkeypa
 
     concurrent_elapsed = asyncio.run(_scenario())
 
-    assert concurrent_elapsed < 0.15  # noqa: PLR2004 - loop kept ticking, not frozen for the fetch's 0.3s
+    assert concurrent_elapsed < _LOOP_NOT_BLOCKED_THRESHOLD_SECONDS
 
 
 def test_run_extraction_get_policies_tool_call_does_not_block_the_event_loop(monkeypatch, mocker):
@@ -1793,7 +1796,7 @@ def test_run_extraction_get_policies_tool_call_does_not_block_the_event_loop(mon
 
     concurrent_elapsed = asyncio.run(_scenario())
 
-    assert concurrent_elapsed < 0.15  # noqa: PLR2004 - loop kept ticking, not frozen for the tool call's 0.3s
+    assert concurrent_elapsed < _LOOP_NOT_BLOCKED_THRESHOLD_SECONDS
 
 
 def test_schema_and_policy_fetches_use_the_dedicated_fetch_executor(monkeypatch, mocker):

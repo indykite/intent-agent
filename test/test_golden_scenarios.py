@@ -52,16 +52,16 @@ def _llm_response(mocker, text="", tool_calls=()):
 
 
 def _fake_schema_client(mocker, **kwargs):
-    """A fake SchemaClient whose peek_cached() always misses, so get_cached() - however a test
-    configures it below - is what run_extraction actually exercises, matching this suite's
-    behavior from before peek_cached_schema's cache-hit shortcut existed (review, ENG-9671).
+    """A fake SchemaClient - run_extraction only ever calls get_cached() on it (dispatched
+    through the fetch executor), never peek_cached(), so every behavior a test needs must be
+    configured via kwargs here (typically get_cached=...).
     """
-    return mocker.Mock(peek_cached=mocker.Mock(return_value=None), **kwargs)
+    return mocker.Mock(**kwargs)
 
 
 def _fake_policy_client(mocker, **kwargs):
-    """A fake PolicyClient whose peek_cached() always reports a miss - see _fake_schema_client."""
-    return mocker.Mock(peek_cached=mocker.Mock(return_value=(False, None)), **kwargs)
+    """A fake PolicyClient - see _fake_schema_client."""
+    return mocker.Mock(**kwargs)
 
 
 def _agent(monkeypatch, mocker, baseline_env, answers):
