@@ -140,6 +140,31 @@ def test_load_returns_none_on_http_error(mocker, caplog, error):
     assert str(error) in caplog.text
 
 
+def _mock_malformed_json_response(mocker):
+    """A 2xx response whose body is not valid JSON at all - resp.json() itself raises
+    json.JSONDecodeError (a ValueError subclass), not httpx2.HTTPError.
+    """
+    response = mocker.Mock()
+    response.status_code = 200
+    response.text = "not json"
+    response.raise_for_status = mocker.Mock()
+    response.json = mocker.Mock(side_effect=json.JSONDecodeError("bad json", "not json", 0))
+    return response
+
+
+def test_load_returns_none_on_malformed_json_response(mocker, caplog):
+    """A 2xx response whose body is not valid JSON must return None, not raise (review):
+    resp.json() itself raises ValueError, not httpx2.HTTPError, and must be treated as a
+    failed load the same way an HTTP error is rather than escape uncaught - see load()'s
+    docstring for why that matters beyond this direct call.
+    """
+    caplog.set_level("ERROR")
+    _mock_sync_client(mocker, response=_mock_malformed_json_response(mocker))
+    client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=_memory_cache())
+    assert client.load() is None
+    assert "Failed to load data schema" in caplog.text
+
+
 def test_load_returns_schema_on_success(mocker):
     """A successful fetch returns the parsed JSON schema."""
     _mock_sync_client(mocker, response=_mock_response(mocker))
@@ -322,3 +347,26 @@ def test_get_cached_falls_back_to_stale_schema_when_refresh_fails(mocker, caplog
     assert client.get_cached() == _SCHEMA
     _wait_for_async_refresh(executor)
     assert any("schema_refresh_failed" in record.getMessage() for record in caplog.records)
+
+
+def test_async_refresh_logs_a_malformed_response_instead_of_swallowing_it(mocker, caplog):
+    """Review finding: a 2xx response with a malformed body raises ValueError out of load(),
+    not just httpx2.HTTPError - and unlike a synchronous get_cached() call, an exception
+    raised inside the async refresh thread is never surfaced anywhere (its Future is
+    fire-and-forget, nobody calls .result() on it), so it would otherwise vanish with nothing
+    logged at all instead of falling back to the stale schema with schema_refresh_failed
+    logged like every other refresh failure.
+    """
+    caplog.set_level("ERROR")
+    cache, executor = _memory_cache_with_async_refresh()
+    client_mock = _mock_sync_client(mocker, response=_mock_response(mocker))
+    client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
+    client.preload()
+    _expire(cache)
+
+    client_mock.get.return_value = _mock_malformed_json_response(mocker)
+
+    assert client.get_cached() == _SCHEMA
+    _wait_for_async_refresh(executor)
+    assert any("schema_refresh_failed" in record.getMessage() for record in caplog.records)
+    assert any("Failed to load data schema" in record.getMessage() for record in caplog.records)

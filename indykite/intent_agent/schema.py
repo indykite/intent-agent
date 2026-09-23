@@ -138,7 +138,17 @@ class SchemaClient:
         self._cache_key = _cache_key(app_agent_key)
 
     def load(self) -> dict[str, Any] | None:
-        """Fetch the graph schema from the Indykite platform, or None on failure."""
+        """Fetch the graph schema from the Indykite platform, or None on failure.
+
+        resp.json() is inside the same try/except as the request itself (review) - a 2xx
+        response with a non-JSON or malformed body raises ValueError (json.JSONDecodeError),
+        not httpx2.HTTPError, and must count as a failed load the same way an HTTP error does,
+        not escape uncaught. That matters most for callers that never expected load() to raise
+        at all: preload() (would otherwise crash the process at cold start on a malformed
+        response) and _make_async_creation_runner's background refresh thread (an uncaught
+        exception there is never surfaced anywhere - the future it happens in is fire-and-
+        forget, so a malformed body would silently drop the refresh with nothing logged).
+        """
         if not self._base_url or not self._app_agent_key:
             logger.warning("IK base URL/app-agent key not set - schema unavailable")
             return None
@@ -153,11 +163,12 @@ class SchemaClient:
                 # non-JSON error page) without guessing from the parsed summary line alone.
                 logger.debug("Schema response: status=%s body[:500]=%r", resp.status_code, resp.text[:500])
                 resp.raise_for_status()
-        except httpx2.HTTPError:
+                schema = resp.json()
+        except (httpx2.HTTPError, ValueError):
             logger.exception("Failed to load data schema from %s", url)
             return None
         logger.info("Loaded data schema from %s", url)
-        return resp.json()
+        return schema
 
     def preload(self) -> None:
         """Fetch and cache the schema once, at startup."""
