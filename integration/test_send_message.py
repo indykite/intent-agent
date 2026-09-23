@@ -1,6 +1,7 @@
 import json
 from unittest.mock import AsyncMock
 
+import jwt
 from langchain_core.messages import AIMessage
 from starlette.status import HTTP_200_OK
 from starlette.testclient import TestClient
@@ -9,34 +10,51 @@ from indykite.intent_agent.app import build_app
 from indykite.intent_agent.config import Settings
 from integration.schema_fixtures import RATING, STOCK_POLICIES, schema_with_stocks
 
+# A real (unsigned, alg=none) JWT - app_agent_key_gid() (schema.py) decodes IK_APP_AGENT_KEY's
+# `sub` claim; a plain placeholder string fails that decode wherever it is called.
+_APP_AGENT_KEY = jwt.encode({"sub": "test-app-agent"}, key="", algorithm="none")
 
-def test_gemini_send_message_end_to_end(monkeypatch, mocker, tmp_path):
-    """Drive a SendMessage JSON-RPC request through the ASGI app, LLM mocked, and check the
-    request left exactly one TDD 4.9 audit record behind through the real file sender.
+
+def _configure_settings_env(monkeypatch, tmp_path) -> None:
+    """Every env var this test's Settings() needs - factored out so the test body itself
+    stays under ruff's statement-count limit.
     """
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("INTROSPECT_URL", "https://idp.example.com/introspect")
     monkeypatch.setenv("INTROSPECT_CLIENT_ID", "client-id")
     monkeypatch.setenv("INTROSPECT_CLIENT_SECRET", "client-secret")
     monkeypatch.setenv("INDYKITE_BASE_URL", "https://ikg.example.com")
-    monkeypatch.setenv("IK_APP_AGENT_KEY", "test-app-agent-key")
+    monkeypatch.setenv("IK_APP_AGENT_KEY", _APP_AGENT_KEY)
     monkeypatch.setenv("AUDIT_DELIVERY", "file")
     monkeypatch.setenv("AUDIT_FILE_STORAGE_PATH", str(tmp_path / "audit"))
     monkeypatch.setenv("AUDIT_FILE_FORMAT", "json")
     monkeypatch.setenv("AUDIT_FILE_ROTATION_STRATEGY", "time")
+
+
+def test_gemini_send_message_end_to_end(monkeypatch, mocker, tmp_path):
+    """Drive a SendMessage JSON-RPC request through the ASGI app, LLM mocked, and check the
+    request left exactly one TDD 4.9 audit record behind through the real file sender.
+    """
+    _configure_settings_env(monkeypatch, tmp_path)
     mocker.patch(
         "indykite.intent_agent.auth.validate_access_token",
         return_value={"active": True, "sub": "test-subject"},
     )
+    # The task store is always the in-process EvictingTaskStore - no Redis needed, even
+    # though this test drives a real SendMessage through DefaultRequestHandler.
+    # aclose defaults to an AsyncMock - IntentAgent.aclose() awaits it via the ASGI lifespan
+    # this TestClient request triggers on shutdown, even though neither fake ever fetches.
     fake_schema_client = mocker.Mock(
         preload=mocker.Mock(),
         peek_cached=mocker.Mock(return_value=None),
         get_cached=mocker.Mock(return_value=schema_with_stocks()),
+        aclose=mocker.AsyncMock(),
     )
     # A fake client: a real PolicyClient would hit the network against this fake base_url.
     fake_policy_client = mocker.Mock(
         peek_cached=mocker.Mock(return_value=(False, None)),
         get_cached=mocker.Mock(return_value=(STOCK_POLICIES, False)),
+        aclose=mocker.AsyncMock(),
     )
 
     tool_call_response = AIMessage(

@@ -1,5 +1,6 @@
 """Runtime configuration for the Intent Agent, loaded from environment / .env."""
 
+from enum import StrEnum
 from ipaddress import IPv4Address
 from pathlib import Path
 from typing import Annotated, Literal
@@ -27,6 +28,14 @@ _AuditHttpAuthType = Literal["mTLS", "no-auth", "api-key"]
 _AuditFileFormat = Literal["csv", "json", "txt"]
 _AuditFileRotationStrategy = Literal["time", "size", "size-and-time"]
 
+
+class StorageBackendKind(StrEnum):
+    """The schema/policy cache's memory/redis toggle (cache_backend)."""
+
+    MEMORY = "memory"
+    REDIS = "redis"
+
+
 _ONE_DAY_SECONDS = 24 * 60 * 60
 _100_MIB = 100 * 1024 * 1024
 
@@ -46,12 +55,9 @@ class Settings(BaseSettings):
 
     gemini_api_key: SecretStr = Field(min_length=1)
     gemini_model: str = Field(min_length=1, default="gemini-3.5-flash-lite")
-    # Size of IntentAgent's dedicated schema/policy-fetch thread pool (review: was a hardcoded
-    # module constant). 8 is not a request-concurrency limit - it only bounds how many
-    # schema/policy fetches can be in flight at once; a slow/unreachable platform ties up a
-    # worker for its own timeout x retry course (see IntentAgent._run_in_fetch_executor), so
-    # this is sized to absorb a burst of concurrent cold caches without spending as many threads
-    # as the LLM client's own connection pool, not to cap overall request throughput.
+    # Size of IntentAgent's dedicated schema/policy-fetch thread pool, not a request-concurrency
+    # limit - a stuck fetch ties up one worker for its own timeout x retry course (see
+    # _run_in_fetch_executor), so this just absorbs a burst of concurrent cold caches.
     fetch_executor_max_workers: PositiveInt = 8
     tool_call_max_iterations: PositiveInt = 5
     schema_preview_chars: PositiveInt = 12000
@@ -88,8 +94,13 @@ class Settings(BaseSettings):
     policy_fetch_retry_attempts: PositiveInt = 2
     policy_preview_chars: PositiveInt = 12000
 
-    cache_backend: Literal["memory", "redis"] = "memory"
+    cache_backend: StorageBackendKind = StorageBackendKind.MEMORY
     redis_url: RedisDsn | None = None
+    redis_socket_timeout_seconds: PositiveFloat = 2.0
+
+    # EvictingTaskStore (app.py): bounds how long a finished task's memory is held, since the
+    # SDK's own InMemoryTaskStore never evicts at all.
+    task_store_terminal_ttl_minutes: PositiveFloat = 5.0
 
     introspect_url: HttpUrl
     introspect_client_id: str = Field(min_length=1)
@@ -205,10 +216,10 @@ class Settings(BaseSettings):
     def _reject_fetch_timeouts_over_request_timeout(self) -> "Settings":
         """Reject a schema/policy fetch timeout longer than the whole-request deadline - same
         dead-config reasoning as _reject_llm_timeout_over_request_timeout, now that both fetches
-        run inside request_timeout_seconds too (ENG-9671, review).
+        run inside request_timeout_seconds too (ENG-9671).
 
-        Deliberately per-field only, not a combined/retry-multiplied budget (review: a prior
-        version of this validator also rejected schema_fetch_timeout_seconds +
+        Deliberately per-field only, not a combined/retry-multiplied budget: a prior version
+        of this validator also rejected schema_fetch_timeout_seconds +
         policy_fetch_timeout_seconds x policy_fetch_retry_attempts exceeding
         request_timeout_seconds - reverted, since that check was inconsistent with this exact
         sibling validator and every other budget knob here: LLM_TIMEOUT_SECONDS is checked the
@@ -227,12 +238,15 @@ class Settings(BaseSettings):
         if self.policy_fetch_timeout_seconds > self.request_timeout_seconds:
             message = "POLICY_FETCH_TIMEOUT_SECONDS must not exceed REQUEST_TIMEOUT_SECONDS"
             raise ValueError(message)
+        if self.redis_socket_timeout_seconds > self.request_timeout_seconds:
+            message = "REDIS_SOCKET_TIMEOUT_SECONDS must not exceed REQUEST_TIMEOUT_SECONDS"
+            raise ValueError(message)
         return self
 
     @model_validator(mode="after")
     def _require_redis_url_for_redis_backend(self) -> "Settings":
         """Reject CACHE_BACKEND=redis with no REDIS_URL - there'd be nothing to connect to."""
-        if self.cache_backend == "redis" and self.redis_url is None:
+        if self.cache_backend == StorageBackendKind.REDIS and self.redis_url is None:
             message = "REDIS_URL is required when CACHE_BACKEND is 'redis'"
             raise ValueError(message)
         return self

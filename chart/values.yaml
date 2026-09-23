@@ -58,6 +58,13 @@ app:
     name: ""
     key: ""
 
+  # Shared by every Redis client above - must not exceed requestTimeoutSeconds.
+  redisSocketTimeoutSeconds: 2.0 # REDIS_SOCKET_TIMEOUT_SECONDS
+
+  # How long a finished task's memory is held by the in-process EvictingTaskStore (app.py) -
+  # IAG only ever calls SendMessage, so a task is never looked up or shared across replicas.
+  taskStoreTerminalTtlMinutes: 5.0 # TASK_STORE_TERMINAL_TTL_MINUTES
+
   introspectUrl: "https://placeholder.example.com" # INTROSPECT_URL
   introspectClientId: "placeholder" # INTROSPECT_CLIENT_ID
   introspectTimeoutSeconds: 5.0 # INTROSPECT_TIMEOUT_SECONDS
@@ -131,8 +138,8 @@ app:
 # auth enabled; if you need an authenticated Redis, keep redis.enabled: false and set
 # app.redisUrlSecretRef to a Secret containing a full authenticated REDIS_URL (DSN).
 #
-# master.persistence.enabled: false because this Redis only backs the app's schema cache
-# (dogpile.cache, see agent.py) - losing cache contents on pod restart is harmless, and skipping
+# master.persistence.enabled: false because this Redis only backs the app's schema/policy cache
+# (see storage.py/schema.py/policy.py) - losing cache contents on pod restart is harmless, and skipping
 # the PVC avoids depending on a StorageClass being available in ephemeral/dev clusters (e.g. plain
 # kind). Flip to true if you want the cache to survive pod restarts.
 #

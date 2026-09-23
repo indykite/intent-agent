@@ -12,7 +12,6 @@ dynamic = ["version"]
 dependencies = [
     "a2a-sdk[http-server]==1.2.2",
     "cel-python==0.5.0",
-    "dogpile.cache[redis]==1.5.0",
     "httpx2==2.13.1",
     "langchain-core==1.6.12",
     "langchain-google-genai==4.4.2",
@@ -22,6 +21,7 @@ dependencies = [
     "prometheus-client==0.26.0",
     "PyJWT==2.15.1",
     "PyYAML==6.0.3",
+    "redis==8.1.0",
     "starlette==1.7.0",
     "uvicorn==0.54.0",
 ]
@@ -29,6 +29,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "coverage[toml]==7.16.2",
+    "fakeredis==2.38.0",
     "pytest==9.1.1",
     "pytest-cov==7.1.0",
     "pytest-mock==3.16.0",

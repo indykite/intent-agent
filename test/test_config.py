@@ -12,6 +12,8 @@ _DEFAULT_LLM_TIMEOUT_SECONDS = 3.0
 _DEFAULT_SCHEMA_FETCH_TIMEOUT_SECONDS = 3.0
 _DEFAULT_POLICY_FETCH_TIMEOUT_SECONDS = 2.0
 _DEFAULT_VALIDATION_MAX_RETRIES = 1
+_DEFAULT_TASK_STORE_TERMINAL_TTL_MINUTES = 5.0
+_DEFAULT_REDIS_SOCKET_TIMEOUT_SECONDS = 2.0
 # PRD: a request must be answered within 10s end to end. REQUEST_TIMEOUT_SECONDS enforces it;
 # the per-call default is sized so the common path (skill activation, answer, one retry
 # answer) fits inside it, with extra tool-call rounds still cut off by the request deadline.
@@ -81,6 +83,8 @@ def test_defaults(monkeypatch):
     assert str(settings.bind_host) == "0.0.0.0"  # noqa: S104 - asserting the default, not binding anything
     assert settings.log_level == "INFO"
     assert settings.expected_token_audience == "intent_agent"  # noqa: S105 - an aud value, not a secret
+    assert settings.task_store_terminal_ttl_minutes == _DEFAULT_TASK_STORE_TERMINAL_TTL_MINUTES
+    assert settings.redis_socket_timeout_seconds == _DEFAULT_REDIS_SOCKET_TIMEOUT_SECONDS
 
 
 def test_rejects_blank_gemini_api_key(monkeypatch):
@@ -280,6 +284,17 @@ def test_accepts_redis_backend_with_redis_url(monkeypatch):
     assert settings.cache_backend == "redis"
 
 
+@pytest.mark.parametrize("ttl", [0, -1])
+def test_rejects_non_positive_task_store_terminal_ttl_minutes(monkeypatch, ttl):
+    """A zero or negative TASK_STORE_TERMINAL_TTL_MINUTES would expire a completed task
+    immediately or never - either way, not a usable TTL.
+    """
+    _set_baseline_env(monkeypatch)
+    monkeypatch.setenv("TASK_STORE_TERMINAL_TTL_MINUTES", str(ttl))
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
 def test_rejects_unknown_cache_backend(monkeypatch):
     """CACHE_BACKEND must be one of the two supported backends, not an arbitrary string."""
     _set_baseline_env(monkeypatch)
@@ -306,6 +321,7 @@ def test_rejects_non_positive_schema_refresh_ttl(monkeypatch, ttl):
         "INTROSPECT_TIMEOUT_SECONDS",
         "LLM_TIMEOUT_SECONDS",
         "REQUEST_TIMEOUT_SECONDS",
+        "REDIS_SOCKET_TIMEOUT_SECONDS",
     ],
 )
 @pytest.mark.parametrize("value", [0, -1])
@@ -363,12 +379,14 @@ def test_default_timeouts_match_prd_request_budget(monkeypatch):
         ("LLM_TIMEOUT_SECONDS", "11"),
         ("SCHEMA_FETCH_TIMEOUT_SECONDS", "11"),
         ("POLICY_FETCH_TIMEOUT_SECONDS", "11"),
+        ("REDIS_SOCKET_TIMEOUT_SECONDS", "11"),
     ],
 )
 def test_rejects_a_fetch_or_llm_timeout_longer_than_request_timeout(monkeypatch, env_var, value):
     """A per-call limit above the whole-request deadline could never fire first - dead config,
     for the LLM call and, since ENG-9671 moved both inside the same deadline, the schema and
-    policy fetch too.
+    policy fetch too. REDIS_SOCKET_TIMEOUT_SECONDS (the schema/policy cache's Redis client) is
+    checked the same way.
     """
     _set_baseline_env(monkeypatch)
     monkeypatch.setenv(env_var, value)
@@ -379,7 +397,7 @@ def test_rejects_a_fetch_or_llm_timeout_longer_than_request_timeout(monkeypatch,
 
 def test_accepts_fetch_timeouts_whose_retry_multiplied_sum_exceeds_the_request_budget(monkeypatch):
     """The fetch-timeout validator is deliberately per-field only, not a combined/retry-
-    multiplied budget (review) - a schema timeout of 9s plus two 9s policy attempts (27s worst
+    multiplied budget - a schema timeout of 9s plus two 9s policy attempts (27s worst
     case) must be accepted here, same as LLM_TIMEOUT_SECONDS is never checked against
     TOOL_CALL_MAX_ITERATIONS/VALIDATION_MAX_RETRIES multiplying its own worst case either.
     asyncio.timeout(REQUEST_TIMEOUT_SECONDS) is what actually enforces the total budget by

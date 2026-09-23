@@ -309,6 +309,14 @@
             }
           }
         },
+        "redisSocketTimeoutSeconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "taskStoreTerminalTtlMinutes": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
         "terminationGracePeriodSeconds": {
           "type": "integer",
           "minimum": 0

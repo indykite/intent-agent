@@ -7,6 +7,7 @@ real RFC 7662 claims validation - including the aud check added here - actually 
 from unittest.mock import AsyncMock
 
 import httpx2
+import jwt
 from langchain_core.messages import AIMessage
 from starlette.status import HTTP_200_OK, HTTP_401_UNAUTHORIZED
 from starlette.testclient import TestClient
@@ -15,6 +16,10 @@ from indykite.intent_agent.app import build_app
 from indykite.intent_agent.config import Settings
 from integration.schema_fixtures import RATING, STOCK_POLICIES, schema_with_stocks
 
+# A real (unsigned, alg=none) JWT - app_agent_key_gid() (schema.py) decodes IK_APP_AGENT_KEY's
+# `sub` claim; a plain placeholder string fails that decode wherever it is called.
+_APP_AGENT_KEY = jwt.encode({"sub": "test-app-agent"}, key="", algorithm="none")
+
 
 def _set_baseline_env(monkeypatch, tmp_path):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
@@ -22,7 +27,7 @@ def _set_baseline_env(monkeypatch, tmp_path):
     monkeypatch.setenv("INTROSPECT_CLIENT_ID", "client-id")
     monkeypatch.setenv("INTROSPECT_CLIENT_SECRET", "client-secret")
     monkeypatch.setenv("INDYKITE_BASE_URL", "https://ikg.example.com")
-    monkeypatch.setenv("IK_APP_AGENT_KEY", "test-app-agent-key")
+    monkeypatch.setenv("IK_APP_AGENT_KEY", _APP_AGENT_KEY)
     monkeypatch.setenv("AUDIT_DELIVERY", "file")
     monkeypatch.setenv("AUDIT_FILE_STORAGE_PATH", str(tmp_path / "audit"))
     monkeypatch.setenv("AUDIT_FILE_FORMAT", "json")
@@ -42,14 +47,18 @@ def _mock_introspection_response(mocker, claims: dict) -> None:
 
 
 def _fake_schema_and_policy_clients(mocker):
+    # aclose defaults to an AsyncMock - IntentAgent.aclose() awaits it via the ASGI lifespan
+    # this TestClient request triggers on shutdown, even though neither fake ever fetches.
     fake_schema_client = mocker.Mock(
         preload=mocker.Mock(),
         peek_cached=mocker.Mock(return_value=None),
         get_cached=mocker.Mock(return_value=schema_with_stocks()),
+        aclose=mocker.AsyncMock(),
     )
     fake_policy_client = mocker.Mock(
         peek_cached=mocker.Mock(return_value=(False, None)),
         get_cached=mocker.Mock(return_value=(STOCK_POLICIES, False)),
+        aclose=mocker.AsyncMock(),
     )
     return fake_schema_client, fake_policy_client
 

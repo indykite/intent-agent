@@ -95,16 +95,11 @@ spec:
               value: {{ .Values.app.policyPreviewChars | int64 | quote }}
             - name: CACHE_BACKEND
               value: {{ .Values.app.cacheBackend | quote }}
-            {{- if .Values.app.redisUrlSecretRef.name }}
-            - name: REDIS_URL
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.app.redisUrlSecretRef.name }}
-                  key: {{ .Values.app.redisUrlSecretRef.key }}
-            {{- else if ((.Values.redis).enabled) }}
-            - name: REDIS_URL
-              value: {{ printf "redis://%s:6379" (include "service.redisHost" .) | quote }}
-            {{- end }}
+            {{- include "service.redisUrlEnvVar" (list . "REDIS_URL" .Values.app.redisUrlSecretRef) }}
+            - name: REDIS_SOCKET_TIMEOUT_SECONDS
+              value: {{ .Values.app.redisSocketTimeoutSeconds | quote }}
+            - name: TASK_STORE_TERMINAL_TTL_MINUTES
+              value: {{ .Values.app.taskStoreTerminalTtlMinutes | quote }}
             - name: INTROSPECT_URL
               value: {{ .Values.app.introspectUrl | quote }}
             - name: INTROSPECT_CLIENT_ID

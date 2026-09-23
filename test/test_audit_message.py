@@ -67,7 +67,7 @@ def test_to_row_flattens_every_field_to_a_string(audit_message):
 
 
 def test_to_row_renders_unattempted_policy_fetch_as_blank_not_the_word_none(audit_message):
-    """policy_fetch_failed=None (no policy fetch attempted this request, review) must render as
+    """policy_fetch_failed=None (no policy fetch attempted this request) must render as
     "" in CSV/TXT output - the same "not applicable" sentinel schema_version/policy_version
     already use - not str(None) ("None" as literal text), which would be the only non-"True"/
     "False" value in that column and could break a downstream consumer expecting a strict bool.
@@ -96,7 +96,7 @@ def test_schema_version_is_canonical_and_stable():
 
 def test_policy_version_is_canonical_and_stable_regardless_of_entry_order():
     """Key order within an entry, and the entries' own order in the list, must not change the
-    hash (review: sort_keys=True alone only canonicalizes dict keys, not list order - the same
+    hash (sort_keys=True alone only canonicalizes dict keys, not list order - the same
     policy state fetched in a different order must still hash identically); content must;
     empty/None both hash to "".
     """

@@ -8,6 +8,7 @@ import json
 import time
 from unittest.mock import AsyncMock
 
+import jwt
 from starlette.status import HTTP_200_OK
 from starlette.testclient import TestClient
 
@@ -21,6 +22,9 @@ _PRD_REQUEST_BUDGET_SECONDS = 10.0
 # budget: a request that ignored the timeout would sleep for the whole budget and beyond.
 _LLM_TIMEOUT_SECONDS = 0.2
 _MAX_ELAPSED_SECONDS = 2.0
+# A real (unsigned, alg=none) JWT - app_agent_key_gid() (schema.py) decodes IK_APP_AGENT_KEY's
+# `sub` claim; a plain placeholder string fails that decode wherever it is called.
+_APP_AGENT_KEY = jwt.encode({"sub": "test-app-agent"}, key="", algorithm="none")
 
 
 def test_hung_llm_call_is_cut_off_within_request_budget(monkeypatch, mocker, tmp_path):
@@ -30,7 +34,7 @@ def test_hung_llm_call_is_cut_off_within_request_budget(monkeypatch, mocker, tmp
     monkeypatch.setenv("INTROSPECT_CLIENT_ID", "client-id")
     monkeypatch.setenv("INTROSPECT_CLIENT_SECRET", "client-secret")
     monkeypatch.setenv("INDYKITE_BASE_URL", "https://ikg.example.com")
-    monkeypatch.setenv("IK_APP_AGENT_KEY", "test-app-agent-key")
+    monkeypatch.setenv("IK_APP_AGENT_KEY", _APP_AGENT_KEY)
     monkeypatch.setenv("AUDIT_DELIVERY", "file")
     monkeypatch.setenv("AUDIT_FILE_STORAGE_PATH", str(tmp_path / "audit"))
     monkeypatch.setenv("AUDIT_FILE_FORMAT", "json")
@@ -40,10 +44,15 @@ def test_hung_llm_call_is_cut_off_within_request_budget(monkeypatch, mocker, tmp
         "indykite.intent_agent.auth.validate_access_token",
         return_value={"active": True, "sub": "test-subject"},
     )
+    # The task store is always the in-process EvictingTaskStore - no Redis needed, even
+    # though this test drives a real SendMessage through DefaultRequestHandler.
+    # aclose defaults to an AsyncMock - IntentAgent.aclose() awaits it via the ASGI lifespan
+    # this TestClient request triggers on shutdown, even though this fake never fetches.
     fake_schema_client = mocker.Mock(
         preload=mocker.Mock(),
         peek_cached=mocker.Mock(return_value=None),
         get_cached=mocker.Mock(return_value=load_schema_fixture()),
+        aclose=mocker.AsyncMock(),
     )
 
     async def _hang(_messages):

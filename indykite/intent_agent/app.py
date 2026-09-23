@@ -8,7 +8,7 @@ from a2a.server.agent_execution import AgentExecutor
 from a2a.server.context import ServerCallContext
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.routes import create_agent_card_routes, create_jsonrpc_routes
-from a2a.server.tasks import InMemoryTaskStore, TaskStore
+from a2a.server.tasks import TaskStore
 from a2a.types import (
     AgentCard,
     CancelTaskRequest,
@@ -26,6 +26,7 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.routing import Route
 
+from indykite.a2a.task_store import EvictingTaskStore
 from indykite.intent_agent import auth
 from indykite.intent_agent.agent import IntentAgent
 from indykite.intent_agent.audit.sender import Sender, build_sender
@@ -33,6 +34,24 @@ from indykite.intent_agent.config import Settings
 from indykite.intent_agent.executor import IntentExecutor, subject_from_message
 from indykite.intent_agent.policy import PolicyClient
 from indykite.intent_agent.schema import SchemaClient
+
+_SECONDS_PER_MINUTE = 60
+
+
+class _SendMessageOnlyRequestHandler(DefaultRequestHandler):
+    """IAG's only contract is SendMessage (result/error embedded in that same response, a task
+    never looked up or canceled later) - GetTask/ListTasks/CancelTask are still A2A-exposed, so
+    reject them explicitly instead of leaving the task store's internal get()/list() to answer.
+    """
+
+    async def on_get_task(self, _params: GetTaskRequest, _context: ServerCallContext) -> Task | None:
+        raise UnsupportedOperationError(message="GetTask is not supported.")
+
+    async def on_list_tasks(self, _params: ListTasksRequest, _context: ServerCallContext) -> ListTasksResponse:
+        raise UnsupportedOperationError(message="ListTasks is not supported.")
+
+    async def on_cancel_task(self, _params: CancelTaskRequest, _context: ServerCallContext) -> Task | None:
+        raise UnsupportedOperationError(message="CancelTask is not supported.")
 
 _TASK_ID_NOT_SUPPORTED_MESSAGE = "taskId is not supported"
 
@@ -93,22 +112,13 @@ def build_app(
     """Construct the Starlette app and its backing IntentAgent for these settings.
 
     The audit sender is built from AUDIT_DELIVERY here (or injected, for tests) and closed by
-    the app's lifespan on shutdown - which is what drains a buffered (AUDIT_ASYNC) queue
-    before the process exits, the same guarantee the IAG's sender gives on stop.
+    the app's lifespan on shutdown, draining any buffered queue before the process exits.
 
-    The lifespan also shuts down this agent's own _fetch_executor (review) - schema/policy
-    fetches and their async_creation_runner refreshes all run on it. wait=False,
-    cancel_futures=True only drops work still queued and returns immediately rather than
-    blocking this coroutine on whatever is already running - it does not, and cannot, stop an
-    in-flight synchronous fetch already underway in a worker thread (review: Python cannot
-    preempt one, and a genuinely stuck call could still leave that thread running past this
-    point, for concurrent.futures' own atexit machinery to join later at interpreter exit - the
-    bounded SCHEMA_FETCH_TIMEOUT_SECONDS/POLICY_FETCH_TIMEOUT_SECONDS x retries is what actually
-    guarantees such a thread eventually finishes on its own, not this call). What this genuinely
-    achieves: the lifespan handler itself never blocks on a slow/stuck fetch, and, since each
-    IntentAgent owns its own executor rather than sharing one process-wide singleton, this only
-    ever touches the instance this specific app is backed by - a second app (or any other
-    embedded caller) built on its own IntentAgent is unaffected.
+    The lifespan also shuts down this agent's own _fetch_executor. wait=False,
+    cancel_futures=True drops queued work and returns immediately rather than blocking on
+    what's already running - it cannot stop an in-flight fetch already underway in a worker
+    thread (Python can't preempt one), but the bounded fetch timeouts x retries guarantee such
+    a thread finishes on its own eventually.
     """
     agent = IntentAgent(settings, llm=llm, schema_client=schema_client, policy_client=policy_client)
     agent.preload_schema()
@@ -117,9 +127,10 @@ def build_app(
     agent_card = agent.build_agent_card()
     auth.add_bearer_security(agent_card, settings.expected_token_audience)
     executor = IntentExecutor(agent, sender)
+    task_store = EvictingTaskStore(terminal_ttl_seconds=settings.task_store_terminal_ttl_minutes * _SECONDS_PER_MINUTE)
     handler = SendMessageOnlyHandler(
         agent_executor=executor,
-        task_store=InMemoryTaskStore(),
+        task_store=task_store,
         agent_card=agent_card,
         on_refused=executor.audit_refused_message,
     )
@@ -149,6 +160,7 @@ def build_app(
         finally:
             agent._fetch_executor.shutdown(wait=False, cancel_futures=True)  # noqa: SLF001 - this app's own agent
             await sender.close()
+            await agent.aclose()
 
     app = Starlette(
         routes=[

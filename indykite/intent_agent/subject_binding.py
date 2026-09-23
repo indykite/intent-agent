@@ -767,7 +767,7 @@ def _drop_duplicate_evaluations(data: dict[str, Any]) -> None:
 
 def _set_policy_fetch_failed(data: dict[str, Any], *, fetch_failed: bool) -> None:
     """Set every evaluation's context.parameters.policy_fetch_failed to reflect fetch_failed -
-    a system-set flag, never the LLM's to produce (ENG-9671, review). context.parameters is an
+    a system-set flag, never the LLM's to produce (ENG-9671). context.parameters is an
     open object in the structured output, so without this an unmarked/hallucinated
     policy_fetch_failed the model puts there on a successful-fetch response would pass through
     untouched, contradicting policy_context/the audit record. On success (fetch_failed=False),

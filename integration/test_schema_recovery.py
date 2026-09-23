@@ -81,6 +81,8 @@ def _build_test_app(monkeypatch, mocker, schema_server, tmp_path, *, mock_ainvok
         "indykite.intent_agent.auth.validate_access_token",
         return_value={"active": True, "sub": "test-subject"},
     )
+    # The task store is always the in-process EvictingTaskStore - no Redis needed, even
+    # though these tests drive a real SendMessage through DefaultRequestHandler.
     fake_bound_llm = mocker.Mock(ainvoke=mock_ainvoke)
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=fake_bound_llm))
 
