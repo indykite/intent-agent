@@ -62,6 +62,8 @@ def baseline_env(monkeypatch):
         monkeypatch.setenv("AUDIT_FILE_STORAGE_PATH", str(audit_storage_path))
         monkeypatch.setenv("AUDIT_FILE_FORMAT", "json")
         monkeypatch.setenv("AUDIT_FILE_ROTATION_STRATEGY", "time")
+        # A2A_TASK_STORE_BACKEND defaults to "memory" (no Redis needed) - tests that need to
+        # exercise the Redis-backed task store/queue manager opt in explicitly.
 
     return _set
 

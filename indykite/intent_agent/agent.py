@@ -41,7 +41,7 @@ from indykite.intent_agent.errors import (
 )
 from indykite.intent_agent.input_schema import build_input_schema, render_schema_summary
 from indykite.intent_agent.policy import PolicyClient, build_policy_cache
-from indykite.intent_agent.schema import SchemaClient, build_schema_cache
+from indykite.intent_agent.schema import IkConnection, SchemaClient, build_schema_backend
 from indykite.intent_agent.subject_binding import (
     PolicyContext,
     RequestSubject,
@@ -67,6 +67,7 @@ class _Phase(StrEnum):
     LLM_INTERACTION = "LLM interaction"
 
 
+_SECONDS_PER_MINUTE = 60
 _NO_RESPONSE_TEXT = "(No response generated)"
 _EXTRACT_INTENT = "extract-intent"
 _UNACTIVATED_EXTRACTION_NOTE = (
@@ -288,18 +289,20 @@ class IntentAgent:
             api_key=settings.gemini_api_key,
             temperature=0,
         )
+        connection = IkConnection(str(settings.indykite_base_url), settings.ik_app_agent_key.get_secret_value())
         self._schema_client = schema_client or SchemaClient(
-            str(settings.indykite_base_url),
-            settings.ik_app_agent_key.get_secret_value(),
+            connection,
             timeout_seconds=settings.schema_fetch_timeout_seconds,
-            cache=build_schema_cache(settings, self._fetch_executor),
+            cache=build_schema_backend(settings),
+            refresh_ttl_seconds=settings.schema_refresh_ttl_minutes * _SECONDS_PER_MINUTE,
+            executor=self._fetch_executor,
         )
         self._policy_client = policy_client or PolicyClient(
-            str(settings.indykite_base_url),
-            settings.ik_app_agent_key.get_secret_value(),
+            connection,
             timeout_seconds=settings.policy_fetch_timeout_seconds,
             retry_attempts=settings.policy_fetch_retry_attempts,
             cache=build_policy_cache(settings),
+            refresh_ttl_seconds=settings.policy_refresh_ttl_minutes * _SECONDS_PER_MINUTE,
         )
         self.discovered_skills = skills.discover_skills()
         self.system_prompt = skills.build_skill_catalog_prompt(self.discovered_skills)
@@ -348,6 +351,13 @@ class IntentAgent:
                 "Data schema fetched but the data model isn't populated yet at cold start - "
                 "will keep retrying on every request until it's populated",
             )
+
+    async def aclose(self) -> None:
+        """Close the schema/policy cache backends' own resources - called from app.py's
+        lifespan on shutdown.
+        """
+        await self._schema_client.aclose()
+        await self._policy_client.aclose()
 
     def get_cached_schema(self) -> dict[str, Any] | None:
         """Return the cached schema, fetching it once if not already cached.

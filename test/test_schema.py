@@ -1,25 +1,28 @@
 """Tests for SchemaClient: fetching, caching, and TTL-driven on-demand refresh."""
 
+import asyncio
 import json
-import time
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import httpx2
 import jwt
 import pytest
-from dogpile.cache.region import make_region
+from fakeredis import FakeAsyncRedis
 
 from indykite.intent_agent.errors import InvalidAppAgentKeyError
-from indykite.intent_agent.schema import SchemaClient, _cache_key, _make_async_creation_runner
+from indykite.intent_agent.schema import IkConnection, SchemaClient, _cache_key
+from indykite.redis.storage import MemoryStorageBackend, RedisStorageBackend, StorageBackend
 
 _SCHEMA = {"graph": {"nodes": {}, "edges": []}}
 _EXPECTED_FETCH_COUNT_AFTER_REFRESH = 2
+_DEFAULT_REFRESH_TTL_SECONDS = 100.0
 
 
 def _fake_jwt(sub):
     """Build a real (unsigned, alg=none) JWT with the given `sub` claim, via the same library
-    _jwt_claim decodes with - hand-rolling the encoding here instead would risk drifting from
-    what jwt.decode actually requires, the same class of bug this replaced.
+    app_agent_key_gid decodes with - hand-rolling the encoding here instead would risk drifting
+    from what jwt.decode actually requires, the same class of bug this replaced.
     """
     return jwt.encode({"sub": sub}, key="", algorithm="none")
 
@@ -29,9 +32,37 @@ def _fake_jwt(sub):
 _APP_AGENT_KEY = _fake_jwt("test-app-agent")
 
 
-def _memory_cache():
-    """Build a fresh in-process Memory-backed CacheRegion for a test's SchemaClient."""
-    return make_region().configure("dogpile.cache.memory")
+def _memory_backend() -> MemoryStorageBackend:
+    """A fresh in-process StorageBackend for a test's SchemaClient."""
+    return MemoryStorageBackend()
+
+
+def _redis_backend() -> RedisStorageBackend:
+    """A fresh RedisStorageBackend wrapping an in-memory fake Redis client - exercises the real
+    serialize/deserialize path, only the network client itself is faked, no real Redis server
+    needed.
+    """
+    return RedisStorageBackend(FakeAsyncRedis())
+
+
+def _client(
+    base_url: str,
+    app_agent_key: str,
+    *,
+    cache: StorageBackend | None = None,
+    executor: ThreadPoolExecutor | None = None,
+    **kwargs,
+) -> SchemaClient:
+    """Build a SchemaClient with a sensible default cache/TTL/executor, for tests that don't
+    care about the specifics of any of the three.
+    """
+    return SchemaClient(
+        IkConnection(base_url, app_agent_key),
+        cache=cache if cache is not None else _memory_backend(),
+        refresh_ttl_seconds=kwargs.pop("refresh_ttl_seconds", _DEFAULT_REFRESH_TTL_SECONDS),
+        executor=executor if executor is not None else ThreadPoolExecutor(max_workers=1),
+        **kwargs,
+    )
 
 
 def _mock_sync_client(mocker, *, response=None, side_effect=None):
@@ -63,56 +94,32 @@ def _mock_response(mocker, schema=None):
     return response
 
 
-def _expire(cache):
-    """Force every entry in this Memory-backed CacheRegion to read as expired, deterministically -
-    backdates the stored CachedValue's creation time instead of sleeping past expiration_time,
-    which would make the test slow and racy against real wall-clock timing.
-
-    Backdates to a real past timestamp rather than zeroing it out: dogpile's own Lock treats a
-    creation time of 0 as "no value has ever been created" (Lock._has_value: createdtime > 0),
-    not "a value exists but is stale" - zeroing it would make get_or_create block waiting to
-    acquire the creation lock synchronously instead of returning the stale value immediately
-    and kicking off the async refresh, silently exercising the wrong code path (review).
+def _mock_malformed_json_response(mocker):
+    """A 2xx response whose body is not valid JSON at all - resp.json() itself raises
+    json.JSONDecodeError (a ValueError subclass), not httpx2.HTTPError.
     """
-    for key, cached in cache.backend._cache.items():
-        expired_ct = time.time() - 1_000_000
-        cache.backend._cache[key] = cached._replace(metadata={**cached.metadata, "ct": expired_ct})
+    response = mocker.Mock()
+    response.status_code = 200
+    response.text = "not json"
+    response.raise_for_status = mocker.Mock()
+    response.json = mocker.Mock(side_effect=json.JSONDecodeError("bad json", "not json", 0))
+    return response
 
 
-def _memory_cache_with_async_refresh():
-    """Build a Memory-backed CacheRegion wired with the real async_creation_runner (review),
-    matching how build_schema_cache actually configures it - a test exercising the "expired but
-    present" path needs this, or get_cached's return (the immediate stale value) would race the
-    background refresh it kicks off. A test asserting on that refresh's own side effects (a
-    re-fetch, a failure log) must wait for it deterministically - see _wait_for_async_refresh -
-    rather than assert right after get_cached() returns.
-    """
-    executor = ThreadPoolExecutor(max_workers=1)
-    cache = make_region(async_creation_runner=_make_async_creation_runner(executor)).configure(
-        "dogpile.cache.memory", expiration_time=100
-    )
-    return cache, executor
+def _expire_freshness_marker(cache: StorageBackend, client: SchemaClient) -> None:
+    """Delete the freshness marker - a deterministic "make this entry look expired" without
+    sleeping past refresh_ttl_seconds; the schema itself is left untouched."""
+    asyncio.run(cache.delete(client._fresh_key))
 
 
-def _wait_for_async_refresh(executor):
-    """Block until every refresh already submitted to `executor` has finished - see
-    _memory_cache_with_async_refresh.
+def _wait_for_background_refresh(executor: ThreadPoolExecutor) -> None:
+    """Block until every refresh already submitted to `executor` has finished - a stale-entry
+    get_cached() call kicks its refresh off via RefreshGate and returns immediately (that's the
+    point, see SchemaClient.get_cached's docstring), so asserting on the refresh's own side
+    effects (a re-fetch, a failure log) needs to wait for it deterministically instead of
+    asserting right after get_cached() returns.
     """
     executor.shutdown(wait=True)
-
-
-def _mock_redis_client(mocker):
-    """Patch dogpile's Redis backend to use an in-memory dict instead of a real connection -
-    exercises the real CacheRegion -> RedisBackend -> serialize/deserialize path, only the
-    network client itself is faked, no real Redis server needed.
-    """
-    store: dict[bytes, bytes] = {}
-    client = mocker.Mock(
-        get=mocker.Mock(side_effect=store.get),
-        set=mocker.Mock(side_effect=store.__setitem__),
-    )
-    mocker.patch("redis.StrictRedis", return_value=client)
-    return client
 
 
 @pytest.mark.parametrize(
@@ -124,7 +131,7 @@ def _mock_redis_client(mocker):
 )
 def test_load_returns_none_when_config_incomplete(base_url, app_agent_key):
     """Missing base_url or app_agent_key means schema unavailable, no request attempted."""
-    client = SchemaClient(base_url, app_agent_key, cache=_memory_cache())
+    client = _client(base_url, app_agent_key)
     assert client.load() is None
 
 
@@ -142,21 +149,9 @@ def test_load_returns_none_on_http_error(mocker, caplog, error):
     """
     caplog.set_level("ERROR")
     _mock_sync_client(mocker, side_effect=error)
-    client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=_memory_cache())
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY)
     assert client.load() is None
     assert str(error) in caplog.text
-
-
-def _mock_malformed_json_response(mocker):
-    """A 2xx response whose body is not valid JSON at all - resp.json() itself raises
-    json.JSONDecodeError (a ValueError subclass), not httpx2.HTTPError.
-    """
-    response = mocker.Mock()
-    response.status_code = 200
-    response.text = "not json"
-    response.raise_for_status = mocker.Mock()
-    response.json = mocker.Mock(side_effect=json.JSONDecodeError("bad json", "not json", 0))
-    return response
 
 
 def test_load_returns_none_on_malformed_json_response(mocker, caplog):
@@ -167,7 +162,7 @@ def test_load_returns_none_on_malformed_json_response(mocker, caplog):
     """
     caplog.set_level("ERROR")
     _mock_sync_client(mocker, response=_mock_malformed_json_response(mocker))
-    client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=_memory_cache())
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY)
     assert client.load() is None
     assert "Failed to load data schema" in caplog.text
 
@@ -175,7 +170,7 @@ def test_load_returns_none_on_malformed_json_response(mocker, caplog):
 def test_load_returns_schema_on_success(mocker):
     """A successful fetch returns the parsed JSON schema."""
     _mock_sync_client(mocker, response=_mock_response(mocker))
-    client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=_memory_cache())
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY)
     assert client.load() == _SCHEMA
 
 
@@ -188,7 +183,7 @@ def test_load_logs_the_request_url_and_a_truncated_response_preview(mocker, capl
     caplog.set_level("DEBUG")
     large_schema = {"graph": {"nodes": {"Padding": {"description": "x" * 600}}, "edges": []}}
     _mock_sync_client(mocker, response=_mock_response(mocker, schema=large_schema))
-    client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=_memory_cache())
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY)
 
     assert client.load() == large_schema
 
@@ -205,18 +200,15 @@ def test_load_logs_the_request_url_and_a_truncated_response_preview(mocker, capl
 @pytest.mark.parametrize("backend", ["memory", "redis"])
 def test_preload_and_get_cached_round_trip(mocker, caplog, backend):
     """preload() then get_cached() must return the same schema, on both the default in-process
-    Memory cache and a Redis-backed CacheRegion (the real dogpile Redis backend - only its
-    network client is faked, so this exercises the actual serialize/deserialize path). Must
-    also log the cache key and hit/miss flag at debug level for troubleshooting.
+    Memory backend and a Redis-backed one (the real redis.asyncio client, faked at the network
+    level with fakeredis - only the network client is faked, so this exercises the actual
+    encode/decode path). Must also log the cache key and hit flag at debug level for
+    troubleshooting.
     """
     caplog.set_level("DEBUG")
-    if backend == "redis":
-        _mock_redis_client(mocker)
-        cache = make_region().configure("dogpile.cache.redis", arguments={"host": "localhost", "port": 6379})
-    else:
-        cache = _memory_cache()
+    cache = _redis_backend() if backend == "redis" else _memory_backend()
     _mock_sync_client(mocker, response=_mock_response(mocker))
-    client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
 
     client.preload()
 
@@ -225,13 +217,9 @@ def test_preload_and_get_cached_round_trip(mocker, caplog, backend):
 
 
 def test_cache_key_uses_jwt_sub_claim_blank_placeholder_or_raises(caplog):
-    """A well-formed app_agent_key JWT's sub claim (a stable, non-secret GID) must be used
-    directly. A blank app_agent_key (the supported "IK not configured" state) must map to a
-    stable placeholder instead of attempting to decode. Anything else non-blank must be a
-    valid JWT with a sub claim - either failure (not a JWT at all, or missing the claim) is a
-    real config error and must raise a clear InvalidAppAgentKeyError, not a raw jwt/TypeError,
-    and must not degrade quietly to a hashed key. The two failure modes must be distinguishable
-    in the logs, not just via the identical exception message.
+    """A well-formed JWT's sub claim is used directly; a blank key maps to a stable
+    placeholder. Anything else non-blank must be a valid JWT with a sub claim, or raise a
+    clear InvalidAppAgentKeyError - not degrade quietly to a hashed key.
     """
     caplog.set_level("ERROR")
     assert _cache_key(_fake_jwt("gid:AAAA123")) == "ikg_schema:gid:AAAA123"
@@ -248,18 +236,18 @@ def test_cache_key_uses_jwt_sub_claim_blank_placeholder_or_raises(caplog):
 
 def test_schema_does_not_collide_across_different_environments(mocker):
     """Two SchemaClient instances for different base_url/app_agent_key pairs sharing the same
-    cache region must not read/write each other's schema - a single fixed cache key would let
+    cache backend must not read/write each other's schema - a single fixed cache key would let
     one silently overwrite the other in a shared Redis backend.
     """
-    shared_cache = _memory_cache()
+    shared_cache = _memory_backend()
     other_schema = {"graph": {"nodes": {"Other": {}}, "edges": []}}
 
     _mock_sync_client(mocker, response=_mock_response(mocker))
-    client_a = SchemaClient("https://a.example.com", _fake_jwt("gid-a"), cache=shared_cache)
+    client_a = _client("https://a.example.com", _fake_jwt("gid-a"), cache=shared_cache)
     client_a.preload()
 
     _mock_sync_client(mocker, response=_mock_response(mocker, schema=other_schema))
-    client_b = SchemaClient("https://b.example.com", _fake_jwt("gid-b"), cache=shared_cache)
+    client_b = _client("https://b.example.com", _fake_jwt("gid-b"), cache=shared_cache)
     client_b.preload()
 
     assert client_a.get_cached() == _SCHEMA
@@ -269,17 +257,56 @@ def test_schema_does_not_collide_across_different_environments(mocker):
 def test_get_cached_fetches_on_demand_when_not_already_cached(mocker, caplog):
     """get_cached() must fetch-and-cache on its own when nothing is cached yet: either because
     preload() was never called (fetch succeeds) or because there's no config to fetch with at
-    all (fetch fails, returns None instead of raising). Must also log the cache key and hit/miss
-    flag at debug level for troubleshooting.
+    all (fetch fails, returns None instead of raising). Must also log the cache key and
+    hit=False at debug level for troubleshooting.
     """
     caplog.set_level("DEBUG")
     _mock_sync_client(mocker, response=_mock_response(mocker))
-    client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=_memory_cache())
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY)
     assert client.get_cached() == _SCHEMA
     assert f"cache_key={client._cache_key} hit=False" in caplog.text
 
-    unconfigured_client = SchemaClient("", "", cache=_memory_cache())
+    unconfigured_client = _client("", "")
     assert unconfigured_client.get_cached() is None
+
+
+def test_get_cached_coalesces_concurrent_cold_misses_into_one_fetch(mocker):
+    """Concurrent callers observing the same cold (never-cached) miss must coalesce into a
+    single load() behind RefreshGate's per-key lock instead of each firing their own request. A
+    real concurrency property, proven with actual threads against a real (in-memory) backend,
+    not by mocking the lock away.
+    """
+    load_started = threading.Event()
+    release_load = threading.Event()
+    call_count = 0
+    call_count_lock = threading.Lock()
+
+    def _slow_get(*_args, **_kwargs):
+        nonlocal call_count
+        with call_count_lock:
+            call_count += 1
+        load_started.set()
+        assert release_load.wait(timeout=5), "the winning fetch was never released"
+        return _mock_response(mocker)
+
+    _mock_sync_client(mocker, side_effect=_slow_get)
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY, executor=ThreadPoolExecutor(max_workers=5))
+
+    results = []
+
+    def _call():
+        results.append(client.get_cached())
+
+    threads = [threading.Thread(target=_call) for _ in range(5)]
+    for thread in threads:
+        thread.start()
+    assert load_started.wait(timeout=5), "no thread ever reached load()"
+    release_load.set()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert call_count == 1
+    assert results == [_SCHEMA] * len(threads)
 
 
 def test_get_cached_treats_a_cache_backend_failure_as_schema_unavailable(mocker):
@@ -289,9 +316,56 @@ def test_get_cached_treats_a_cache_backend_failure_as_schema_unavailable(mocker)
     answer exactly that.
     """
     cache = mocker.Mock(get=mocker.Mock(side_effect=ConnectionError("redis unreachable")))
-    client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
 
     assert client.get_cached() is None
+
+
+def test_get_cached_treats_a_legacy_or_corrupted_cached_value_as_a_miss(mocker):
+    """A stored value that fails to decode into JSON at all must be treated as a miss and
+    self-heal via the ordinary cold-fetch-and-store path, not return None forever."""
+    cache = _memory_backend()
+    asyncio.run(
+        cache.set(
+            _cache_key(_APP_AGENT_KEY),
+            b"\x80\x04not valid json, e.g. a leftover pickled value from a retired cache format",
+        )
+    )
+    client_mock = _mock_sync_client(mocker, response=_mock_response(mocker))
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
+
+    assert client.get_cached() == _SCHEMA
+    assert client_mock.get.call_count == 1
+    # The bad key must actually have been overwritten, not just papered over for this one
+    # call - a second, independent read confirms the cache is healed, not still corrupted.
+    assert client.peek_cached() == _SCHEMA
+
+
+def test_store_delegates_freshness_to_the_backends_own_ttl_not_manual_bookkeeping():
+    """_store() must rely on the backend's own native TTL for staleness, not manual
+    cached_at bookkeeping: the primary key gets no TTL, only the separate marker does."""
+    cache = _memory_backend()
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY, cache=cache, refresh_ttl_seconds=42.0)
+
+    client._store(_SCHEMA)
+
+    primary_value, primary_expiry = cache._store[client._cache_key]
+    _fresh_value, fresh_expiry = cache._store[client._fresh_key]
+    assert json.loads(primary_value) == _SCHEMA
+    assert primary_expiry is None
+    assert fresh_expiry is not None
+
+
+def test_get_cached_treats_a_malformed_cached_value_as_a_miss(mocker):
+    """A syntactically valid JSON value that isn't an object (e.g. null) must self-heal via
+    a fresh fetch, not be accepted as a resolved hit and handed back as-is."""
+    cache = _memory_backend()
+    asyncio.run(cache.set(_cache_key(_APP_AGENT_KEY), json.dumps(None).encode()))
+    client_mock = _mock_sync_client(mocker, response=_mock_response(mocker))
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
+
+    assert client.get_cached() == _SCHEMA
+    assert client_mock.get.call_count == 1
 
 
 def test_peek_cached_never_fetches(mocker):
@@ -300,8 +374,8 @@ def test_peek_cached_never_fetches(mocker):
     cache hit, so it must never itself trigger the fetch get_cached() would.
     """
     client_mock = _mock_sync_client(mocker, response=_mock_response(mocker))
-    cache = _memory_cache()
-    client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
+    cache = _memory_backend()
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
 
     assert client.peek_cached() is None
     client_mock.get.assert_not_called()
@@ -311,89 +385,161 @@ def test_peek_cached_never_fetches(mocker):
     client_mock.get.assert_called_once()
 
 
-def test_get_cached_refreshes_on_demand_when_entry_expired(mocker):
-    """An expired cache entry must trigger a fresh load() and re-cache, not just sit stale.
-
-    get_cached() itself returns the still-present stale value immediately (review,
-    async_creation_runner - see SchemaClient.get_cached's docstring) rather than waiting on
-    that refresh, so the second _load() this proves happened is only observable once the
-    background refresh it kicked off has actually finished.
+def test_get_cached_refreshes_in_the_background_when_entry_expired(mocker):
+    """An expired-but-present cache entry must trigger a fresh load() and re-cache, not just
+    sit stale - but get_cached() itself returns the still-present stale value immediately (see
+    SchemaClient.get_cached's docstring) rather than waiting on that refresh, so the second
+    load() this proves happened is only observable once the background refresh it kicked off
+    (via RefreshGate) has actually finished.
     """
-    cache, executor = _memory_cache_with_async_refresh()
+    cache = _memory_backend()
+    executor = ThreadPoolExecutor(max_workers=1)
     client_mock = _mock_sync_client(mocker, response=_mock_response(mocker))
-    client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
+    client = _client(
+        "https://ikg.example.com", _APP_AGENT_KEY, cache=cache, refresh_ttl_seconds=100.0, executor=executor
+    )
     client.preload()
     assert client_mock.get.call_count == 1
 
-    _expire(cache)
+    _expire_freshness_marker(cache, client)
 
     assert client.get_cached() == _SCHEMA
-    _wait_for_async_refresh(executor)
+    _wait_for_background_refresh(executor)
     assert client_mock.get.call_count == _EXPECTED_FETCH_COUNT_AFTER_REFRESH
 
 
 def test_get_cached_falls_back_to_stale_schema_when_refresh_fails(mocker, caplog):
-    """Per TDD 4.4: if the on-demand refresh fails, the expired-but-last-known-good schema
-    must still be served (not None) and schema_refresh_failed logged - a transient platform
-    outage must not take down an already-running agent.
-
-    get_cached() returns that stale value immediately, before the (about to fail) refresh
-    this test mocks even runs (review, async_creation_runner) - the failure log is only
-    observable once that background refresh has actually finished, see
-    _memory_cache_with_async_refresh.
+    """Per TDD 4.4: if the background refresh of an expired-but-present entry fails, the
+    stale-but-last-known-good schema must still be served (not None) and schema_refresh_failed
+    logged once the refresh finishes.
     """
     caplog.set_level("ERROR")
-    cache, executor = _memory_cache_with_async_refresh()
+    cache = _memory_backend()
+    executor = ThreadPoolExecutor(max_workers=1)
     client_mock = _mock_sync_client(mocker, response=_mock_response(mocker))
-    client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
+    client = _client(
+        "https://ikg.example.com", _APP_AGENT_KEY, cache=cache, refresh_ttl_seconds=100.0, executor=executor
+    )
     client.preload()
-    _expire(cache)
+    _expire_freshness_marker(cache, client)
 
     client_mock.get.side_effect = httpx2.HTTPError("platform unreachable")
 
     assert client.get_cached() == _SCHEMA
-    _wait_for_async_refresh(executor)
+    _wait_for_background_refresh(executor)
     assert any("schema_refresh_failed" in record.getMessage() for record in caplog.records)
 
 
-def test_async_refresh_logs_a_malformed_response_instead_of_swallowing_it(mocker, caplog):
-    """Review finding: a 2xx response with a malformed body raises ValueError out of load(),
-    not just httpx2.HTTPError - and unlike a synchronous get_cached() call, an exception
-    raised inside the async refresh thread is never surfaced anywhere (its Future is
-    fire-and-forget, nobody calls .result() on it), so it would otherwise vanish with nothing
-    logged at all instead of falling back to the stale schema with schema_refresh_failed
-    logged like every other refresh failure.
+def test_background_refresh_logs_a_malformed_response_instead_of_swallowing_it(mocker, caplog):
+    """A 2xx response with a malformed body raises ValueError out of load(), not just
+    httpx2.HTTPError - the background refresh must still fall back to the stale schema with
+    schema_refresh_failed logged, not vanish silently.
     """
     caplog.set_level("ERROR")
-    cache, executor = _memory_cache_with_async_refresh()
+    cache = _memory_backend()
+    executor = ThreadPoolExecutor(max_workers=1)
     client_mock = _mock_sync_client(mocker, response=_mock_response(mocker))
-    client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
+    client = _client(
+        "https://ikg.example.com", _APP_AGENT_KEY, cache=cache, refresh_ttl_seconds=100.0, executor=executor
+    )
     client.preload()
-    _expire(cache)
+    _expire_freshness_marker(cache, client)
 
     client_mock.get.return_value = _mock_malformed_json_response(mocker)
 
     assert client.get_cached() == _SCHEMA
-    _wait_for_async_refresh(executor)
+    _wait_for_background_refresh(executor)
     assert any("schema_refresh_failed" in record.getMessage() for record in caplog.records)
     assert any("Failed to load data schema" in record.getMessage() for record in caplog.records)
 
 
-def test_async_refresh_logs_when_the_cache_write_itself_fails(mocker, caplog):
-    """Review finding: a successful fetch's own cache.set() can still raise (e.g. a Redis write
-    dropping mid-refresh even though the fetch that just preceded it succeeded), separate from
-    creator() failing - the same fire-and-forget reasoning as the malformed-response case above
-    means this would otherwise vanish uncaught with nothing logged either.
+class _SetFailsBackend(StorageBackend):
+    """Wraps a real StorageBackend but makes every set() raise - simulates a Redis write
+    failure (connection drop, OOM, ...) distinct from a load() failure, to prove _store()'s own
+    exceptions are handled separately from a failed fetch.
+    """
+
+    def __init__(self, inner: StorageBackend) -> None:
+        self._inner = inner
+
+    async def get(self, key: str) -> bytes | None:
+        return await self._inner.get(key)
+
+    async def set(self, key: str, value: bytes, *, ttl_seconds: float | None = None) -> None:
+        msg = "simulated Redis write failure"
+        raise ConnectionError(msg)
+
+    async def delete(self, key: str) -> None:
+        await self._inner.delete(key)
+
+
+def test_background_refresh_logs_a_store_failure_instead_of_swallowing_it(mocker, caplog):
+    """A cache-backend write failure (e.g. Redis unreachable) during _store() must be caught
+    inside the detached background refresh and logged as schema_refresh_failed, the same as a
+    load() failure - not escape uncaught and vanish invisibly.
     """
     caplog.set_level("ERROR")
-    cache, executor = _memory_cache_with_async_refresh()
+    cache = _memory_backend()
+    executor = ThreadPoolExecutor(max_workers=1)
     _mock_sync_client(mocker, response=_mock_response(mocker))
-    client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
+    client = _client(
+        "https://ikg.example.com", _APP_AGENT_KEY, cache=cache, refresh_ttl_seconds=100.0, executor=executor
+    )
     client.preload()
-    _expire(cache)
+    _expire_freshness_marker(cache, client)
 
-    mocker.patch.object(cache, "set", side_effect=ConnectionError("redis write failed"))
+    client._cache = _SetFailsBackend(cache)
 
     assert client.get_cached() == _SCHEMA
-    _wait_for_async_refresh(executor)
+    _wait_for_background_refresh(executor)
     assert any("schema_refresh_failed" in record.getMessage() for record in caplog.records)
+
+
+def test_preload_does_not_raise_when_store_fails(mocker, caplog):
+    """A _store() write failure during preload() must not propagate: IntentAgent.
+    preload_schema() calls preload() with no try/except (app.py's build_app calls
+    preload_schema() unguarded too), so an uncaught exception here would crash the whole
+    process at startup, contradicting preload_schema's documented "best effort, does not
+    block startup" contract.
+    """
+    caplog.set_level("ERROR")
+    _mock_sync_client(mocker, response=_mock_response(mocker))
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY, cache=_SetFailsBackend(_memory_backend()))
+
+    client.preload()  # must not raise
+
+    assert any("schema_refresh_failed" in record.getMessage() for record in caplog.records)
+    # Nothing was ever cached (every set() fails), so this is a second cold fetch - and must
+    # still return the freshly loaded schema rather than None, same as get_cached()'s own
+    # cold-fetch path (see test_get_cached_returns_freshly_loaded_schema_even_if_caching_it_fails).
+    assert client.get_cached() == _SCHEMA
+
+
+def test_get_cached_returns_freshly_loaded_schema_even_if_caching_it_fails(mocker, caplog):
+    """A cold get_cached() must still return the schema it just loaded, even if _store()
+    fails afterward (review: _store()'s two independent cache.set() calls can now partially
+    succeed - the primary write landing durably while only the fresh marker write fails -
+    and this request must not discard a schema it already has in hand because of that).
+    """
+    caplog.set_level("ERROR")
+    _mock_sync_client(mocker, response=_mock_response(mocker))
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY, cache=_SetFailsBackend(_memory_backend()))
+
+    assert client.get_cached() == _SCHEMA
+    assert any("Failed to cache freshly loaded schema" in record.getMessage() for record in caplog.records)
+
+
+def test_get_cached_works_when_called_from_within_a_running_event_loop(mocker):
+    """SchemaClient's public API stays synchronous even though StorageBackend's Redis
+    implementation is asyncio-only - the actual production path (get_cached() calls happen
+    from inside the already-running Starlette/uvicorn event loop, not before it). Running the
+    call itself inside asyncio.run() here forces SchemaClient's internal sync/async bridge
+    (storage.run_sync) to be invoked from a context that already has its own running loop.
+    """
+    _mock_sync_client(mocker, response=_mock_response(mocker))
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY, cache=_redis_backend())
+
+    async def _call_get_cached_from_inside_a_running_loop():
+        return client.get_cached()
+
+    assert asyncio.run(_call_get_cached_from_inside_a_running_loop()) == _SCHEMA

@@ -58,6 +58,28 @@ app:
     name: ""
     key: ""
 
+  # A2A task store/queue manager - same memory/redis shape as cacheBackend/redisUrlSecretRef
+  # above: "memory" (the default) uses the a2a-sdk's own InMemoryTaskStore, no Redis needed;
+  # "redis" needs a2aTaskStoreUrlSecretRef.name (or redis.enabled) set, so task state survives
+  # restarts and is shared across replicas - Settings fails fast at startup otherwise.
+  a2aTaskStoreBackend: "memory" # A2A_TASK_STORE_BACKEND - "memory" or "redis"
+
+  # Required (a2aTaskStoreUrlSecretRef.name must be set) when a2aTaskStoreBackend is "redis".
+  # A2A_TASK_STORE_URL - example secret value: "redis://redis:6379".
+  a2aTaskStoreUrlSecretRef:
+    name: ""
+    key: ""
+  a2aTaskStoreTtlMinutes: 1440.0 # A2A_TASK_STORE_TTL_MINUTES - 24h default
+
+  # Shared by every Redis client above - must not exceed requestTimeoutSeconds.
+  redisSocketTimeoutSeconds: 2.0 # REDIS_SOCKET_TIMEOUT_SECONDS
+
+  # How long RedisQueueManager's dequeue_event() blocks per Streams read before retrying.
+  redisQueueDequeueBlockSeconds: 1.0 # REDIS_QUEUE_DEQUEUE_BLOCK_SECONDS
+  # How long a dequeued-but-unacked entry sits idle before dequeue_event() reclaims it from a
+  # crashed consumer.
+  redisQueueReclaimMinIdleSeconds: 30.0 # REDIS_QUEUE_RECLAIM_MIN_IDLE_SECONDS
+
   introspectUrl: "https://placeholder.example.com" # INTROSPECT_URL
   introspectClientId: "placeholder" # INTROSPECT_CLIENT_ID
   introspectTimeoutSeconds: 5.0 # INTROSPECT_TIMEOUT_SECONDS
@@ -132,7 +154,7 @@ app:
 # app.redisUrlSecretRef to a Secret containing a full authenticated REDIS_URL (DSN).
 #
 # master.persistence.enabled: false because this Redis only backs the app's schema cache
-# (dogpile.cache, see agent.py) - losing cache contents on pod restart is harmless, and skipping
+# (see storage.py/schema.py) - losing cache contents on pod restart is harmless, and skipping
 # the PVC avoids depending on a StorageClass being available in ephemeral/dev clusters (e.g. plain
 # kind). Flip to true if you want the cache to survive pod restarts.
 #

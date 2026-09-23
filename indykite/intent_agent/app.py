@@ -5,17 +5,48 @@ from collections.abc import AsyncIterator
 
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.routes import create_agent_card_routes, create_jsonrpc_routes
-from a2a.server.tasks import InMemoryTaskStore
+from a2a.server.tasks import InMemoryTaskStore, TaskStore
 from a2a.utils.constants import DEFAULT_RPC_URL
 from langchain_core.language_models import BaseChatModel
 from starlette.applications import Starlette
 
+from indykite.a2a.redis.queue_manager import RedisQueueManager
+from indykite.a2a.redis.task_store import RedisTaskStore
 from indykite.intent_agent.agent import IntentAgent
 from indykite.intent_agent.audit.sender import Sender, build_sender
-from indykite.intent_agent.config import Settings
+from indykite.intent_agent.config import Settings, StorageBackendKind
 from indykite.intent_agent.executor import IntentExecutor
 from indykite.intent_agent.policy import PolicyClient
-from indykite.intent_agent.schema import SchemaClient
+from indykite.intent_agent.schema import SchemaClient, app_agent_key_gid
+from indykite.redis.storage import RedisStorageBackend, build_redis_client
+
+_SECONDS_PER_MINUTE = 60
+_MILLISECONDS_PER_SECOND = 1000
+
+
+def _build_task_store_and_queue_manager(settings: Settings) -> tuple[TaskStore, RedisQueueManager | None]:
+    """A2A_TASK_STORE_BACKEND picks memory (InMemoryTaskStore, no queue manager) or the
+    Redis-backed pair below, sharing one client. Never imports redis.asyncio directly - see
+    schema.build_schema_backend's matching docstring.
+    """
+    if settings.a2a_task_store_backend != StorageBackendKind.REDIS:
+        return InMemoryTaskStore(), None
+    task_store_client = build_redis_client(
+        str(settings.a2a_task_store_url), socket_timeout_seconds=settings.redis_socket_timeout_seconds
+    )
+    env_id = app_agent_key_gid(settings.ik_app_agent_key.get_secret_value()) or "unconfigured"
+    task_store = RedisTaskStore(
+        RedisStorageBackend(task_store_client),
+        env_id=env_id,
+        terminal_ttl_seconds=settings.a2a_task_store_ttl_minutes * _SECONDS_PER_MINUTE,
+    )
+    # queue_manager wiring is currently inert - see queue_manager.py's module docstring.
+    return task_store, RedisQueueManager(
+        task_store_client,
+        env_id=env_id,
+        dequeue_block_milliseconds=int(settings.redis_queue_dequeue_block_seconds * _MILLISECONDS_PER_SECOND),
+        reclaim_min_idle_milliseconds=int(settings.redis_queue_reclaim_min_idle_seconds * _MILLISECONDS_PER_SECOND),
+    )
 
 
 def build_app(
@@ -29,31 +60,24 @@ def build_app(
     """Construct the Starlette app and its backing IntentAgent for these settings.
 
     The audit sender is built from AUDIT_DELIVERY here (or injected, for tests) and closed by
-    the app's lifespan on shutdown - which is what drains a buffered (AUDIT_ASYNC) queue
-    before the process exits, the same guarantee the IAG's sender gives on stop.
+    the app's lifespan on shutdown, draining any buffered queue before the process exits.
 
-    The lifespan also shuts down this agent's own _fetch_executor (review) - schema/policy
-    fetches and their async_creation_runner refreshes all run on it. wait=False,
-    cancel_futures=True only drops work still queued and returns immediately rather than
-    blocking this coroutine on whatever is already running - it does not, and cannot, stop an
-    in-flight synchronous fetch already underway in a worker thread (review: Python cannot
-    preempt one, and a genuinely stuck call could still leave that thread running past this
-    point, for concurrent.futures' own atexit machinery to join later at interpreter exit - the
-    bounded SCHEMA_FETCH_TIMEOUT_SECONDS/POLICY_FETCH_TIMEOUT_SECONDS x retries is what actually
-    guarantees such a thread eventually finishes on its own, not this call). What this genuinely
-    achieves: the lifespan handler itself never blocks on a slow/stuck fetch, and, since each
-    IntentAgent owns its own executor rather than sharing one process-wide singleton, this only
-    ever touches the instance this specific app is backed by - a second app (or any other
-    embedded caller) built on its own IntentAgent is unaffected.
+    The lifespan also shuts down this agent's own _fetch_executor. wait=False,
+    cancel_futures=True drops queued work and returns immediately rather than blocking on
+    what's already running - it cannot stop an in-flight fetch already underway in a worker
+    thread (Python can't preempt one), but the bounded fetch timeouts x retries guarantee such
+    a thread finishes on its own eventually.
     """
     agent = IntentAgent(settings, llm=llm, schema_client=schema_client, policy_client=policy_client)
     agent.preload_schema()
     sender = audit_sender or build_sender(settings)
 
     agent_card = agent.build_agent_card()
+    task_store, queue_manager = _build_task_store_and_queue_manager(settings)
     handler = DefaultRequestHandler(
         agent_executor=IntentExecutor(agent, sender),
-        task_store=InMemoryTaskStore(),
+        task_store=task_store,
+        queue_manager=queue_manager,
         agent_card=agent_card,
     )
 
@@ -64,6 +88,11 @@ def build_app(
         finally:
             agent._fetch_executor.shutdown(wait=False, cancel_futures=True)  # noqa: SLF001 - this app's own agent
             await sender.close()
+            await agent.aclose()
+            # InMemoryTaskStore has nothing to close; RedisTaskStore/RedisQueueManager share
+            # one client, so closing the store's closes both.
+            if isinstance(task_store, RedisTaskStore):
+                await task_store.aclose()
 
     app = Starlette(
         routes=[

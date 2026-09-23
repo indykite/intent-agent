@@ -1,15 +1,13 @@
 import asyncio
 import json
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import httpx2
 import jwt
 import pytest
-from dogpile.cache.backends.memory import MemoryBackend
-from dogpile.cache.backends.redis import RedisBackend
 from langchain_core.messages import HumanMessage, ToolMessage
+from redis.asyncio.connection import SSLConnection
 from starlette.testclient import TestClient
 
 from indykite.intent_agent.agent import IntentAgent, RequestSubject, _policy_block
@@ -33,7 +31,7 @@ from indykite.intent_agent.errors import (
     validation_feedback_error,
 )
 from indykite.intent_agent.input_schema import build_input_schema, render_schema_summary
-from indykite.intent_agent.schema import build_schema_cache
+from indykite.intent_agent.schema import build_schema_backend
 from indykite.intent_agent.skills import discover_skills
 from indykite.intent_agent.subject_binding import (
     PolicyContext,
@@ -47,9 +45,11 @@ from indykite.intent_agent.subject_binding import (
     validate_evaluations,
     validate_subject_type,
 )
+from indykite.redis.storage import MemoryStorageBackend, RedisStorageBackend
 
 _MIN_EXPECTED_ROUTES = 2
 _REDIS_PORT = 6379
+_REDIS_DB = 2
 # Every LLM call run_extraction makes for one prompt: one that activates extract-intent, one
 # final answer per attempt.
 _LLM_CALLS_TO_FIRST_ANSWER = 2
@@ -109,14 +109,16 @@ def _load_empty_schema_fixture():
 def _fake_schema_client(mocker, **kwargs):
     """A fake SchemaClient - run_extraction only ever calls get_cached() on it (dispatched
     through the fetch executor), never peek_cached(), so every behavior a test needs must be
-    configured via kwargs here (typically get_cached=...).
+    configured via kwargs here (typically get_cached=...). aclose defaults to an AsyncMock -
+    IntentAgent.aclose() awaits it, and a build_app() test drives that through the ASGI
+    lifespan on shutdown even when schema/policy fetching itself is never exercised.
     """
-    return mocker.Mock(**kwargs)
+    return mocker.Mock(aclose=mocker.AsyncMock(), **kwargs)
 
 
 def _fake_policy_client(mocker, **kwargs):
     """A fake PolicyClient - see _fake_schema_client."""
-    return mocker.Mock(**kwargs)
+    return mocker.Mock(aclose=mocker.AsyncMock(), **kwargs)
 
 
 def test_discovers_extract_intent_skill():
@@ -132,6 +134,7 @@ def test_build_app_registers_routes(monkeypatch, mocker):
     fake_schema_client = mocker.Mock(
         preload=mocker.Mock(),
         get_cached=mocker.Mock(return_value=_load_schema_fixture()),
+        aclose=mocker.AsyncMock(),
     )
 
     app, agent = build_app(settings, schema_client=fake_schema_client, audit_sender=_fake_audit_sender(mocker))
@@ -148,17 +151,27 @@ def test_build_app_closes_audit_sender_on_shutdown(monkeypatch, mocker):
     rather than sharing one process-wide singleton (review: a shared one would let one app's
     shutdown break every other IntentAgent/build_app instance in the same process, since
     ThreadPoolExecutor.shutdown() is not reversible), so asserting on this one instance's
-    executor cannot affect any other test.
+    executor cannot affect any other test. It also closes the schema/policy cache backends,
+    which is what actually closes a CACHE_BACKEND=redis client.
     """
     settings = _full_settings(monkeypatch)
-    fake_schema_client = mocker.Mock(preload=mocker.Mock(), get_cached=mocker.Mock(return_value=_load_schema_fixture()))
+    fake_schema_client = mocker.Mock(
+        preload=mocker.Mock(), get_cached=mocker.Mock(return_value=_load_schema_fixture()), aclose=mocker.AsyncMock()
+    )
+    fake_policy_client = mocker.Mock(aclose=mocker.AsyncMock())
     sender = _fake_audit_sender(mocker)
-    app, agent = build_app(settings, schema_client=fake_schema_client, audit_sender=sender)
+    app, agent = build_app(
+        settings, schema_client=fake_schema_client, policy_client=fake_policy_client, audit_sender=sender
+    )
 
     with TestClient(app):
         sender.close.assert_not_awaited()
+        fake_schema_client.aclose.assert_not_awaited()
+        fake_policy_client.aclose.assert_not_awaited()
         assert not agent._fetch_executor._shutdown
     sender.close.assert_awaited_once()
+    fake_schema_client.aclose.assert_awaited_once()
+    fake_policy_client.aclose.assert_awaited_once()
     assert agent._fetch_executor._shutdown
 
 
@@ -1086,6 +1099,8 @@ def _full_settings(monkeypatch):
     monkeypatch.setenv("AUDIT_FILE_STORAGE_PATH", "./.private/audit-never-created")
     monkeypatch.setenv("AUDIT_FILE_FORMAT", "json")
     monkeypatch.setenv("AUDIT_FILE_ROTATION_STRATEGY", "time")
+    # A2A_TASK_STORE_BACKEND defaults to "memory" (no Redis needed) - fine for these tests,
+    # which never exercise the task store/queue manager.
     return Settings(_env_file=None)
 
 
@@ -1094,26 +1109,29 @@ def _fake_audit_sender(mocker):
     return mocker.Mock(send=mocker.AsyncMock(), close=mocker.AsyncMock())
 
 
-def test_build_schema_cache_uses_memory_backend_by_default(monkeypatch):
-    """CACHE_BACKEND defaults to memory - the in-process Memory cache - with no REDIS_URL set."""
+def test_build_schema_backend_uses_memory_backend_by_default(monkeypatch):
+    """CACHE_BACKEND defaults to memory - the in-process Memory backend - with no REDIS_URL set."""
     settings = _full_settings(monkeypatch)
-    assert isinstance(build_schema_cache(settings, ThreadPoolExecutor(max_workers=1)).backend, MemoryBackend)
+    assert isinstance(build_schema_backend(settings), MemoryStorageBackend)
 
 
-def test_build_schema_cache_uses_redis_backend_when_configured(monkeypatch):
-    """CACHE_BACKEND=redis must select the Redis-backed cache, passing REDIS_URL through as-is
-    (not decomposed into host/port) so username/password/db/TLS scheme survive, with
-    expiration_time set from SCHEMA_REFRESH_TTL_MINUTES so get_cached() refreshes on-demand.
+def test_build_schema_backend_uses_redis_backend_when_configured(monkeypatch):
+    """CACHE_BACKEND=redis must select the Redis-backed backend, passing REDIS_URL through as
+    given (not decomposed into host/port) so username/password/db/TLS scheme survive.
     """
-    redis_url = f"rediss://user:pw@redis.example.com:{_REDIS_PORT}/2"
+    redis_url = f"rediss://user:pw@redis.example.com:{_REDIS_PORT}/{_REDIS_DB}"
     monkeypatch.setenv("CACHE_BACKEND", "redis")
     monkeypatch.setenv("REDIS_URL", redis_url)
-    monkeypatch.setenv("SCHEMA_REFRESH_TTL_MINUTES", "2.0")
     settings = _full_settings(monkeypatch)
-    cache = build_schema_cache(settings, ThreadPoolExecutor(max_workers=1))
-    assert isinstance(cache.backend, RedisBackend)
-    assert cache.backend.url == redis_url
-    assert cache.expiration_time == 2.0 * 60
+    backend = build_schema_backend(settings)
+    assert isinstance(backend, RedisStorageBackend)
+    connection_kwargs = backend._client.connection_pool.connection_kwargs
+    assert connection_kwargs["host"] == "redis.example.com"
+    assert connection_kwargs["port"] == _REDIS_PORT
+    assert connection_kwargs["db"] == _REDIS_DB
+    assert connection_kwargs["username"] == "user"
+    assert connection_kwargs["password"] == "pw"  # noqa: S105 - a fake credential in a REDIS_URL test fixture, not a real secret
+    assert backend._client.connection_pool.connection_class is SSLConnection
 
 
 def test_get_data_schema_tool_returns_cached_schema(monkeypatch, mocker):
@@ -1760,6 +1778,8 @@ def test_run_extraction_enforces_request_deadline_across_calls(monkeypatch, mock
         REQUEST_TIMEOUT_SECONDS=0.1,
         SCHEMA_FETCH_TIMEOUT_SECONDS=0.03,
         POLICY_FETCH_TIMEOUT_SECONDS=0.03,
+        REDIS_SOCKET_TIMEOUT_SECONDS=0.03,
+        REDIS_QUEUE_DEQUEUE_BLOCK_SECONDS=0.02,
         POLICY_FETCH_RETRY_ATTEMPTS=1,
         TOOL_CALL_MAX_ITERATIONS=_UNREACHABLE_TOOL_BUDGET,
     )
@@ -1790,6 +1810,8 @@ def test_run_extraction_timeout_mid_policy_fetch_reports_the_fetch_as_failed(mon
     monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "0.01")
     monkeypatch.setenv("SCHEMA_FETCH_TIMEOUT_SECONDS", "0.005")
     monkeypatch.setenv("POLICY_FETCH_TIMEOUT_SECONDS", "0.005")
+    monkeypatch.setenv("REDIS_SOCKET_TIMEOUT_SECONDS", "0.005")
+    monkeypatch.setenv("REDIS_QUEUE_DEQUEUE_BLOCK_SECONDS", "0.001")
     monkeypatch.setenv("POLICY_FETCH_RETRY_ATTEMPTS", "1")
     settings = _full_settings(monkeypatch)
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mocker.AsyncMock())))
@@ -1820,6 +1842,8 @@ def test_run_extraction_timeout_mid_schema_fetch_reports_the_request_timeout(mon
     monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "0.01")
     monkeypatch.setenv("SCHEMA_FETCH_TIMEOUT_SECONDS", "0.005")
     monkeypatch.setenv("POLICY_FETCH_TIMEOUT_SECONDS", "0.005")
+    monkeypatch.setenv("REDIS_SOCKET_TIMEOUT_SECONDS", "0.005")
+    monkeypatch.setenv("REDIS_QUEUE_DEQUEUE_BLOCK_SECONDS", "0.001")
     monkeypatch.setenv("POLICY_FETCH_RETRY_ATTEMPTS", "1")
     settings = _full_settings(monkeypatch)
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mocker.AsyncMock())))
@@ -2033,6 +2057,7 @@ def test_build_app_starts_when_schema_not_yet_populated_at_cold_start(monkeypatc
     fake_schema_client = mocker.Mock(
         preload=mocker.Mock(),
         get_cached=mocker.Mock(return_value=empty_schema),
+        aclose=mocker.AsyncMock(),
     )
 
     app, agent = build_app(settings, schema_client=fake_schema_client, audit_sender=_fake_audit_sender(mocker))

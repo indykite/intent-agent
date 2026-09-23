@@ -69,11 +69,12 @@ Service ports/probes and silently sharing one port hides misconfiguration.
 {{- end }}
 
 {{/*
-Fail fast if app.llmTimeoutSeconds, app.schemaFetchTimeoutSeconds or app.policyFetchTimeoutSeconds
-exceeds app.requestTimeoutSeconds - mirrors config.py's Settings._reject_llm_timeout_over_request_
-timeout and ._reject_fetch_timeouts_over_request_timeout, which reject the same combinations at
-app startup. Checking it here too (review) catches a bad values.yaml at `helm install`/`helm
-template` time instead of a pod that starts, fails Settings validation, and crash-loops.
+Fail fast if app.llmTimeoutSeconds, app.schemaFetchTimeoutSeconds, app.policyFetchTimeoutSeconds
+or app.redisSocketTimeoutSeconds exceeds app.requestTimeoutSeconds - mirrors config.py's Settings
+._reject_llm_timeout_over_request_timeout and ._reject_fetch_timeouts_over_request_timeout, which
+reject the same combinations at app startup. Checking it here too (review) catches a bad
+values.yaml at `helm install`/`helm template` time instead of a pod that starts, fails Settings
+validation, and crash-loops.
 */}}
 {{- define "service.validateTimeouts" -}}
 {{- if gt (.Values.app.llmTimeoutSeconds | float64) (.Values.app.requestTimeoutSeconds | float64) }}
@@ -84,6 +85,12 @@ template` time instead of a pod that starts, fails Settings validation, and cras
 {{- end }}
 {{- if gt (.Values.app.policyFetchTimeoutSeconds | float64) (.Values.app.requestTimeoutSeconds | float64) }}
 {{- fail (printf "app.policyFetchTimeoutSeconds (%v) must not exceed app.requestTimeoutSeconds (%v)" .Values.app.policyFetchTimeoutSeconds .Values.app.requestTimeoutSeconds) }}
+{{- end }}
+{{- if gt (.Values.app.redisSocketTimeoutSeconds | float64) (.Values.app.requestTimeoutSeconds | float64) }}
+{{- fail (printf "app.redisSocketTimeoutSeconds (%v) must not exceed app.requestTimeoutSeconds (%v)" .Values.app.redisSocketTimeoutSeconds .Values.app.requestTimeoutSeconds) }}
+{{- end }}
+{{- if ge (.Values.app.redisQueueDequeueBlockSeconds | float64) (.Values.app.redisSocketTimeoutSeconds | float64) }}
+{{- fail (printf "app.redisQueueDequeueBlockSeconds (%v) must be less than app.redisSocketTimeoutSeconds (%v)" .Values.app.redisQueueDequeueBlockSeconds .Values.app.redisSocketTimeoutSeconds) }}
 {{- end }}
 {{- end }}
 
@@ -117,6 +124,30 @@ if" condition below.
 {{- end }}
 {{- else if .Values.app.redisUrlSecretRef.name }}
 {{- fail "app.redisUrlSecretRef.name is set but app.cacheBackend is not \"redis\" - set app.cacheBackend: \"redis\" too, or clear redisUrlSecretRef" }}
+{{- end }}
+{{- end }}
+
+{{/*
+Fail fast on the A2A task store's Redis config - mirrors validateCacheBackend above exactly,
+same shape (app.a2aTaskStoreBackend/app.a2aTaskStoreUrlSecretRef vs. app.cacheBackend/
+app.redisUrlSecretRef), since RedisTaskStore now has the same memory-mode fallback the schema
+cache always had (the a2a-sdk's own InMemoryTaskStore) - app.a2aTaskStoreUrlSecretRef is only
+required when app.a2aTaskStoreBackend is "redis", not unconditionally.
+*/}}
+{{- define "service.validateTaskStoreConfig" -}}
+{{- if and .Values.app.a2aTaskStoreUrlSecretRef.key (not .Values.app.a2aTaskStoreUrlSecretRef.name) }}
+{{- fail "app.a2aTaskStoreUrlSecretRef.name is required when app.a2aTaskStoreUrlSecretRef.key is set" }}
+{{- end }}
+{{- if eq .Values.app.a2aTaskStoreBackend "redis" }}
+{{- if .Values.app.a2aTaskStoreUrlSecretRef.name }}
+{{- if not .Values.app.a2aTaskStoreUrlSecretRef.key }}
+{{- fail "app.a2aTaskStoreUrlSecretRef.key is required when app.a2aTaskStoreUrlSecretRef.name is set" }}
+{{- end }}
+{{- else if not ((.Values.redis).enabled) }}
+{{- fail "app.a2aTaskStoreBackend is \"redis\" but neither app.a2aTaskStoreUrlSecretRef.name nor redis.enabled is set" }}
+{{- end }}
+{{- else if .Values.app.a2aTaskStoreUrlSecretRef.name }}
+{{- fail "app.a2aTaskStoreUrlSecretRef.name is set but app.a2aTaskStoreBackend is not \"redis\" - set app.a2aTaskStoreBackend: \"redis\" too, or clear a2aTaskStoreUrlSecretRef" }}
 {{- end }}
 {{- end }}
 
@@ -200,6 +231,28 @@ for why that isn't silently allowed to produce an invalid/mismatched hostname in
 {{- define "service.redisHost" -}}
 {{- printf "%s-master" (include "service.redisFullname" .) -}}
 {{- end -}}
+
+{{/*
+Renders one Redis-DSN-shaped env var entry (12-space indented, matching deployment.yaml's env
+list) - the shape REDIS_URL and A2A_TASK_STORE_URL both need: a Secret reference when the given
+secretRef.name is set, the chart-managed Redis's derived DSN when redis.enabled, or nothing at
+all otherwise. Usage: {{ include "service.redisUrlEnvVar" (list . "REDIS_URL" .Values.app.redisUrlSecretRef) }}
+*/}}
+{{- define "service.redisUrlEnvVar" -}}
+{{- $root := index . 0 }}
+{{- $envVarName := index . 1 }}
+{{- $secretRef := index . 2 }}
+{{- if $secretRef.name }}
+            - name: {{ $envVarName }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretRef.name }}
+                  key: {{ $secretRef.key }}
+{{- else if (($root.Values.redis).enabled) }}
+            - name: {{ $envVarName }}
+              value: {{ printf "redis://%s:6379" (include "service.redisHost" $root) | quote }}
+{{- end }}
+{{- end }}
 
 {{/*
 Fail fast if autoscaling.minReplicas exceeds maxReplicas - the schema validates each field

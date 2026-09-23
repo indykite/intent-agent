@@ -1,5 +1,6 @@
 """Tests for PolicyClient: fetching, per-subject_type caching, and retry-then-give-up (ENG-9671)."""
 
+import asyncio
 import json
 import threading
 import time
@@ -7,15 +8,12 @@ import time
 import httpx2
 import jwt
 import pytest
-from dogpile.cache.region import make_region
+from fakeredis import FakeAsyncRedis
 
-from indykite.intent_agent.policy import (
-    _FAILURE_CACHE_SECONDS,
-    PolicyClient,
-    _cache_key,
-    _FailedFetch,
-    _failure_backoff_seconds,
-)
+from indykite.intent_agent.errors import InvalidAppAgentKeyError
+from indykite.intent_agent.policy import _FAILURE_CACHE_SECONDS, PolicyClient, _cache_key, _failure_backoff_seconds
+from indykite.intent_agent.schema import IkConnection
+from indykite.redis.storage import MemoryStorageBackend, RedisStorageBackend, StorageBackend
 
 _POLICIES = [
     {
@@ -32,6 +30,7 @@ _POLICIES = [
 _EXPECTED_FETCH_COUNT_AFTER_REFRESH = 2
 _RETRY_ATTEMPTS = 3
 _FETCH_COUNT_PER_SUBJECT_TYPE = 2
+_DEFAULT_REFRESH_TTL_SECONDS = 100.0
 
 
 def _fake_jwt(sub):
@@ -45,8 +44,22 @@ _APP_AGENT_KEY = _fake_jwt("test-app-agent")
 _SUBJECT_TYPE = "Person"
 
 
-def _memory_cache():
-    return make_region().configure("dogpile.cache.memory")
+def _memory_backend() -> MemoryStorageBackend:
+    return MemoryStorageBackend()
+
+
+def _redis_backend() -> RedisStorageBackend:
+    return RedisStorageBackend(FakeAsyncRedis())
+
+
+def _client(base_url: str, app_agent_key: str, *, cache: StorageBackend | None = None, **kwargs) -> PolicyClient:
+    """Build a PolicyClient with a sensible default cache/TTL, for tests that don't care."""
+    return PolicyClient(
+        IkConnection(base_url, app_agent_key),
+        cache=cache if cache is not None else _memory_backend(),
+        refresh_ttl_seconds=kwargs.pop("refresh_ttl_seconds", _DEFAULT_REFRESH_TTL_SECONDS),
+        **kwargs,
+    )
 
 
 def _mock_sync_client(mocker, *, response=None, side_effect=None):
@@ -110,13 +123,19 @@ def _mock_status_error_response(mocker, status_code):
     return response
 
 
-def _expire(cache):
-    """Same deterministic-expiry trick as test_schema.py's _expire, including backdating to a
-    real past timestamp rather than zero (review) - see that docstring for why.
+def _backdate_cached_at(cache: StorageBackend, key: str, *, by_seconds: float) -> None:
+    """Same deterministic-expiry trick as test_schema.py's - directly rewrite the cached
+    envelope's cached_at earlier by by_seconds, rather than sleeping past refresh_ttl_seconds.
     """
-    for key, cached in cache.backend._cache.items():
-        expired_ct = time.time() - 1_000_000
-        cache.backend._cache[key] = cached._replace(metadata={**cached.metadata, "ct": expired_ct})
+    import asyncio
+
+    async def _run():
+        encoded = await cache.get(key)
+        envelope = json.loads(encoded)
+        envelope["cached_at"] -= by_seconds
+        await cache.set(key, json.dumps(envelope).encode("utf-8"))
+
+    asyncio.run(_run())
 
 
 @pytest.mark.parametrize(
@@ -128,21 +147,36 @@ def _expire(cache):
 )
 def test_get_cached_returns_none_when_config_incomplete(base_url, app_agent_key):
     """Missing base_url or app_agent_key means policies unavailable, no request attempted."""
-    client = PolicyClient(base_url, app_agent_key, cache=_memory_cache())
+    client = _client(base_url, app_agent_key)
     assert client.get_cached(_SUBJECT_TYPE) == (None, True)
 
 
 def test_get_cached_returns_policies_on_success(mocker):
     """A successful fetch returns the results list, unwrapped from the {"results": [...]} envelope."""
     _mock_sync_client(mocker, response=_mock_response(mocker))
-    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, cache=_memory_cache())
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY)
     assert client.get_cached(_SUBJECT_TYPE) == (_POLICIES, False)
+
+
+@pytest.mark.parametrize("backend", ["memory", "redis"])
+def test_get_cached_round_trips_on_both_backends(mocker, backend):
+    """The success envelope's encode/decode path must work identically on the in-process
+    Memory backend and a Redis-backed one (the real redis.asyncio client, faked at the network
+    level with fakeredis) - a second call must be a cache hit either way, no new fetch.
+    """
+    cache = _redis_backend() if backend == "redis" else _memory_backend()
+    client_mock = _mock_sync_client(mocker, response=_mock_response(mocker))
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
+
+    assert client.get_cached(_SUBJECT_TYPE) == (_POLICIES, False)
+    assert client.get_cached(_SUBJECT_TYPE) == (_POLICIES, False)
+    assert client_mock.get.call_count == 1
 
 
 def test_get_cached_sends_the_subject_type_query_param(mocker):
     """The request must filter by the caller's subject_type, per the endpoint's contract."""
     client_mock = _mock_sync_client(mocker, response=_mock_response(mocker))
-    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, cache=_memory_cache())
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY)
 
     client.get_cached(_SUBJECT_TYPE)
 
@@ -160,7 +194,7 @@ def test_get_cached_logs_the_request_url_and_a_truncated_response_preview(mocker
     caplog.set_level("DEBUG")
     large_policies = [{"policy": {"description": "x" * 600}, "tags": []}]
     _mock_sync_client(mocker, response=_mock_response(mocker, results=large_policies))
-    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, cache=_memory_cache())
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY)
 
     assert client.get_cached(_SUBJECT_TYPE) == (large_policies, False)
 
@@ -197,7 +231,7 @@ def test_get_cached_retries_then_succeeds(mocker, kind):
     """
     failure = _one_failure(mocker, kind)
     client_mock = _mock_sync_client(mocker, side_effect=[failure, failure, _mock_response(mocker)])
-    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=3, cache=_memory_cache())
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=3)
 
     assert client.get_cached(_SUBJECT_TYPE) == (_POLICIES, False)
     assert client_mock.get.call_count == _RETRY_ATTEMPTS
@@ -215,7 +249,7 @@ def test_get_cached_returns_none_after_exhausting_retries(mocker, caplog, kind):
     caplog.set_level("WARNING")
     failure = _one_failure(mocker, kind)
     client_mock = _mock_sync_client(mocker, side_effect=[failure] * _RETRY_ATTEMPTS)
-    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=3, cache=_memory_cache())
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=3)
 
     assert client.get_cached(_SUBJECT_TYPE) == (None, True)
     assert client_mock.get.call_count == _RETRY_ATTEMPTS
@@ -233,7 +267,7 @@ def test_get_cached_truncates_a_malformed_body_in_the_warning_log(mocker, caplog
     caplog.set_level("WARNING")
     huge_body = {"not_results": "x" * huge_body_size}
     _mock_sync_client(mocker, response=_mock_malformed_response(mocker, json_value=huge_body))
-    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=1, cache=_memory_cache())
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=1)
 
     assert client.get_cached(_SUBJECT_TYPE) == (None, True)
     assert "xxxxxxxxxx" in caplog.text
@@ -248,7 +282,7 @@ def test_get_cached_does_not_retry_a_4xx_response(mocker, caplog):
     caplog.set_level("WARNING")
     forbidden = _mock_status_error_response(mocker, 403)
     client_mock = _mock_sync_client(mocker, response=forbidden)
-    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=3, cache=_memory_cache())
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=3)
 
     assert client.get_cached(_SUBJECT_TYPE) == (None, True)
     assert client_mock.get.call_count == 1
@@ -262,7 +296,7 @@ def test_get_cached_still_retries_a_5xx_response(mocker):
     """
     server_error = _mock_status_error_response(mocker, 503)
     client_mock = _mock_sync_client(mocker, side_effect=[server_error] * _RETRY_ATTEMPTS)
-    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=3, cache=_memory_cache())
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=3)
 
     assert client.get_cached(_SUBJECT_TYPE) == (None, True)
     assert client_mock.get.call_count == _RETRY_ATTEMPTS
@@ -277,7 +311,7 @@ def test_get_cached_still_retries_408_and_429(mocker, status):
     """
     transient = _mock_status_error_response(mocker, status)
     client_mock = _mock_sync_client(mocker, side_effect=[transient] * _RETRY_ATTEMPTS)
-    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=3, cache=_memory_cache())
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=3)
 
     assert client.get_cached(_SUBJECT_TYPE) == (None, True)
     assert client_mock.get.call_count == _RETRY_ATTEMPTS
@@ -290,7 +324,7 @@ def test_get_cached_caches_a_failure_briefly(mocker):
     """
     error = httpx2.ConnectTimeout("connect timed out")
     client_mock = _mock_sync_client(mocker, side_effect=error)
-    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=3, cache=_memory_cache())
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=3)
 
     assert client.get_cached(_SUBJECT_TYPE) == (None, True)
     assert client_mock.get.call_count == _RETRY_ATTEMPTS
@@ -305,7 +339,7 @@ def test_get_cached_retries_again_once_the_failure_backoff_expires(mocker):
     """
     error = httpx2.ConnectTimeout("connect timed out")
     client_mock = _mock_sync_client(mocker, side_effect=[error] * _RETRY_ATTEMPTS + [_mock_response(mocker)])
-    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=3, cache=_memory_cache())
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=3)
     assert client.get_cached(_SUBJECT_TYPE) == (None, True)
     assert client_mock.get.call_count == _RETRY_ATTEMPTS
 
@@ -317,47 +351,14 @@ def test_get_cached_retries_again_once_the_failure_backoff_expires(mocker):
 
 def test_failure_backoff_is_clamped_to_a_shorter_success_ttl():
     """A POLICY_REFRESH_TTL_MINUTES configured under 30 seconds must not let a cached failure
-    outlive what dogpile's own (shorter) freshness check would already consider stale (review) -
-    otherwise peek_cached()'s plain cache.get() would report a miss before the failure's own
-    backoff elapses, defeating the point of caching it at all in that configuration.
+    outlive what the success path's own freshness check would already consider stale -
+    otherwise peek_cached() would report a miss before the failure's own backoff elapses,
+    defeating the point of caching it at all in that configuration.
     """
-    short_ttl_seconds = 5
-    short_ttl_cache = make_region().configure("dogpile.cache.memory", expiration_time=short_ttl_seconds)
-    assert _failure_backoff_seconds(short_ttl_cache) == short_ttl_seconds
-
-    long_ttl_seconds = 300
-    long_ttl_cache = make_region().configure("dogpile.cache.memory", expiration_time=long_ttl_seconds)
-    assert _failure_backoff_seconds(long_ttl_cache) == _FAILURE_CACHE_SECONDS
-
-
-def test_get_cached_does_not_delete_a_concurrently_recovered_entry(mocker):
-    """If a concurrent caller already cached a fresh value between this call's own read and the
-    re-check right before evicting an expired failure, that eviction must not destroy the fresh
-    value and force a redundant fetch on top of a recovery that already happened (review) -
-    exactly the fetch stampede get_or_create's own coalescing exists to prevent. Proven here by
-    having the cache "recover" at exactly that moment, via a wrapped .get() that writes a fresh
-    value the first time this method re-checks what is actually there.
-    """
-    cache = _memory_cache()
-    cache_key = _cache_key(_APP_AGENT_KEY, _SUBJECT_TYPE)
-    cache.set(cache_key, _FailedFetch(expires_at=time.time() - 1, reason="connect timed out"))
-    client_mock = _mock_sync_client(mocker, response=_mock_response(mocker))
-    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
-
-    real_get = cache.get
-    calls = {"n": 0}
-    recheck_before_delete_call = 2
-
-    def _get_with_concurrent_recovery(key, **kwargs):
-        calls["n"] += 1
-        if calls["n"] == recheck_before_delete_call:
-            cache.set(key, _POLICIES)
-        return real_get(key, **kwargs)
-
-    mocker.patch.object(cache, "get", side_effect=_get_with_concurrent_recovery)
-
-    assert client.get_cached(_SUBJECT_TYPE) == (_POLICIES, False)
-    client_mock.get.assert_not_called()
+    short_ttl_seconds = 5.0
+    long_ttl_seconds = 300.0
+    assert _failure_backoff_seconds(short_ttl_seconds) == short_ttl_seconds
+    assert _failure_backoff_seconds(long_ttl_seconds) == _FAILURE_CACHE_SECONDS
 
 
 def test_get_cached_treats_a_cache_backend_failure_as_an_unresolved_fetch(mocker):
@@ -366,16 +367,95 @@ def test_get_cached_treats_a_cache_backend_failure_as_an_unresolved_fetch(mocker
     unhandled exception (review) - run_extraction answers policy_unavailable_error either way.
     """
     cache = mocker.Mock(get=mocker.Mock(side_effect=ConnectionError("redis unreachable")))
-    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
 
     assert client.get_cached(_SUBJECT_TYPE) == (None, True)
 
 
+def test_get_cached_treats_a_legacy_or_corrupted_cached_value_as_a_miss(mocker):
+    """A stored value that fails to decode into this envelope shape at all (e.g. a value from
+    a different cache format under the same key) must be treated as a miss and self-heal via
+    the ordinary cache-miss -> fetch -> _store_success() path, not get stuck returning
+    (None, True) forever.
+    """
+    cache = _memory_backend()
+    asyncio.run(
+        cache.set(
+            _cache_key(_APP_AGENT_KEY, _SUBJECT_TYPE),
+            b"\x80\x04not valid json, e.g. a leftover pickled value from a retired cache format",
+        )
+    )
+    _mock_sync_client(mocker, response=_mock_response(mocker))
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
+
+    assert client.get_cached(_SUBJECT_TYPE) == (_POLICIES, False)
+    # The bad key must actually have been overwritten, not just papered over for this one
+    # call - a second, independent read confirms the cache is healed, not still corrupted.
+    assert client.peek_cached(_SUBJECT_TYPE) == (True, _POLICIES)
+
+
+def test_get_cached_treats_a_success_envelope_missing_policies_as_a_miss(mocker):
+    """A "success" envelope with no policies list (valid kind, invalid payload - e.g. hand
+    corruption, or a future incompatible cache-format change) must self-heal via a fresh fetch,
+    not be accepted as a resolved hit - which would otherwise return (None, True) forever until
+    the TTL expires, misreporting a healthy fetch as a failure.
+    """
+    cache = _memory_backend()
+    asyncio.run(
+        cache.set(
+            _cache_key(_APP_AGENT_KEY, _SUBJECT_TYPE),
+            json.dumps({"kind": "success", "cached_at": time.time()}).encode(),
+        )
+    )
+    _mock_sync_client(mocker, response=_mock_response(mocker))
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
+
+    assert client.get_cached(_SUBJECT_TYPE) == (_POLICIES, False)
+
+
+def test_get_cached_treats_a_failure_envelope_missing_reason_as_a_miss(mocker):
+    """A "failure" envelope with no reason string (valid kind, invalid payload) must likewise
+    self-heal via a fresh fetch rather than be accepted as a resolved (still-backing-off)
+    failure.
+    """
+    cache = _memory_backend()
+    asyncio.run(
+        cache.set(
+            _cache_key(_APP_AGENT_KEY, _SUBJECT_TYPE),
+            json.dumps({"kind": "failure", "cached_at": time.time()}).encode(),
+        )
+    )
+    _mock_sync_client(mocker, response=_mock_response(mocker))
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
+
+    assert client.get_cached(_SUBJECT_TYPE) == (_POLICIES, False)
+
+
+def test_get_cached_treats_a_non_numeric_cached_at_as_a_miss(mocker):
+    """An envelope whose cached_at isn't numeric (e.g. null, from hand corruption or a future
+    incompatible cache-format change) must self-heal via a fresh fetch, not be accepted as a
+    resolved hit - which would otherwise raise once _resolve() tries `time.time() - cached_at`,
+    misreporting a cache-corruption issue as a backend failure forever, since the bad value is
+    never replaced.
+    """
+    cache = _memory_backend()
+    asyncio.run(
+        cache.set(
+            _cache_key(_APP_AGENT_KEY, _SUBJECT_TYPE),
+            json.dumps({"kind": "success", "cached_at": None, "policies": []}).encode(),
+        )
+    )
+    _mock_sync_client(mocker, response=_mock_response(mocker))
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
+
+    assert client.get_cached(_SUBJECT_TYPE) == (_POLICIES, False)
+
+
 def test_get_cached_coalesces_concurrent_misses_into_one_fetch(mocker):
     """Concurrent callers observing the same cache miss must coalesce into a single _load()
-    behind dogpile's own lock (review, get_or_create) instead of each firing their own request.
-    This is a real concurrency property - proven with actual threads against a real (in-memory)
-    cache region, not by mocking the lock away.
+    behind RefreshGate's per-key lock instead of each firing their own request. This
+    is a real concurrency property - proven with actual threads against a real (in-memory)
+    backend, not by mocking the lock away.
     """
     load_started = threading.Event()
     release_load = threading.Event()
@@ -391,7 +471,7 @@ def test_get_cached_coalesces_concurrent_misses_into_one_fetch(mocker):
         return _mock_response(mocker)
 
     _mock_sync_client(mocker, side_effect=_slow_get)
-    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, cache=_memory_cache())
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY)
 
     results = []
 
@@ -417,8 +497,8 @@ def test_peek_cached_never_fetches(mocker):
     still-fresh cached failure's backoff.
     """
     client_mock = _mock_sync_client(mocker, response=_mock_response(mocker))
-    cache = _memory_cache()
-    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
+    cache = _memory_backend()
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
 
     assert client.peek_cached(_SUBJECT_TYPE) == (False, None)
     client_mock.get.assert_not_called()
@@ -429,7 +509,7 @@ def test_peek_cached_never_fetches(mocker):
 
     error = httpx2.ConnectTimeout("connect timed out")
     client_mock.get.side_effect = error
-    failing_client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=1, cache=_memory_cache())
+    failing_client = _client("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=1)
     failing_client.get_cached(_SUBJECT_TYPE)
     assert failing_client.peek_cached(_SUBJECT_TYPE) == (True, None)
 
@@ -442,8 +522,8 @@ def test_get_cached_caches_per_subject_type(mocker):
     client_mock = _mock_sync_client(
         mocker, side_effect=[_mock_response(mocker), _mock_response(mocker, results=other_policies)]
     )
-    cache = _memory_cache()
-    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
+    cache = _memory_backend()
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
 
     assert client.get_cached("Person") == (_POLICIES, False)
     assert client.get_cached("Company") == (other_policies, False)
@@ -466,31 +546,34 @@ def test_cache_key_scopes_by_environment_and_subject_type():
 
 def test_policies_do_not_collide_across_different_environments(mocker):
     """Two PolicyClient instances for different base_url/app_agent_key pairs, same subject_type,
-    sharing a cache region must not read/write each other's policies.
+    sharing a cache backend must not read/write each other's policies.
     """
-    shared_cache = _memory_cache()
+    shared_cache = _memory_backend()
     other_policies = [{"policy": {"actions": ["CAN_SELL"]}, "tags": []}]
 
     _mock_sync_client(mocker, response=_mock_response(mocker))
-    client_a = PolicyClient("https://a.example.com", _fake_jwt("gid-a"), cache=shared_cache)
+    client_a = _client("https://a.example.com", _fake_jwt("gid-a"), cache=shared_cache)
     assert client_a.get_cached(_SUBJECT_TYPE) == (_POLICIES, False)
 
     _mock_sync_client(mocker, response=_mock_response(mocker, results=other_policies))
-    client_b = PolicyClient("https://b.example.com", _fake_jwt("gid-b"), cache=shared_cache)
+    client_b = _client("https://b.example.com", _fake_jwt("gid-b"), cache=shared_cache)
     assert client_b.get_cached(_SUBJECT_TYPE) == (other_policies, False)
 
     assert client_a.get_cached(_SUBJECT_TYPE) == (_POLICIES, False)
 
 
 def test_get_cached_refreshes_on_demand_when_entry_expired(mocker):
-    """An expired cache entry must trigger a fresh fetch and re-cache, not just sit stale."""
-    cache = make_region().configure("dogpile.cache.memory", expiration_time=100)
+    """An expired cache entry must trigger a fresh fetch and re-cache, not just sit stale -
+    synchronously (unlike SchemaClient, PolicyClient has no background-refresh path), so this
+    call itself performs the second fetch and returns its result directly.
+    """
+    cache = _memory_backend()
     client_mock = _mock_sync_client(mocker, response=_mock_response(mocker))
-    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY, cache=cache, refresh_ttl_seconds=100.0)
     assert client.get_cached(_SUBJECT_TYPE) == (_POLICIES, False)
     assert client_mock.get.call_count == 1
 
-    _expire(cache)
+    _backdate_cached_at(cache, _cache_key(_APP_AGENT_KEY, _SUBJECT_TYPE), by_seconds=101.0)
 
     assert client.get_cached(_SUBJECT_TYPE) == (_POLICIES, False)
     assert client_mock.get.call_count == _EXPECTED_FETCH_COUNT_AFTER_REFRESH
@@ -509,13 +592,30 @@ def test_get_cached_falls_back_to_stale_policies_when_refresh_fails(mocker, capl
     usable fallback existed.
     """
     caplog.set_level("WARNING")
-    cache = make_region().configure("dogpile.cache.memory", expiration_time=100)
+    cache = _memory_backend()
     client_mock = _mock_sync_client(mocker, response=_mock_response(mocker))
-    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=1, cache=cache)
+    client = _client(
+        "https://ikg.example.com", _APP_AGENT_KEY, cache=cache, retry_attempts=1, refresh_ttl_seconds=100.0
+    )
     assert client.get_cached(_SUBJECT_TYPE) == (_POLICIES, False)
-    _expire(cache)
+    _backdate_cached_at(cache, _cache_key(_APP_AGENT_KEY, _SUBJECT_TYPE), by_seconds=101.0)
 
     client_mock.get.side_effect = httpx2.HTTPError("platform unreachable")
 
     assert client.get_cached(_SUBJECT_TYPE) == (_POLICIES, True)
     assert "platform unreachable" in caplog.text
+
+
+def test_invalid_app_agent_key_is_treated_as_policies_unavailable(caplog):
+    """A malformed (non-blank) IK_APP_AGENT_KEY must not raise out of get_cached()/peek_cached()
+    - the process already fails loudly at startup in this case elsewhere (see
+    InvalidAppAgentKeyError's own docstring); a per-request caller here just needs a clean
+    "unavailable" answer.
+    """
+    caplog.set_level("WARNING")
+    client = _client("https://ikg.example.com", "not-a-jwt")
+
+    assert client.peek_cached(_SUBJECT_TYPE) == (True, None)
+    assert client.get_cached(_SUBJECT_TYPE) == (None, True)
+    with pytest.raises(InvalidAppAgentKeyError):
+        _cache_key("not-a-jwt", _SUBJECT_TYPE)
