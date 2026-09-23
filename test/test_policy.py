@@ -56,10 +56,17 @@ def _mock_sync_client(mocker, *, response=None, side_effect=None):
     return client
 
 
-def _mock_response(mocker, results=_POLICIES):
+def _mock_response(mocker, results=None):
     """Build a fake httpx2 response returning {"results": results} from .json(), never raising
     on .raise_for_status(). status_code/text are real values since _load() logs both verbatim.
+
+    Defaults to None rather than the _POLICIES list directly (review: mutable default) -
+    _load() returns this same list object back to its caller with no copy, so aliasing the
+    shared module-level constant into it would let any test that later mutates a get_cached()
+    result corrupt _POLICIES for every other test in the file.
     """
+    if results is None:
+        results = _POLICIES
     body = {"results": results}
     response = mocker.Mock(json=mocker.Mock(return_value=body))
     response.status_code = 200

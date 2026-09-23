@@ -44,11 +44,18 @@ def _mock_sync_client(mocker, *, response=None, side_effect=None):
     return client
 
 
-def _mock_response(mocker, schema=_SCHEMA):
+def _mock_response(mocker, schema=None):
     """Build a fake httpx2 response returning schema from .json(), never raising on
     .raise_for_status(). status_code/text are real values (not further Mocks) since load()
     logs both verbatim, including a slice of .text - a bare Mock isn't subscriptable.
+
+    Defaults to None rather than the _SCHEMA dict directly (review, mirrors test_policy.py's
+    _mock_response: mutable default) - load() returns this same object back to its caller with
+    no copy, so aliasing the shared module-level constant into it would let any test that later
+    mutates a get_cached() result corrupt _SCHEMA for every other test in the file.
     """
+    if schema is None:
+        schema = _SCHEMA
     response = mocker.Mock(json=mocker.Mock(return_value=schema))
     response.status_code = 200
     response.text = json.dumps(schema)
