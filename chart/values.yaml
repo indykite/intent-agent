@@ -2,7 +2,7 @@
 replicaCount: 1
 
 image:
-  repository: europe-west1-docker.pkg.dev/placeholder
+  repository: docker.io/indykite
   name: intent-agent
   pullPolicy: Always
   # Blank defaults to Chart.yaml's version (see templates/deployment.yaml) - for a release

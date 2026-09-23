@@ -89,11 +89,30 @@ jobs:
       - name: Check out repo
         uses: indykite/ops-common/.github/actions/git-checkout@4c4cb34f01107182013dd8fe8a9de28ba7958153 # actions/checkout with dynamic fetch-depth resolution
 
+      - name: Determine target registries
+        id: registries
+        env:
+          GAR_IMAGE: ${{ format('{0}/{1}/indykite/{2}', vars.ARTIFACT_REGISTRY_URL, secrets.GCP_PROJECT_ID_MGMT, github.event.repository.name) }}
+          # Docker Hub only gets the release image, not every PR/dev build - gated on the same
+          # `v*` tag push that actually produces the release's GAR image (see this job's own note
+          # below on why `release: published` itself builds nothing).
+          IS_RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          {
+            echo "is-release-tag=${IS_RELEASE_TAG}"
+            echo "images<<EOF"
+            echo "$GAR_IMAGE"
+            if [[ "${IS_RELEASE_TAG}" == "true" ]]; then
+              echo "docker.io/indykite/${{ github.event.repository.name }}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Generate Docker meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0 - https://github.com/docker/metadata-action/releases
         id: meta
         with:
-          images: ${{ format('{0}/{1}/indykite/{2}', vars.ARTIFACT_REGISTRY_URL, secrets.GCP_PROJECT_ID_MGMT, github.event.repository.name) }}
+          images: ${{ steps.registries.outputs.images }}
           # The type=raw tag covers this job's two non-tag triggers (PR and master push); a v*
           # tag push carries no version.image-tag (see the "version" job) and gets its version
           # from type=semver above instead.
@@ -113,6 +132,8 @@ jobs:
           gcp-service-account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
           docker-repository-hostname: ${{ vars.ARTIFACT_REGISTRY_URL }}
           platforms: ${{ env.PLATFORMS }}
+          dockerhub-username: ${{ steps.registries.outputs.is-release-tag == 'true' && secrets.DOCKERHUB_USERNAME || '' }}
+          dockerhub-token: ${{ steps.registries.outputs.is-release-tag == 'true' && secrets.DOCKERHUB_TOKEN || '' }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0 - https://github.com/docker/build-push-action/releases
@@ -153,14 +174,24 @@ jobs:
       - name: Resolve chart dependencies
         run: helm dependency build chart/
 
-      - name: Publish to Artifact Registry
-        uses: indykite/ops-common/.github/actions/chart-publish@4c4cb34f01107182013dd8fe8a9de28ba7958153 # master
+      # TODO: bump this pin to master once ops-common's ENG-9630-helm-chart-publish-docker-hub
+      # branch (adding dockerhub-* inputs to chart-publish) merges - currently pinned to that
+      # branch's tip commit directly, not yet on master.
+      - name: Publish chart
+        uses: indykite/ops-common/.github/actions/chart-publish@d12e782d0c76cef9e6356de37d1bf0f9f06ee377 # ENG-9630-helm-chart-publish-docker-hub
         with:
           workload-identity-provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER_MGMT }}
           gcp-service-account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
           artifact-registry-url: "${{ vars.ARTIFACT_REGISTRY_URL }}/${{ secrets.GCP_PROJECT_ID_MGMT }}/indykite"
           immutable-tags: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
           version-suffix: ${{ needs.version.outputs.suffix }}
+          # Docker Hub only gets the chart on an actual release, not PR/dev builds - same scoping
+          # as the container image's Docker Hub push in the "build-docker" job. Namespace matches
+          # the container image's ("indykite"); chart-publish appends its own '-chart' suffix to
+          # the version so the chart's tag doesn't collide with the image's in indykite/intent-agent.
+          dockerhub-username: ${{ github.event_name == 'release' && secrets.DOCKERHUB_USERNAME || '' }}
+          dockerhub-token: ${{ github.event_name == 'release' && secrets.DOCKERHUB_TOKEN || '' }}
+          dockerhub-repository: ${{ github.event_name == 'release' && 'indykite' || '' }}
 
   deploy-dev:
     # Only deploy on push to master
