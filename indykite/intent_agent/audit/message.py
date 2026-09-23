@@ -75,7 +75,16 @@ FIELD_NAMES: tuple[str, ...] = tuple(AuditMessage.model_fields)
 
 
 def _cell(value: object) -> str:
-    """Stringify one field value for CSV/TXT output."""
+    """Stringify one field value for CSV/TXT output.
+
+    None (review: policy_fetch_failed's "no fetch attempted" state) renders as "" rather than
+    falling through to str(None) -> the literal text "None", inconsistent with every other
+    "not applicable" field here (schema_version/policy_version already use "" for their own
+    unavailable case) and liable to break a downstream CSV consumer expecting this column to be
+    strictly "True"/"False".
+    """
+    if value is None:
+        return ""
     if isinstance(value, str):
         return value
     if isinstance(value, list | dict):

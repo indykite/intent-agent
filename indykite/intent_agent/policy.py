@@ -250,6 +250,13 @@ class PolicyClient:
         there is truly nothing cached yet (the very first request for this subject_type) does a
         failure fall back to the marker below instead.
 
+        That re-cache is one more instance of the no-distributed-lock gap above (review): under
+        CACHE_BACKEND=redis with multiple instances, if a different instance's own refresh
+        succeeds and writes a fresh value while this instance's _load() is still failing, this
+        instance's fallback write of its own (older) stale snapshot can land after and overwrite
+        that fresher one. Same accepted risk class as the fetch-stampede case already described
+        above, just surfacing here as a stale overwrite instead of a duplicate fetch.
+
         A failure - the marker case above - is itself cached too, briefly (_failure_backoff_
         seconds, review) - without this, every request during an outage would pay the full
         retry_attempts x timeout_seconds cost again, and, just as importantly, a waiting

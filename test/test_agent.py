@@ -1140,6 +1140,25 @@ def test_get_policies_tool_returns_the_request_snapshot(monkeypatch, mocker, pol
     assert json.loads(result) == expected_json
 
 
+def test_get_policies_tool_logs_only_when_the_fetch_had_failed(monkeypatch, mocker, caplog):
+    """get_policies invoked against a failed fetch (policies is None) must log that server-side
+    (review) - the LLM still gets [] either way (same _policy_block convention), so this is the
+    only trace of the difference. A genuinely empty policy set ([], not a failure) must not log
+    anything - the two must stay distinguishable in the logs.
+    """
+    caplog.set_level("WARNING")
+    settings = _full_settings(monkeypatch)
+    fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock()))
+    agent = IntentAgent(settings, llm=fake_llm)
+
+    agent._make_get_policies_tool(None).invoke({})
+    assert "get_policies invoked but this request's policy fetch had failed" in caplog.text
+
+    caplog.clear()
+    agent._make_get_policies_tool([]).invoke({})
+    assert caplog.text == ""
+
+
 def test_run_extraction_binds_structured_output_schema_derived_from_current_schema(monkeypatch, mocker):
     """run_extraction must call bind_tools with a response_schema derived from the last
     successfully derived schema (via build_input_schema), not some other/unrelated schema -

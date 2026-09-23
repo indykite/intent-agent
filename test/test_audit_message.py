@@ -66,6 +66,16 @@ def test_to_row_flattens_every_field_to_a_string(audit_message):
     assert row[_TDD_FIELDS.index("outcome")] == "success"
 
 
+def test_to_row_renders_unattempted_policy_fetch_as_blank_not_the_word_none(audit_message):
+    """policy_fetch_failed=None (no policy fetch attempted this request, review) must render as
+    "" in CSV/TXT output - the same "not applicable" sentinel schema_version/policy_version
+    already use - not str(None) ("None" as literal text), which would be the only non-"True"/
+    "False" value in that column and could break a downstream consumer expecting a strict bool.
+    """
+    row = audit_message(policy_fetch_failed=None).to_row()
+    assert row[_TDD_FIELDS.index("policy_fetch_failed")] == ""
+
+
 def test_utc_timestamp_is_rfc3339_utc_with_fraction():
     """RFC 3339 / ISO 8601, UTC (`Z`), sub-second precision - the IAG's RFC3339Nano shape."""
     stamp = utc_timestamp()
