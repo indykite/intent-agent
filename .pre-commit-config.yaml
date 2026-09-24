@@ -47,7 +47,7 @@ repos:
         pass_filenames: false
 
   - repo: ssh://git@github.com/indykite/ops-common
-    rev: "e9c7030b9fcd363f165a6ad358b3bfd68c466495" # using a branch name (or HEAD) is not supported
+    rev: "803c07b33cb5dd02a2301b259e81df655e1504ec" # using a branch name (or HEAD) is not supported
     hooks:
       # NON-DEFAULT stage, install explicitly with: pre-commit install -t post-checkout
       - id: git-pull
@@ -63,6 +63,7 @@ repos:
 
       # SAST
       - id: trivy
+      - id: trivy-licenses
 
       # Shellcheck
       - id: shfmt
