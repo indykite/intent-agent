@@ -147,6 +147,10 @@
           "type": "number",
           "exclusiveMinimum": 0
         },
+        "expectedTokenAudience": {
+          "type": "string",
+          "minLength": 1
+        },
         "auditDelivery": {
           "type": "string",
           "enum": [

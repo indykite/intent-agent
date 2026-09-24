@@ -55,6 +55,11 @@ app:
   introspectUrl: "https://placeholder.example.com" # INTROSPECT_URL
   introspectClientId: "placeholder" # INTROSPECT_CLIENT_ID
   introspectTimeoutSeconds: 5.0 # INTROSPECT_TIMEOUT_SECONDS
+  # The `aud` value this agent expects on an incoming access token - independent of
+  # advertisedHost/intentPort, since those are deployment topology, not what an external IdP was
+  # configured to stamp into `aud` for this resource. Defaults to intentAgentName; override only
+  # if the IdP registers a different identifier for this agent.
+  expectedTokenAudience: "intent_agent" # EXPECTED_TOKEN_AUDIENCE
 
   # Audit log (TDD 4.9) - AUDIT_DELIVERY is required by Settings ("file" or "webhook", the Agent
   # Gateway's two delivery types); every request produces one record. With "file" the chart mounts

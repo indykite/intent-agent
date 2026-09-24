@@ -95,6 +95,9 @@ class Settings(BaseSettings):
     introspect_client_id: str = Field(min_length=1)
     introspect_client_secret: SecretStr = Field(min_length=1)
     introspect_timeout_seconds: PositiveFloat = 5.0
+    # The `aud` value this agent expects on an incoming access token, checked in
+    # _validate_introspection_claims.
+    expected_token_audience: str = Field(min_length=1, default="intent_agent")
 
     # Audit log delivery (TDD 4.9 record, IAG-shaped delivery - see audit/). The keys mirror the
     # Agent Gateway's `audit.` config section one to one, flattened to AUDIT_* env vars. Unlike
