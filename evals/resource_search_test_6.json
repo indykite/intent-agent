@@ -1,6 +1,7 @@
 {
   "prompt": "What Users and Customers are part of the system sys123?",
   "jwt_sub": "leslie",
+  "subject_type": "User",
   "expected": {
     "prompt": "What Users and Customers are part of the system sys123?",
     "evaluations": [

@@ -64,9 +64,30 @@ def _fake_policy_client(mocker, **kwargs):
     return mocker.Mock(**kwargs)
 
 
+# The permissions the PRD's example prompts assume the caller holds. In the CanBank graph the
+# CAN_* edges hang off Department, not User; permission labels are granted by access policies
+# (PRD erratum 2026-09-04) and the pipeline's relationship check accepts them only from a policy
+# for the caller's subject type or from the caller's own edges - so the scenarios that replay a
+# permission answer carry these policies, the same way a real deployment's listing would.
+def _permission_policy(subject_type, action, resource_type):
+    return {
+        "policy": {"subject": {"type": subject_type}, "actions": [action], "resource": {"type": resource_type}},
+        "tags": [],
+    }
+
+
+_PRD_PERMISSION_POLICIES = [
+    _permission_policy("User", "CAN_RETRIEVE", "Quote"),
+    _permission_policy("User", "CAN_RETRIEVE", "Account"),
+    _permission_policy("User", "CAN_ACCESS", "Decision"),
+    _permission_policy("User", "CAN_ACCESS", "Document"),
+]
+
+
 def _agent(monkeypatch, mocker, baseline_env, answers):
     """An IntentAgent over the CanBank schema whose LLM activates extract-intent and then
-    answers with `answers` (dicts, serialized) in order.
+    answers with `answers` (dicts, serialized) in order, with the PRD examples' permissions
+    granted by policy (_PRD_PERMISSION_POLICIES).
     """
     baseline_env()
     responses = [
@@ -76,10 +97,11 @@ def _agent(monkeypatch, mocker, baseline_env, answers):
     mock_ainvoke = mocker.AsyncMock(side_effect=responses)
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mock_ainvoke)))
     fake_schema_client = _fake_schema_client(mocker, get_cached=mocker.Mock(return_value=_canbank_schema()))
-    # No policies (a successful fetch that found none) - these golden scenarios are about the
-    # schema-derived pipeline, not ENG-9671, and a real PolicyClient would otherwise hit the
-    # network against this fake settings' base_url on every scenario.
-    fake_policy_client = _fake_policy_client(mocker, get_cached=mocker.Mock(return_value=([], False)))
+    # A successful fetch returning the PRD examples' permission policies - a real PolicyClient
+    # would otherwise hit the network against this fake settings' base_url on every scenario.
+    fake_policy_client = _fake_policy_client(
+        mocker, get_cached=mocker.Mock(return_value=(_PRD_PERMISSION_POLICIES, False))
+    )
     return (
         IntentAgent(
             Settings(_env_file=None),
@@ -114,7 +136,7 @@ _SCENARIOS = [
                 {
                     "action": {"name": "CAN_RETRIEVE"},
                     "resource": {"type": "Quote", "id": "stock_quote"},
-                    "context": {"parameters": {"attribute": "price"}},
+                    "context": {"parameters": {"attribute": "price", "action_derivation_rule": "policy_based"}},
                     "subject": _USER,
                 },
             ],
@@ -136,7 +158,13 @@ _SCENARIOS = [
                 {
                     "action": {"name": "CAN_RETRIEVE"},
                     "resource": {"type": "Account", "id": "acc_ted_investing"},
-                    "context": {"parameters": {"target_customer": "ted", "attribute": "balance"}},
+                    "context": {
+                        "parameters": {
+                            "target_customer": "ted",
+                            "attribute": "balance",
+                            "action_derivation_rule": "policy_based",
+                        },
+                    },
                     "subject": _USER,
                 },
             ],
@@ -202,7 +230,10 @@ _SCENARIOS = [
                 {
                     "action": {"name": "CAN_RETRIEVE"},
                     "resource": {"type": "Quote", "id": "stock_quote"},
-                    "context": {"qualifiers": {"location": "Toronto branch", "time": "this afternoon"}},
+                    "context": {
+                        "qualifiers": {"location": "Toronto branch", "time": "this afternoon"},
+                        "parameters": {"action_derivation_rule": "policy_based"},
+                    },
                     "subject": _USER,
                 },
             ],
@@ -222,11 +253,19 @@ _SCENARIOS = [
                 },
             ],
             [
-                {"action": {"name": "CAN_ACCESS"}, "resource": {"type": "Decision"}, "context": {}, "subject": _USER},
+                {
+                    "action": {"name": "CAN_ACCESS"},
+                    "resource": {"type": "Decision"},
+                    "context": {"parameters": {"action_derivation_rule": "policy_based"}},
+                    "subject": _USER,
+                },
                 {
                     "action": {"name": "CAN_ACCESS"},
                     "resource": {"type": "Document"},
-                    "context": {"filters": "resource.name.contains('refund policy')"},
+                    "context": {
+                        "filters": "resource.name.contains('refund policy')",
+                        "parameters": {"action_derivation_rule": "policy_based"},
+                    },
                     "subject": _USER,
                 },
             ],
@@ -278,7 +317,8 @@ _SCENARIOS = [
 def test_golden_scenario_extracts_context_sub_shapes(monkeypatch, mocker, baseline_env, scenario):
     """One golden prompt per context sub-shape and per PRD example pattern, plus the two
     multi-evaluation shapes and the subject spoof: the model's answer comes back with the
-    context passed through as-is (nulls pruned, `{}` where it gave none), the caller bound as
+    context passed through as-is (nulls pruned, `{}` where it gave none; a permission the
+    caller holds only through a policy gains the policy_based marker), the caller bound as
     subject on every evaluation, no retry spent, and audited as a success.
 
     `scenario` is (prompt, subject to bind, the evaluations the LLM answered, the evaluations
@@ -378,7 +418,11 @@ def test_golden_scenario_non_cel_filter_is_retried_until_it_parses(monkeypatch, 
 
     assert result.outcome == Outcome.SUCCESS
     assert result.validation_retries == 1
-    assert result.evaluations[0]["context"] == cel["context"]
+    # CAN_ACCESS on Document is granted by policy, not by a User edge, so the marker is completed.
+    assert result.evaluations[0]["context"] == {
+        **cel["context"],
+        "parameters": {"action_derivation_rule": "policy_based"},
+    }
     assert mock_ainvoke.call_count == _LLM_CALLS_WITH_ONE_RETRY
     feedback = json.loads(mock_ainvoke.call_args_list[-1].args[0][-1].content)
     assert "Malformed shape:\n- evaluations[0]: context.filters is not valid CEL (line 1, column" in feedback["reason"]

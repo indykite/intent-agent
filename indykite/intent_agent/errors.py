@@ -108,13 +108,19 @@ def no_intent_error(prompt: str) -> dict[str, str]:
 # can tell those apart from shape problems without guessing at the wording.
 SCHEMA_MEMBERSHIP_SUFFIX = "is not defined in the data schema"
 SCHEMA_BLANK_SUFFIX = "is missing or blank"
-SCHEMA_VALUE_SUFFIXES = (SCHEMA_MEMBERSHIP_SUFFIX, SCHEMA_BLANK_SUFFIX)
+# A third way: the label exists, but neither an edge from the caller's own type nor a policy for
+# it gives the caller that relationship to that resource type (subject_binding._relationship_reason).
+SCHEMA_RELATIONSHIP_SUFFIX = "is not a relationship the data schema or a policy gives the caller's subject type"
+SCHEMA_VALUE_SUFFIXES = (SCHEMA_MEMBERSHIP_SUFFIX, SCHEMA_BLANK_SUFFIX, SCHEMA_RELATIONSHIP_SUFFIX)
 
 _FEEDBACK_OBLIGATION = (
     'Return a corrected JSON object with the same {"evaluations"} shape, using only subject types, '
     "action names and resource types defined in the data schema, with context.filters a valid CEL "
     "expression over resource.<property> only, under 1000 characters, and context.parameters / "
-    "context.qualifiers objects. "
+    "context.qualifiers objects. A relationship the caller's own type can't hold is not fixed by "
+    "picking another edge: if the prompt asks who can act on a resource, answer with a Subject Search "
+    '(subject.type set, no subject.id, context.parameters.subject_source "search"); if it asks about '
+    "the caller's own access, use an action a policy grants the caller's type. "
     "If the prompt can't be mapped onto the schema, return an empty evaluations array instead."
 )
 

@@ -1,0 +1,12 @@
+{
+  "prompt": "Does she still have access?",
+  "jwt_sub": "marcus",
+  "expected": {
+    "prompt": "Does she still have access?",
+    "error": "Unable to extract intent from prompt.",
+    "reason": "The prompt doesn't match the Knowledge Graph Schema, or is unclear.",
+    "obligation": "Ask the prompter to clarify their request or ensure it's relevant to the system."
+  },
+  "category": "ambiguous",
+  "data_model": "customer_model"
+}

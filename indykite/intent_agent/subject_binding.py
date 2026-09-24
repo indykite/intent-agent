@@ -9,10 +9,12 @@ from indykite.intent_agent.cel import filter_errors
 from indykite.intent_agent.errors import (
     SCHEMA_BLANK_SUFFIX,
     SCHEMA_MEMBERSHIP_SUFFIX,
+    SCHEMA_RELATIONSHIP_SUFFIX,
     IntentValidationError,
     SubjectTypeMismatchError,
     no_intent_error,
 )
+from indykite.intent_agent.input_schema import digital_twin_types
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,6 +192,8 @@ def _action_name_error(
     """
     name = action.get("name")
     if _blank(name):
+        # Only reachable through a direct validate_evaluations call: normalize_intent_response
+        # drops blank-named evaluations first (_drop_unnamed_actions) instead of retrying them.
         return f"action.name {SCHEMA_BLANK_SUFFIX}"
     if name in edge_relations:
         return None
@@ -264,6 +268,8 @@ def _evaluation_errors(
         errors.append("resource is missing or not an object")
     else:
         errors.append(_vocabulary_reason("resource.type", resource_type, node_types))
+        if resource.get("id") is not None and not isinstance(resource["id"], str):
+            errors.append("resource.id is not a string")
     action = evaluation.get("action")
     if action is not None:
         if not isinstance(action, dict):
@@ -278,10 +284,119 @@ def _evaluation_errors(
     return [error for error in errors if error]
 
 
+def _edge_triples(schema: dict[str, Any]) -> set[tuple[str, str, str]]:
+    """Every well-formed (source, relation, target) edge of the schema."""
+    edges = schema.get("graph", {}).get("edges", [])
+    if not isinstance(edges, list):
+        return set()
+    return {
+        (edge["source"], edge["relation"], edge["target"])
+        for edge in edges
+        if isinstance(edge, dict) and all(not _blank(edge.get(key)) for key in ("source", "relation", "target"))
+    }
+
+
+def _relationship_reason(
+    evaluation: dict[str, Any],
+    *,
+    caller_type: str,
+    previous_resource_type: str | None,
+    triples: set[tuple[str, str, str]],
+    policies: list[dict[str, Any]] | None,
+) -> str | None:
+    """Why the caller can't hold this evaluation's relationship, or None if they can. The action
+    must be an edge from the caller's own type to the resource type, or an action a fetched
+    policy grants for that resource type (the listing is already scoped to the caller's subject
+    type - PolicyClient.get_cached; permission labels such as CAN_ACCESS are granted there, not
+    by whichever pair of node types happens to hold such an edge in the graph) - or, on a
+    dependent hop of a chain, an edge from the previous hop's resource type, `previous_resource_type`
+    being None unless that previous hop was itself grounded by this check (the dependency marker
+    is the model's, so it can't vouch for a hop on its own). Seen live otherwise: "what accounts
+    do I own?" in a graph where nothing relates a User to an Account answered with `REGARDING`,
+    a `Ticket -> Account` edge, a forced match that must not reach the caller.
+    """
+    action, resource = evaluation.get("action"), evaluation.get("resource")
+    name = action.get("name") if isinstance(action, dict) else None
+    resource_type = resource.get("type") if isinstance(resource, dict) else None
+    if _blank(name) or _blank(resource_type):
+        return None
+    if (caller_type, name, resource_type) in triples or name in _policy_actions_for_resource(policies, resource_type):
+        return None
+    dependent = _subject_source_parameters(evaluation).get("depends_on_previous_evaluations") is True
+    if dependent and previous_resource_type is not None and (previous_resource_type, name, resource_type) in triples:
+        return None
+    return (
+        f"action.name {name!r} for subject type {caller_type!r} on resource type {resource_type!r} "
+        f"{SCHEMA_RELATIONSHIP_SUFFIX}"
+    )
+
+
+def _is_caller(subject: dict[str, Any], caller_type: str, caller_id: str | None) -> bool:
+    """True when `subject` names the caller's own identity - type and id both."""
+    return subject.get("type") == caller_type and not _blank(caller_id) and subject.get("id") == caller_id
+
+
+def _caller_relationship_errors(
+    schema: dict[str, Any],
+    evaluations: list[object],
+    policies: list[dict[str, Any]] | None,
+    caller_type: str,
+    caller_id: str | None,
+) -> list[str]:
+    """The relationship check for every evaluation that carries a subject: the caller's own
+    (bound, or a "second subject" that is in fact the caller's identity - the marker never
+    exempts the caller from their own check) against the caller's type, a trusted second
+    subject against its own type. A marked Subject Search discovers subjects and is left to the
+    vocabulary check alone. A second subject additionally passes with an action marked
+    `policy_based`: the golden answers (adversarial_subject_spoof_test_2) name a permission
+    about a third party that neither an edge nor a fetched policy - scoped to the caller's type -
+    grounds, so that claim is IBAC's to decide; an *unmarked* relationship label must be an edge
+    from the second subject's own type. A hop only counts as the "previous hop" for the next
+    evaluation's dependent-hop rule when it passed this check and named an action.
+    """
+    triples = _edge_triples(schema)
+    gate = _gate_resource({"evaluations": evaluations})
+    errors: list[str] = []
+    previous_resource_type: str | None = None
+    for index, evaluation in enumerate(evaluations):
+        if not isinstance(evaluation, dict) or _subject_search(evaluation):
+            previous_resource_type = None
+            continue
+        second_subject = (
+            index > 0
+            and _subject_from_prompt(evaluation, gate)
+            and not _is_caller(evaluation["subject"], caller_type, caller_id)
+        )
+        # The fetched policies are the caller's subject type's: they ground the caller's own
+        # evaluations only. A second subject passes on its own edge, a grounded dependent hop, or
+        # the explicit policy_based claim below - never on the caller's policies.
+        reason = _relationship_reason(
+            evaluation,
+            caller_type=evaluation["subject"]["type"] if second_subject else caller_type,
+            previous_resource_type=previous_resource_type,
+            triples=triples,
+            policies=None if second_subject else policies,
+        )
+        if reason and second_subject and _action_derivation_rule(evaluation) == _ACTION_DERIVATION_POLICY:
+            reason = None
+        if reason:
+            errors.append(f"evaluations[{index}]: {reason}")
+        # Only a hop that named an action and passed the check establishes a relationship the
+        # next hop may build on - an Action Search (no action) checks nothing and grounds nothing.
+        action, resource = evaluation.get("action"), evaluation.get("resource")
+        named = isinstance(action, dict) and not _blank(action.get("name"))
+        grounded = reason is None and named and isinstance(resource, dict)
+        previous_resource_type = resource.get("type") if grounded else None
+    return errors
+
+
 def validate_evaluations(
     schema: dict[str, Any],
     evaluations: list[object],
     policies: list[dict[str, Any]] | None = None,
+    *,
+    caller_type: str | None = None,
+    caller_id: str | None = None,
 ) -> list[str]:
     """Check every evaluation's subject.type / action.name / resource.type against the
     schema's node types and edge relations (TDD 4.8 post-assembly check), and its context
@@ -289,15 +404,23 @@ def validate_evaluations(
     prefixed with the evaluation's index so the LLM can tell which entry to fix (they
     become the `reason` lines of errors.validation_feedback_error); empty means the list
     is acceptable. `policies` (ENG-9671) additionally allows a marked action.name to come from
-    a policy instead of the schema - see _action_name_error.
+    a policy instead of the schema - see _action_name_error. With `caller_type`, every
+    evaluation bound to the caller must also name a relationship the caller's type can hold
+    (_relationship_reason) - checked only once the vocabulary itself is clean, and only when
+    there is a relationship vocabulary to check against: a schema with no edges and no policies
+    fetched leaves action.name unconstrained (_action_name_error's carve-out), and a check that
+    then failed every caller-bound action would turn that legitimate state into a refusal.
     """
     node_types = _node_types(schema)
     edge_relations = _edge_relations(schema)
-    return [
+    errors = [
         f"evaluations[{index}]: {error}"
         for index, evaluation in enumerate(evaluations)
         for error in _evaluation_errors(evaluation, node_types, edge_relations, policies)
     ]
+    if caller_type is not None and not errors and (edge_relations or policies):
+        errors = _caller_relationship_errors(schema, evaluations, policies, caller_type, caller_id)
+    return errors
 
 
 def _parse_llm_json(llm_text: str) -> object:
@@ -311,6 +434,20 @@ def _parse_llm_json(llm_text: str) -> object:
     except json.JSONDecodeError as exc:
         message = f"the response is not valid JSON ({exc.msg} at position {exc.pos})"
         raise IntentValidationError([message]) from exc
+
+
+def looks_like_evaluations(llm_text: str) -> bool:
+    """True when `llm_text` is an answer normalize_intent_response would treat as an extraction:
+    a JSON object with an `evaluations` key, or a bare JSON array of evaluations, either one
+    optionally inside a ```json fence - exactly the leniency _parse_llm_json applies, so an
+    answer given without activating the skill can never slip past agent._extract_with_retries
+    as "free text" in a shape this function would have accepted.
+    """
+    try:
+        data = _parse_llm_json(llm_text)
+    except IntentValidationError:
+        return False
+    return isinstance(data, list) or (isinstance(data, dict) and "evaluations" in data)
 
 
 def normalize_intent_response(
@@ -351,16 +488,244 @@ def normalize_intent_response(
     # non-list value ({}, 0, "", null, missing) is malformed output to retry, not a no-intent.
     if not isinstance(evaluations, list):
         raise IntentValidationError(["evaluations is missing or not an array"])
+    _drop_unnamed_actions(data)
+    evaluations = _drop_off_twin_subject_searches(data, schema)
     if not evaluations:
         return json.dumps(no_intent_error(original_prompt), indent=2, ensure_ascii=False)
-    errors = validate_evaluations(schema, evaluations, policy_context.policies)
+    # Settle resource ids first: the gate check below reads evaluations[0].resource.id, and a
+    # gate the model wrote in the filter form must be recognised as the same identified resource.
+    _drop_blank_resource_ids(data)
+    _lift_external_id_filters(data)
+    _complete_second_subject_types(data)
+    _bind_caller_resources(data, subject_id=subject.id, subject_type=subject.type)
+    _mark_policy_derived_actions(data, schema, policy_context.policies, caller_type=subject.type)
+    errors = validate_evaluations(
+        schema, evaluations, policy_context.policies, caller_type=subject.type, caller_id=subject.id
+    )
     if errors:
         raise IntentValidationError(errors)
 
     _bind_subject(data, subject_id=subject.id, subject_type=subject.type)
     _normalize_contexts(data)
+    _drop_duplicate_evaluations(data)
     _set_policy_fetch_failed(data, fetch_failed=policy_context.fetch_failed)
     return json.dumps(data, indent=2, ensure_ascii=False)
+
+
+def _mark_policy_derived_actions(
+    data: dict[str, Any],
+    schema: dict[str, Any],
+    policies: list[dict[str, Any]] | None,
+    *,
+    caller_type: str,
+) -> None:
+    """Set `action_derivation_rule: "policy_based"` where the action is policy-derived by
+    definition, so the marker is a statement of fact the system makes itself rather than a claim
+    it needs the model to attest to. Two cases: an action a fetched policy grants for its resource
+    type that is not the subject's own graph edge to that type (an edge label reused elsewhere in
+    the graph doesn't make it a relationship the subject holds), and a dependent hop of a chain
+    (`depends_on_previous_evaluations: true`) whose action is not an edge from the evaluation's
+    own subject type - SKILL.md's rule, and what every golden dependent hop carries.
+    validate_evaluations still rejects an unmarked policy action when called directly, and still
+    rejects any name that is neither an edge nor a policy action for that resource type. Seen
+    live (flash-lite): the model picks the right action and forgets the marker, and the retry
+    that followed turned a correct chain into a refusal.
+    """
+    triples = _edge_triples(schema)
+    gate = _gate_resource(data)
+    for index, evaluation in enumerate(data.get("evaluations", [])):
+        if not isinstance(evaluation, dict):
+            continue
+        action, resource = evaluation.get("action"), evaluation.get("resource")
+        name = action.get("name") if isinstance(action, dict) else None
+        resource_type = resource.get("type") if isinstance(resource, dict) else None
+        if _blank(name) or _blank(resource_type):
+            continue
+        parameters = _subject_source_parameters(evaluation)
+        # The subject type the evaluation will actually carry: its own only where _bind_subject
+        # keeps it (a Subject Search, a trusted second subject), the caller's everywhere else -
+        # a schema-valid but wrong type the model wrote on a caller-bound evaluation is overwritten
+        # and must not decide the marker.
+        second_subject = index > 0 and _subject_from_prompt(evaluation, gate)
+        keeps_own_subject = _subject_search(evaluation) or second_subject
+        own_type = evaluation["subject"]["type"] if keeps_own_subject else caller_type
+        # The fetched policies are the caller's subject type's, so they can only speak for an
+        # evaluation that ends up carrying that type. Marking a second subject of a *different*
+        # type would hand _caller_relationship_errors the policy_based claim it clears its reason
+        # on - the claim it deliberately refuses to read off the caller's policies - and so ground
+        # a relationship nothing established (a User policy can't say what a Customer may do).
+        # Left unmarked, such an evaluation stands or falls on the model's own explicit claim,
+        # which is what a second subject is meant to rest on. A Subject Search is unaffected: its
+        # subject is unidentified and _caller_relationship_errors never grounds it at all.
+        if second_subject and own_type != caller_type:
+            continue
+        # Policy-derived unless the action is the subject's own graph edge to that resource type -
+        # judged on the (policy, resource type) pair, not on whether the label also appears on some
+        # unrelated edge elsewhere in the graph (CAN_ACCESS usually does).
+        policy_granted = name in _policy_actions_for_resource(policies, resource_type)
+        policy_only = policy_granted and (own_type, name, resource_type) not in triples
+        dependent_off_type = (
+            parameters.get("depends_on_previous_evaluations") is True and (own_type, name, resource_type) not in triples
+        )
+        if not (policy_only or dependent_off_type):
+            continue
+        # A missing context / parameters is created; a malformed one (a string, a list) is left
+        # alone so validate_evaluations still reports the shape error.
+        context = evaluation.get("context")
+        if context is None:
+            context = {}
+            evaluation["context"] = context
+        elif not isinstance(context, dict):
+            continue
+        parameters = context.get("parameters")
+        if parameters is None:
+            parameters = {}
+            context["parameters"] = parameters
+        elif not isinstance(parameters, dict):
+            continue
+        parameters[_ACTION_DERIVATION_KEY] = _ACTION_DERIVATION_POLICY
+
+
+def _drop_unnamed_actions(data: dict[str, Any]) -> list[object]:
+    """Drop every evaluation whose `action` object carries a blank string `name` and return
+    what is left (also written back to `data`). A present-but-blank action is the model's "no
+    action in the vocabulary fits this part of the prompt" - SKILL.md tells it to leave such a
+    part out, and treating the blank as a validation error to retry was seen live (flash-lite)
+    to push it into forcing a match on an unrelated edge on the second attempt instead. An
+    absent `action` key is different: that is the Action Search shape and stays. A null name or
+    an empty `action` object is neither - malformed output, left for validation to report and
+    the retry to mend, as before.
+    """
+    evaluations = data.get("evaluations", [])
+    kept = [
+        evaluation
+        for evaluation in evaluations
+        if not (
+            isinstance(evaluation, dict)
+            and isinstance(evaluation.get("action"), dict)
+            and isinstance(evaluation["action"].get("name"), str)
+            and not evaluation["action"]["name"].strip()
+        )
+    ]
+    data["evaluations"] = kept
+    return kept
+
+
+def _drop_off_twin_subject_searches(data: dict[str, Any], schema: dict[str, Any]) -> list[object]:
+    """Drop every Subject Search whose searched subject.type is a node type of the schema that
+    isn't marked DigitalTwin, and return what is left (also written back to `data`). Only
+    DigitalTwin nodes can be subjects (SKILL.md: the candidate types of a "who can" question are
+    exactly the DigitalTwin types), so a search over a resource-only type asks for subjects of a
+    kind that can't be one - not a different answer, no answer. Seen live (flash-lite): "who can
+    access the document?" in a model whose one DigitalTwin type is User came back with a second,
+    `Customer` search next to the right one. A type the schema doesn't define at all is left for
+    validate_evaluations to feed back (the model may still correct it on the retry), and a
+    schema that marks no DigitalTwin type at all is left alone: there is nothing to judge the
+    candidates against. An evaluation bound to the caller isn't a candidate and is never touched
+    here - _bind_subject overwrites its subject anyway. The caller's own type is judged like any
+    other: a search over it when it isn't a DigitalTwin (or over `_Application`, which never is
+    a candidate) is dropped too, and a response left empty by this is the no-intent error.
+    """
+    evaluations = data.get("evaluations", [])
+    twins = set(digital_twin_types(schema))
+    if not twins:
+        return evaluations
+    resource_only = _node_types(schema) - twins
+    kept = [
+        evaluation
+        for evaluation in evaluations
+        if not (
+            isinstance(evaluation, dict)
+            and _subject_search(evaluation)
+            and evaluation["subject"]["type"] in resource_only
+        )
+    ]
+    data["evaluations"] = kept
+    return kept
+
+
+def _drop_blank_resource_ids(data: dict[str, Any]) -> None:
+    """Remove a blank `resource.id`: the structured output requires the field (input_schema
+    _Resource - a required field is filled far more reliably than an optional one), so "many
+    resources" arrives as the empty string, and the caller must see the AuthZEN shape for a
+    search - no id key - not an empty one.
+    """
+    for evaluation in data.get("evaluations", []):
+        if not isinstance(evaluation, dict):
+            continue
+        resource = evaluation.get("resource")
+        if not isinstance(resource, dict) or "id" not in resource:
+            continue
+        resource_id = resource["id"]
+        # Only a null or blank-string id is "no id"; a non-string id is left for validation
+        # to report (_evaluation_errors), not silently turned into a search over every resource.
+        if resource_id is None or (isinstance(resource_id, str) and not resource_id.strip()):
+            del resource["id"]
+
+
+# A filter that only pins the resource's external_id, either way round: `resource.external_id ==
+# 'x'` or `'x' == resource.external_id`, single or double quotes. Anything more (another clause,
+# another property, a method call) is a real property condition and is left alone.
+_EXTERNAL_ID_FILTER = re.compile(
+    r"""^\s*(?:resource\.external_id\s*==\s*(?P<q1>['"])(?P<a>[^'"]+)(?P=q1)"""
+    r"""|(?P<q2>['"])(?P<b>[^'"]+)(?P=q2)\s*==\s*resource\.external_id)\s*$"""
+)
+
+
+def _lift_external_id_filters(data: dict[str, Any]) -> None:
+    """Move a pure `resource.external_id == '<id>'` filter into `resource.id` when the model left
+    the id blank. The platform's external_id *is* the resource id (SKILL.md: id = the node's
+    external_id), so the two forms name the same single resource - but only the id form is the
+    AuthZEN shape for one named instance, and it's what the golden answers expect. Seen live with
+    flash-lite, which prefers the filter form despite being told otherwise; this makes the
+    response independent of that habit without guessing at any other filter's meaning.
+    """
+    for evaluation in data.get("evaluations", []):
+        if not isinstance(evaluation, dict):
+            continue
+        resource, context = evaluation.get("resource"), evaluation.get("context")
+        if not isinstance(resource, dict) or not isinstance(context, dict):
+            continue
+        resource_id = resource.get("id")
+        # Only an absent, null or blank-string id is "no id" to fill; any other type is left as
+        # written for validation to report (resource.id is not a string), not overwritten.
+        if resource_id is not None and (not isinstance(resource_id, str) or resource_id.strip()):
+            continue
+        filters = context.get("filters")
+        if not isinstance(filters, str):
+            continue
+        match = _EXTERNAL_ID_FILTER.match(filters)
+        if match is None:
+            continue
+        lifted = match.group("a") or match.group("b")
+        if _blank(lifted):
+            continue  # `resource.external_id == '  '` names nothing; left as the filter it is
+        resource["id"] = lifted
+        del context["filters"]
+
+
+def _drop_duplicate_evaluations(data: dict[str, Any]) -> None:
+    """Keep the first of any evaluations that are identical once bound and normalised. A
+    repeated evaluation asks the exact same question twice, so it carries nothing for the
+    caller; the model (flash-lite, seen live) sometimes emits the same entry two times over.
+    Only literal duplicates go - two evaluations differing in any key are both kept, in order.
+    """
+    evaluations = data.get("evaluations", [])
+    seen: list[object] = []
+    kept: list[object] = []
+    for index, evaluation in enumerate(evaluations):
+        following = evaluations[index + 1] if index + 1 < len(evaluations) else None
+        # A repeat that a dependent hop builds on stays: dropping it would make the hop read as
+        # depending on whatever precedes it instead, a chain the relationship check never saw.
+        anchors_a_dependent_hop = (
+            isinstance(following, dict)
+            and _subject_source_parameters(following).get("depends_on_previous_evaluations") is True
+        )
+        if evaluation in seen and not anchors_a_dependent_hop:
+            continue
+        seen.append(evaluation)
+        kept.append(evaluation)
+    data["evaluations"] = kept
 
 
 def _set_policy_fetch_failed(data: dict[str, Any], *, fetch_failed: bool) -> None:
@@ -389,13 +754,16 @@ def _set_policy_fetch_failed(data: dict[str, Any], *, fetch_failed: bool) -> Non
 
 
 def _normalize_contexts(data: dict[str, Any]) -> None:
-    """Settle every evaluation's context into the PRD shape after validation: always an
-    object (`{}` when the LLM gave none), with the structured output's nullability
-    artefacts removed - a null key, or a blank `filters` string, both mean "not
-    applicable", and the caller shouldn't have to tell those apart from an absent key.
-    Everything else is passed through verbatim: context is user-controlled data, and it's
-    the downstream consumer's job to treat it as untrusted (TDD 9), not this agent's to
-    rewrite it.
+    """Settle every evaluation's context into the PRD shape after validation and binding:
+    always an object (`{}` when the LLM gave none), with the structured output's nullability
+    artefacts removed - a null key, or a blank `filters` string, both mean "not applicable",
+    and the caller shouldn't have to tell those apart from an absent key - and with the
+    `subject_source` / `resource_source` markers removed: they are instructions from the model
+    to the binding, not prompt-derived data, and once binding has consumed them the caller has
+    no use for them (the golden fixtures carry no such keys). A `parameters` object left empty
+    by that removal goes too. Everything else is passed through verbatim: context is
+    user-controlled data, and it's the downstream consumer's job to treat it as untrusted
+    (TDD 9), not this agent's to rewrite it.
     """
     for evaluation in data.get("evaluations", []):
         if not isinstance(evaluation, dict):
@@ -408,6 +776,13 @@ def _normalize_contexts(data: dict[str, Any]) -> None:
         context = {key: value for key, value in context.items() if value is not None or key not in _CONTEXT_KEY_TYPES}
         if "filters" in context and _blank(context["filters"]):
             del context["filters"]
+        parameters = context.get("parameters")
+        if isinstance(parameters, dict) and not _MARKER_KEYS.isdisjoint(parameters):
+            parameters = {key: value for key, value in parameters.items() if key not in _MARKER_KEYS}
+            if parameters:
+                context["parameters"] = parameters
+            else:
+                del context["parameters"]
         evaluation["context"] = context
 
 
@@ -421,19 +796,78 @@ def _normalize_contexts(data: dict[str, Any]) -> None:
 _SUBJECT_SOURCE_KEY = "subject_source"
 _SUBJECT_SOURCE_PROMPT = "prompt"
 _SUBJECT_SOURCE_SEARCH = "search"
+# The resource-side counterpart: "this evaluation's resource is the caller themself" ("who can
+# access me?"). The model can't know the caller's identity, so it marks the evaluation and
+# _bind_caller_resources fills the caller's type/id in - only ever the caller's own identity, so
+# a prompt can't use it to point the evaluation at anyone else.
+_RESOURCE_SOURCE_KEY = "resource_source"
+_RESOURCE_SOURCE_CALLER = "caller"
+# Both markers are instructions to the binding, stripped from the response by _normalize_contexts.
+_MARKER_KEYS = frozenset({_SUBJECT_SOURCE_KEY, _RESOURCE_SOURCE_KEY})
+
+
+def _subject_source_parameters(evaluation: dict[str, Any]) -> dict[str, Any]:
+    """The evaluation's context.parameters object, or `{}` when the context or parameters
+    aren't objects - a malformed marker reads as no marker at all.
+    """
+    context = evaluation.get("context")
+    parameters = context.get("parameters") if isinstance(context, dict) else None
+    return parameters if isinstance(parameters, dict) else {}
 
 
 def _subject_source(evaluation: dict[str, Any]) -> object:
-    """Return the evaluation's context.parameters.subject_source marker, or None when the
-    context or parameters aren't objects - a malformed marker reads as no marker at all.
+    """Return the evaluation's context.parameters.subject_source marker, or None."""
+    return _subject_source_parameters(evaluation).get(_SUBJECT_SOURCE_KEY)
+
+
+def _complete_second_subject_types(data: dict[str, Any]) -> None:
+    """Fill in a blank `subject.type` on a later evaluation whose `subject.id` is the gate
+    evaluation's resource id, from that gate resource's type. The model (flash-lite, seen live)
+    writes the second subject as `{"id": "alison"}` without the type; validation would reject
+    that as blank and the retry rarely mends it. evaluations[0] already declares the same
+    identity with its type (`{"type": "Customer", "id": "alison"}`), so the completion restates
+    what the model itself produced - and _subject_from_prompt's marker-plus-gate check still
+    decides whether that subject is trusted or overridden with the caller.
     """
-    context = evaluation.get("context")
-    if not isinstance(context, dict):
-        return None
-    parameters = context.get("parameters")
-    if not isinstance(parameters, dict):
-        return None
-    return parameters.get(_SUBJECT_SOURCE_KEY)
+    gate = _gate_resource(data)
+    if gate is None:
+        return
+    gate_type, gate_id = gate
+    for evaluation in data.get("evaluations", [])[1:]:
+        if not isinstance(evaluation, dict):
+            continue
+        subject = evaluation.get("subject")
+        if (
+            _subject_source(evaluation) == _SUBJECT_SOURCE_PROMPT  # a second subject, never a search
+            and isinstance(subject, dict)
+            and _blank(subject.get("type"))
+            and subject.get("id") == gate_id
+        ):
+            subject["type"] = gate_type
+
+
+def _bind_caller_resources(data: dict[str, Any], *, subject_id: str | None, subject_type: str) -> None:
+    """On an evaluation marked `resource_source: "caller"`, make the resource the caller: the
+    caller's type, and the caller's id (none for an anonymous caller) - whatever the model put
+    there, since the marker means the caller and nothing else. Runs before validation so a
+    type the model left blank is filled in from the request rather than rejected.
+    """
+    for evaluation in data.get("evaluations", []):
+        if not isinstance(evaluation, dict):
+            continue
+        if _subject_source_parameters(evaluation).get(_RESOURCE_SOURCE_KEY) != _RESOURCE_SOURCE_CALLER:
+            continue
+        resource = evaluation.get("resource")
+        if resource is None:
+            resource = {}
+            evaluation["resource"] = resource
+        elif not isinstance(resource, dict):
+            continue  # malformed - left for validation to report, not repaired into the caller
+        resource["type"] = subject_type
+        if subject_id:
+            resource["id"] = subject_id
+        else:
+            resource.pop("id", None)
 
 
 def _subject_search(evaluation: dict[str, Any]) -> bool:

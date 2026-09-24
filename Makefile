@@ -5,7 +5,7 @@
 	test_coverage_report_html test_coverage_report_xml start_pipeline integration \
 	build_integration build dry_run build_docker_image start_docker_app start_app \
 	start_docker_compose stop_docker_compose destroy_docker_compose \
-	start_mock_introspect_service
+	start_mock_introspect_service evals
 
 build_integration: build integration dry_run
 build: project_check codestyle_check test
@@ -50,6 +50,11 @@ test:
 
 integration:
 	uv run --locked pytest integration
+
+evals:
+	@set -e
+	mkdir -p tmp/evals
+	uv run --locked python -m evals --markdown tmp/evals/report.md --json tmp/evals/report.json
 
 # This target contains combined coverage from unit & integration tests
 test_coverage:

@@ -1,0 +1,104 @@
+{
+  "results": [
+    {
+      "policy": {
+        "meta": {
+          "policy_version": "2.0-kbac"
+        },
+        "subject": {
+          "type": "User"
+        },
+        "actions": [
+          "AFFECTED"
+        ],
+        "resource": {
+          "type": "Account"
+        },
+        "condition": {
+          "cypher": "MATCH (subject:User) MATCH (resource:Account)"
+        }
+      },
+      "tags": []
+    },
+    {
+      "policy": {
+        "meta": {
+          "policy_version": "2.0-kbac"
+        },
+        "subject": {
+          "type": "User"
+        },
+        "actions": [
+          "WORKS_IN_PARENT_DEPT"
+        ],
+        "resource": {
+          "type": "Department"
+        },
+        "condition": {
+          "cypher": "MATCH (subject:User) MATCH (resource:Department)"
+        }
+      },
+      "tags": []
+    },
+    {
+      "policy": {
+        "meta": {
+          "policy_version": "2.0-kbac"
+        },
+        "subject": {
+          "type": "User"
+        },
+        "actions": [
+          "CAN_ACCESS"
+        ],
+        "resource": {
+          "type": "User"
+        },
+        "condition": {
+          "cypher": "MATCH (subject:User) MATCH (resource:User)"
+        }
+      },
+      "tags": []
+    },
+    {
+      "policy": {
+        "meta": {
+          "policy_version": "2.0-kbac"
+        },
+        "subject": {
+          "type": "User"
+        },
+        "actions": [
+          "CAN_ACCESS"
+        ],
+        "resource": {
+          "type": "Folder"
+        },
+        "condition": {
+          "cypher": "MATCH (subject:User) MATCH (resource:Folder)"
+        }
+      },
+      "tags": []
+    },
+    {
+      "policy": {
+        "meta": {
+          "policy_version": "2.0-kbac"
+        },
+        "subject": {
+          "type": "User"
+        },
+        "actions": [
+          "CAN_RETRIEVE"
+        ],
+        "resource": {
+          "type": "Quote"
+        },
+        "condition": {
+          "cypher": "MATCH (subject:User) MATCH (resource:Quote)"
+        }
+      },
+      "tags": []
+    }
+  ]
+}
