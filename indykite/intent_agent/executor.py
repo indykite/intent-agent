@@ -178,10 +178,13 @@ class IntentExecutor(AgentExecutor):
         try:
             await auth.validate_access_token(
                 access_token,
-                introspect_url=str(settings.introspect_url),
-                client_id=settings.introspect_client_id,
-                client_secret=settings.introspect_client_secret.get_secret_value(),
-                timeout_seconds=settings.introspect_timeout_seconds,
+                auth.IntrospectionConfig(
+                    introspect_url=str(settings.introspect_url),
+                    client_id=settings.introspect_client_id,
+                    client_secret=settings.introspect_client_secret.get_secret_value(),
+                    expected_audience=settings.expected_token_audience,
+                    timeout_seconds=settings.introspect_timeout_seconds,
+                ),
             )
         except auth.TokenValidationError as exc:
             raise HTTPException(status_code=_TOKEN_FAILURE_STATUS[exc.failure], detail=str(exc)) from exc

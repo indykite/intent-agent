@@ -80,6 +80,7 @@ def test_defaults(monkeypatch):
     assert settings.validation_max_retries == _DEFAULT_VALIDATION_MAX_RETRIES
     assert str(settings.bind_host) == "0.0.0.0"  # noqa: S104 - asserting the default, not binding anything
     assert settings.log_level == "INFO"
+    assert settings.expected_token_audience == "intent_agent"  # noqa: S105 - an aud value, not a secret
 
 
 def test_rejects_blank_gemini_api_key(monkeypatch):
@@ -221,6 +222,26 @@ def test_introspect_client_secret_does_not_leak_in_repr(monkeypatch):
     settings = Settings(_env_file=None)
     assert "client-secret" not in repr(settings)
     assert settings.introspect_client_secret.get_secret_value() == "client-secret"
+
+
+def test_expected_token_audience_is_overridable(monkeypatch):
+    """EXPECTED_TOKEN_AUDIENCE must override the intent_agent_name-matching default - an IdP that
+    registers a different resource identifier for this agent must be able to configure it.
+    """
+    _set_baseline_env(monkeypatch)
+    monkeypatch.setenv("EXPECTED_TOKEN_AUDIENCE", "custom-resource-id")
+    settings = Settings(_env_file=None)
+    assert settings.expected_token_audience == "custom-resource-id"  # noqa: S105 - an aud value, not a secret
+
+
+def test_rejects_blank_expected_token_audience(monkeypatch):
+    """A whitespace-only EXPECTED_TOKEN_AUDIENCE must fail validation, not silently accept every
+    audience (an empty expected value would make the `in` check in auth.py meaningless).
+    """
+    _set_baseline_env(monkeypatch)
+    monkeypatch.setenv("EXPECTED_TOKEN_AUDIENCE", "   ")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
 
 
 @pytest.mark.parametrize(
