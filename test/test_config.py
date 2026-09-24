@@ -6,7 +6,11 @@ from indykite.intent_agent.config import Settings
 _DEFAULT_INTENT_PORT = 6003
 _DEFAULT_HEALTH_PORT = 8001
 _DEFAULT_SCHEMA_REFRESH_TTL_MINUTES = 5.0
+_DEFAULT_POLICY_REFRESH_TTL_MINUTES = 5.0
+_DEFAULT_POLICY_FETCH_RETRY_ATTEMPTS = 2
 _DEFAULT_LLM_TIMEOUT_SECONDS = 3.0
+_DEFAULT_SCHEMA_FETCH_TIMEOUT_SECONDS = 3.0
+_DEFAULT_POLICY_FETCH_TIMEOUT_SECONDS = 2.0
 _DEFAULT_VALIDATION_MAX_RETRIES = 1
 # PRD: a request must be answered within 10s end to end. REQUEST_TIMEOUT_SECONDS enforces it;
 # the per-call default is sized so the common path (skill activation, answer, one retry
@@ -66,8 +70,12 @@ def test_defaults(monkeypatch):
     assert settings.gemini_model == "gemini-3.5-flash-lite"
     assert settings.redis_url is None
     assert settings.schema_refresh_ttl_minutes == _DEFAULT_SCHEMA_REFRESH_TTL_MINUTES
+    assert settings.policy_refresh_ttl_minutes == _DEFAULT_POLICY_REFRESH_TTL_MINUTES
+    assert settings.policy_fetch_retry_attempts == _DEFAULT_POLICY_FETCH_RETRY_ATTEMPTS
     assert settings.cache_backend == "memory"
     assert settings.llm_timeout_seconds == _DEFAULT_LLM_TIMEOUT_SECONDS
+    assert settings.schema_fetch_timeout_seconds == _DEFAULT_SCHEMA_FETCH_TIMEOUT_SECONDS
+    assert settings.policy_fetch_timeout_seconds == _DEFAULT_POLICY_FETCH_TIMEOUT_SECONDS
     assert settings.request_timeout_seconds == _PRD_REQUEST_BUDGET_SECONDS
     assert settings.validation_max_retries == _DEFAULT_VALIDATION_MAX_RETRIES
     assert str(settings.bind_host) == "0.0.0.0"  # noqa: S104 - asserting the default, not binding anything
@@ -311,21 +319,60 @@ def test_default_timeouts_match_prd_request_budget(monkeypatch):
     default is sized so the common retried path (activation + answer + one retry answer, each
     at the per-call limit) fits inside it - Gemini's own 10s client default would not. Guards
     against bumping either default without redoing that arithmetic.
+
+    The schema/policy fetch defaults (ENG-9671: both moved inside this same deadline) each fit
+    the same per-field rule the reject validator enforces, but their sum is not also claimed to
+    fit alongside the LLM path above - the LLM path's own worst case already leaves it almost no
+    room on its own, the same way it did before either fetch moved inside this deadline; the
+    request-level asyncio.timeout, not this arithmetic, is what actually bounds a request that
+    hits several of these ceilings at once.
     """
     _set_baseline_env(monkeypatch)
     settings = Settings(_env_file=None)
     assert settings.request_timeout_seconds <= _PRD_REQUEST_BUDGET_SECONDS
     assert settings.validation_max_retries == _DEFAULT_VALIDATION_MAX_RETRIES
     assert settings.llm_timeout_seconds * _LLM_CALLS_ON_COMMON_RETRIED_PATH <= settings.request_timeout_seconds
+    assert settings.schema_fetch_timeout_seconds <= settings.request_timeout_seconds
+    assert settings.policy_fetch_timeout_seconds <= settings.request_timeout_seconds
 
 
-def test_rejects_llm_timeout_longer_than_request_timeout(monkeypatch):
-    """A per-call limit above the whole-request deadline could never fire first - dead config."""
+@pytest.mark.parametrize(
+    ("env_var", "value"),
+    [
+        ("LLM_TIMEOUT_SECONDS", "11"),
+        ("SCHEMA_FETCH_TIMEOUT_SECONDS", "11"),
+        ("POLICY_FETCH_TIMEOUT_SECONDS", "11"),
+    ],
+)
+def test_rejects_a_fetch_or_llm_timeout_longer_than_request_timeout(monkeypatch, env_var, value):
+    """A per-call limit above the whole-request deadline could never fire first - dead config,
+    for the LLM call and, since ENG-9671 moved both inside the same deadline, the schema and
+    policy fetch too.
+    """
     _set_baseline_env(monkeypatch)
-    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "11")
+    monkeypatch.setenv(env_var, value)
     monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "10")
-    with pytest.raises(ValidationError, match="LLM_TIMEOUT_SECONDS must not exceed REQUEST_TIMEOUT_SECONDS"):
+    with pytest.raises(ValidationError, match=f"{env_var} must not exceed REQUEST_TIMEOUT_SECONDS"):
         Settings(_env_file=None)
+
+
+def test_accepts_fetch_timeouts_whose_retry_multiplied_sum_exceeds_the_request_budget(monkeypatch):
+    """The fetch-timeout validator is deliberately per-field only, not a combined/retry-
+    multiplied budget (review) - a schema timeout of 9s plus two 9s policy attempts (27s worst
+    case) must be accepted here, same as LLM_TIMEOUT_SECONDS is never checked against
+    TOOL_CALL_MAX_ITERATIONS/VALIDATION_MAX_RETRIES multiplying its own worst case either.
+    asyncio.timeout(REQUEST_TIMEOUT_SECONDS) is what actually enforces the total budget by
+    cutting off whichever phase is in flight, not a requirement that every possible combination
+    of retries mathematically sums to fit underneath it.
+    """
+    _set_baseline_env(monkeypatch)
+    monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "10")
+    monkeypatch.setenv("SCHEMA_FETCH_TIMEOUT_SECONDS", "9")
+    monkeypatch.setenv("POLICY_FETCH_TIMEOUT_SECONDS", "9")
+    monkeypatch.setenv("POLICY_FETCH_RETRY_ATTEMPTS", "2")
+    settings = Settings(_env_file=None)
+    assert settings.schema_fetch_timeout_seconds == 9.0  # noqa: PLR2004 - the env value just set
+    assert settings.policy_fetch_timeout_seconds == 9.0  # noqa: PLR2004 - the env value just set
 
 
 _DEFAULT_AUDIT_ASYNC_BUFFER_SIZE = 512

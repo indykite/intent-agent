@@ -61,6 +61,25 @@ Service ports/probes and silently sharing one port hides misconfiguration.
 {{- end }}
 
 {{/*
+Fail fast if app.llmTimeoutSeconds, app.schemaFetchTimeoutSeconds or app.policyFetchTimeoutSeconds
+exceeds app.requestTimeoutSeconds - mirrors config.py's Settings._reject_llm_timeout_over_request_
+timeout and ._reject_fetch_timeouts_over_request_timeout, which reject the same combinations at
+app startup. Checking it here too (review) catches a bad values.yaml at `helm install`/`helm
+template` time instead of a pod that starts, fails Settings validation, and crash-loops.
+*/}}
+{{- define "service.validateTimeouts" -}}
+{{- if gt (.Values.app.llmTimeoutSeconds | float64) (.Values.app.requestTimeoutSeconds | float64) }}
+{{- fail (printf "app.llmTimeoutSeconds (%v) must not exceed app.requestTimeoutSeconds (%v)" .Values.app.llmTimeoutSeconds .Values.app.requestTimeoutSeconds) }}
+{{- end }}
+{{- if gt (.Values.app.schemaFetchTimeoutSeconds | float64) (.Values.app.requestTimeoutSeconds | float64) }}
+{{- fail (printf "app.schemaFetchTimeoutSeconds (%v) must not exceed app.requestTimeoutSeconds (%v)" .Values.app.schemaFetchTimeoutSeconds .Values.app.requestTimeoutSeconds) }}
+{{- end }}
+{{- if gt (.Values.app.policyFetchTimeoutSeconds | float64) (.Values.app.requestTimeoutSeconds | float64) }}
+{{- fail (printf "app.policyFetchTimeoutSeconds (%v) must not exceed app.requestTimeoutSeconds (%v)" .Values.app.policyFetchTimeoutSeconds .Values.app.requestTimeoutSeconds) }}
+{{- end }}
+{{- end }}
+
+{{/*
 Fail fast if app.cacheBackend is "redis" but neither an external Redis (app.redisUrlSecretRef) nor
 the chart-managed Redis (redis.enabled) is configured - mirrors config.py's Settings
 ._require_redis_url_for_redis_backend, which rejects this at app startup. name and key are

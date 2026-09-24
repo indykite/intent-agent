@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 from typing import Any, get_args, get_origin
 
+import pytest
+
 from indykite.intent_agent.input_schema import _Context, build_input_schema
 from indykite.intent_agent.subject_binding import _CONTEXT_KEY_TYPES
 
@@ -108,6 +110,44 @@ def test_build_input_schema_ignores_non_string_relations():
     graph_schema["graph"]["edges"] = [{"relation": 123}, {"relation": ""}, {"relation": "RENT"}]
     schema = build_input_schema(graph_schema)
     assert _variant(schema["$defs"]["_Action"]["properties"]["name"], "string")["enum"] == ["RENT"]
+
+
+@pytest.mark.parametrize(
+    ("policies", "expected_enum"),
+    [
+        pytest.param(
+            [
+                {"policy": {"actions": ["APPROVE_REFUND"], "resource": {"type": "Car"}}},
+                {"policy": {"actions": ["APPROVE_REFUND", "ESCALATE"], "resource": {"type": "Company"}}},
+            ],
+            ["APPROVE_REFUND", "ESCALATE", "OWN", "RENT", "WORKS_AT"],
+            id="widens_with_every_fetched_policies_actions",
+        ),
+        pytest.param(
+            [
+                {"policy": {"resource": {"type": "Car"}}},
+                {"policy": {"actions": [123, "", "ESCALATE"], "resource": {"type": "Car"}}},
+                {"not_a_policy_key": True},
+            ],
+            ["ESCALATE", "OWN", "RENT", "WORKS_AT"],
+            id="ignores_malformed_policy_actions_without_crashing",
+        ),
+        pytest.param([], ["OWN", "RENT", "WORKS_AT"], id="empty_policies_matches_edges_only"),
+    ],
+)
+def test_build_input_schema_action_names_widened_by_policies(policies, expected_enum):
+    """action.name's enum is the union of the schema's edge relations and every fetched
+    policy's actions (ENG-9671) - a policy can supply an action outside the schema's own
+    vocabulary, gated post-assembly (subject_binding.py) by the action_derivation_rule marker,
+    not by this structural enum (JSON Schema can't make an enum conditional per-evaluation). A
+    policy missing its actions list, or one with non-string entries, must not crash the enum
+    build or leak a non-string member into the string enum; an empty policies list must produce
+    exactly the schema-edges-only enum (TDD 4.6's original behavior) - policies are additive,
+    never required.
+    """
+    schema = build_input_schema(_load_schema_fixture(), policies)
+    action_name = schema["$defs"]["_Action"]["properties"]["name"]
+    assert _variant(action_name, "string")["enum"] == expected_enum
 
 
 def test_build_input_schema_drops_pydantic_only_keys():

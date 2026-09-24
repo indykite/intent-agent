@@ -96,8 +96,8 @@ def _history_summary_message(event_queue):
     One last WORKING status carries this message, followed by a message-free terminal status -
     a2a's TaskManager only archives a status's message into `history` once a *later*
     TaskStatusUpdateEvent supersedes it, so the WORKING update's message ends up in history and
-    the truly final status is left message-free; see executor.py's _extract for the full
-    mechanism. Asserts that shape holds (the last status has no message of its own) rather than
+    the truly final status is left message-free; see executor.py's _emit_terminal_status for the
+    full mechanism. Asserts that shape holds (the last status has no message of its own) rather than
     just reading whichever status happens to carry one.
     """
     statuses = _status_events(event_queue)
@@ -122,6 +122,8 @@ def test_success_records_the_extraction(baseline_env, mocker):
         evaluations=_EVALUATIONS,
         validation_retries=1,
         schema_version="deadbeef",
+        policy_version="cafef00d",
+        policy_fetch_failed=False,
     )
     executor, sender, _agent = _executor(baseline_env, mocker, result=result)
 
@@ -141,11 +143,70 @@ def test_success_records_the_extraction(baseline_env, mocker):
     assert record.prompt == _PROMPT
     assert record.evaluations == _EVALUATIONS
     assert record.schema_version == "deadbeef"
+    assert record.policy_version == "cafef00d"
+    assert record.policy_fetch_failed is False
     assert record.llm_provider == "gemini"
     assert record.llm_model == "gemini-3.5-flash-lite"
     assert record.validation_retries == 1
     assert record.message == ""
     assert record.latency_ms >= 0
+
+
+def test_audit_ordering_around_the_terminal_task_event(baseline_env, mocker):
+    """Two properties about where the audit write sits relative to the terminal Task status
+    event, both regressions for the same CI-only failure (the audit file ended up empty despite
+    a fully correct response):
+
+    1. The audit write must happen before the terminal event reaches the queue -
+       DefaultRequestHandler.on_message_send returns to the caller as soon as its own
+       subscription observes that event, via a separate producer/consumer task racing this
+       coroutine's own remaining code (see executor.py's _emit_terminal_status). Auditing only
+       after enqueuing the terminal event lets a short-lived event loop driving the request
+       (e.g. starlette's TestClient without `with client:`) tear itself down once the response
+       is sent, before this coroutine's own tail finishes - dropping the record.
+    2. A failure enqueuing that event, after the record was already written, must not be
+       treated by execute()'s `except Exception` handler as a fresh failure and produce a
+       second, synthetic record for the same request - enforced structurally (see
+       _emit_terminal_status's docstring: it runs after execute()'s own `try` block, outside
+       of it, so a failure there can never reach either `except` clause a second time), not by
+       a guard flag.
+    """
+    mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value={"active": True, "sub": "user-1"}))
+    success_result = ExtractionResult(text="{...}", outcome=Outcome.SUCCESS, evaluations=_EVALUATIONS)
+
+    executor, sender, _agent = _executor(baseline_env, mocker, result=success_result)
+    calls = []
+    sender.send.side_effect = lambda *_args, **_kwargs: calls.append("audit")
+
+    async def _record_terminal_event(event):
+        if isinstance(event, TaskStatusUpdateEvent) and event.status.state in (
+            TaskState.TASK_STATE_COMPLETED,
+            TaskState.TASK_STATE_FAILED,
+        ):
+            calls.append("terminal_event")
+
+    event_queue = mocker.Mock(enqueue_event=mocker.AsyncMock(side_effect=_record_terminal_event))
+    asyncio.run(executor.execute(_context({"authorization": "Bearer good-token"}), event_queue))
+    assert calls == ["audit", "terminal_event"]
+
+    executor, sender, _agent = _executor(baseline_env, mocker, result=success_result)
+    status_events_seen = 0
+    post_audit_status_event = 2  # the WORKING update _emit_terminal_status enqueues first
+    queue_closed = RuntimeError("queue closed")
+
+    async def _fail_the_status_event_right_after_the_audit_call(event):
+        nonlocal status_events_seen
+        if isinstance(event, TaskStatusUpdateEvent):
+            status_events_seen += 1
+            if status_events_seen == post_audit_status_event:
+                raise queue_closed
+
+    event_queue = mocker.Mock(
+        enqueue_event=mocker.AsyncMock(side_effect=_fail_the_status_event_right_after_the_audit_call)
+    )
+    with pytest.raises(RuntimeError, match="queue closed"):
+        asyncio.run(executor.execute(_context({"authorization": "Bearer good-token"}), event_queue))
+    assert sender.send.await_count == _MAX_RECORDS_PER_REQUEST
 
 
 @pytest.mark.parametrize(
@@ -170,6 +231,28 @@ def test_non_success_outcomes_surface_as_task_state_failed(baseline_env, mocker,
 
     assert _terminal_task_state(event_queue) == TaskState.TASK_STATE_FAILED
     assert _history_summary_message(event_queue) == "Failed to extract intent."
+
+
+def test_policy_fetch_failure_is_recorded_on_the_audit_trail(baseline_env, mocker):
+    """When the pipeline couldn't retrieve policies (ENG-9671), the audit record carries that
+    alongside the caller-facing `context.parameters.policy_fetch_failed` marker, for server-side
+    visibility even though the request itself still succeeds.
+    """
+    mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value={"active": True, "sub": "user-1"}))
+    result = ExtractionResult(
+        text="{...}",
+        outcome=Outcome.SUCCESS,
+        evaluations=_EVALUATIONS,
+        policy_version="",
+        policy_fetch_failed=True,
+    )
+    executor, sender, _agent = _executor(baseline_env, mocker, result=result)
+
+    _execute(executor, _context({"authorization": "Bearer good-token"}), mocker)
+
+    record = _sole_record(sender)
+    assert record.policy_version == ""
+    assert record.policy_fetch_failed is True
 
 
 def test_generates_a_request_id_when_the_caller_sends_none(baseline_env, mocker):

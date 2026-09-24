@@ -93,10 +93,12 @@ class _RequestAudit:
             prompt=self.prompt,
             evaluations=result.evaluations,
             schema_version=result.schema_version,
+            policy_version=result.policy_version,
             llm_provider=_llm_provider(self._settings.gemini_model),
             llm_model=self._settings.gemini_model,
             latency_ms=latency_ms,
             validation_retries=result.validation_retries,
+            policy_fetch_failed=result.policy_fetch_failed,
             outcome=result.outcome,
             message=result.message,
         )
@@ -117,18 +119,23 @@ class IntentExecutor(AgentExecutor):
         `outcome = error` with the same reason the caller gets (TDD owner's decision) - and so
         is an unexpected exception, so a request can't slip through unrecorded. Auditing never
         changes the request's own outcome: see _audit.
+
+        Exactly one of the three `_audit` calls below ever runs for a given request, by
+        construction rather than by a guard flag: the `try` block's own two `except` clauses
+        audit-and-reraise immediately, so nothing past this method's `try` statement can also
+        run when one of them fires; the line auditing `result` is reachable only once the `try`
+        block has run to completion without raising, at which point neither `except` clause can
+        fire for it any more. `_emit_terminal_status`, called after that line, is deliberately
+        outside the `try` - a failure there propagates straight out instead of through either
+        `except`, so it can never trigger a second audit for a request already recorded as a
+        success. That is also why the audit itself has to happen between `_run_extraction` and
+        `_emit_terminal_status`, not after both: see `_emit_terminal_status`'s docstring.
         """
         audit_record = _RequestAudit(self._agent.settings, context)
         try:
             await self._authenticate(context)
             audit_record.subject_type, audit_record.subject_id = self._subject_params(context)
-            result = await self._extract(
-                context,
-                event_queue,
-                audit_record.prompt,
-                subject_id=audit_record.subject_id,
-                subject_type=audit_record.subject_type,
-            )
+            result = await self._run_extraction(context, event_queue, audit_record)
         except HTTPException as exc:
             await self._audit(audit_record, ExtractionResult(text="", outcome=Outcome.ERROR, message=str(exc.detail)))
             raise
@@ -138,7 +145,9 @@ class IntentExecutor(AgentExecutor):
                 ExtractionResult(text="", outcome=Outcome.ERROR, message=f"{type(exc).__name__}: {exc}"),
             )
             raise
+
         await self._audit(audit_record, result)
+        await self._emit_terminal_status(context, event_queue, result)
 
     async def _audit(self, audit_record: _RequestAudit, result: ExtractionResult) -> None:
         """Record the request's outcome; never raises.
@@ -214,35 +223,25 @@ class IntentExecutor(AgentExecutor):
             raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=f"{key} must be a string")
         return value.strip()
 
-    async def _extract(
+    async def _run_extraction(
         self,
         context: RequestContext,
         event_queue: EventQueue,
-        raw_text: str,
-        *,
-        subject_id: str,
-        subject_type: str,
+        audit_record: _RequestAudit,
     ) -> ExtractionResult:
-        """Run the extraction for an authenticated request, emitting the A2A task events.
+        """Run the extraction for an authenticated request, emitting the task/artifact events.
 
-        The terminal TaskState reflects the outcome (ENG-9804): TASK_STATE_COMPLETED only for
-        a successful extraction, TASK_STATE_FAILED for every other outcome (validation failure,
-        no-intent/unmatched, timeout, schema unavailable, ...) - the caller's artifact JSON
-        still carries the fixed {prompt, error, reason, obligation} shape (errors.py) either way,
-        this only changes what the task's own status reports. A fixed summary message (success
-        or failure - the detailed reason stays in the artifact JSON's `reason` field, not
-        duplicated here) ends up as the task's last `history` entry, replacing the pre-extraction
-        "Extracting intent..." placeholder as the final word instead of leaving it there - done
-        by emitting one last WORKING update carrying the message, then a message-free terminal
-        status (see the comment at the call site for why it has to be in that order).
+        Deliberately stops short of the terminal status event - `execute` audits the result
+        returned here first, then calls `_emit_terminal_status` (see that docstring for why
+        the terminal event has to come after the audit, not before).
         """
         logger.info(
             "Received message for %s: %s",
             self._agent.settings.intent_agent_name,
-            raw_text,
+            audit_record.prompt,
         )
 
-        prompt = raw_text or "(empty)"
+        prompt = audit_record.prompt or "(empty)"
 
         task = context.current_task or new_task_from_user_message(context.message)
         await event_queue.enqueue_event(task)
@@ -258,7 +257,9 @@ class IntentExecutor(AgentExecutor):
             ),
         )
 
-        result = await self._agent.run_extraction(prompt, RequestSubject(id=subject_id, type=subject_type))
+        result = await self._agent.run_extraction(
+            prompt, RequestSubject(id=audit_record.subject_id, type=audit_record.subject_type)
+        )
 
         await event_queue.enqueue_event(
             TaskArtifactUpdateEvent(
@@ -267,19 +268,43 @@ class IntentExecutor(AgentExecutor):
                 artifact=new_text_artifact(name="result", text=result.text),
             ),
         )
-        # ENG-9804: the task's own terminal state must tell success from failure - a caller
-        # otherwise has no way to know without parsing the artifact JSON for an "error" key.
-        # VALIDATION_FAILED/UNMATCHED/ERROR (no_intent_error, timeouts, schema unavailable, ...)
-        # all surface as TASK_STATE_FAILED; only SUCCESS is TASK_STATE_COMPLETED. A fixed summary
-        # message (the detailed reason stays in the artifact JSON's `reason` field, not
-        # duplicated here) must land in the task's `history`, not just sit on the terminal status -
-        # a2a's TaskManager only archives a status's message into history once a *later*
-        # TaskStatusUpdateEvent supersedes it, so the message is carried on one last WORKING
-        # update first (never on the terminal one itself: DefaultRequestHandler.on_message_send
-        # returns on the *first* terminal-state Task snapshot it sees, so a message on that event
-        # would never get superseded/archived - it would just sit unread in `status.message`).
-        # The final, bare terminal event is what the caller actually gets back, with the summary
-        # text already archived as history's last entry instead of "Extracting intent...".
+        return result
+
+    async def _emit_terminal_status(
+        self, context: RequestContext, event_queue: EventQueue, result: ExtractionResult
+    ) -> None:
+        """Emit the task's terminal status, after the request has already been audited.
+
+        The terminal TaskState reflects the outcome (ENG-9804): TASK_STATE_COMPLETED only for
+        a successful extraction, TASK_STATE_FAILED for every other outcome (validation failure,
+        no-intent/unmatched, timeout, schema unavailable, ...) - the caller's artifact JSON
+        still carries the fixed {prompt, error, reason, obligation} shape (errors.py) either way,
+        this only changes what the task's own status reports.
+
+        A fixed summary message (the detailed reason stays in the artifact JSON's `reason`
+        field, not duplicated here) must land in the task's `history`, not just sit on the
+        terminal status - a2a's TaskManager only archives a status's message into history once
+        a *later* TaskStatusUpdateEvent supersedes it. So the message is carried on one last
+        WORKING update first, replacing the pre-extraction "Extracting intent..." placeholder as
+        the final word instead of leaving it there, and the truly final status is left
+        message-free - never the terminal one itself: DefaultRequestHandler.on_message_send
+        returns on the *first* terminal-state Task snapshot it sees, so a message on that event
+        would never get superseded/archived, it would just sit unread in `status.message`. The
+        caller gets back the bare terminal event, with the summary text already archived as
+        history's last entry.
+
+        Called only after `execute` has already audited `result`, never before: `ActiveTask.
+        _run_producer` awaits `execute` in full before it ever looks at the outcome, but
+        `DefaultRequestHandler.on_message_send` doesn't wait for that - it returns as soon as its
+        own subscription sees the terminal Task snapshot enqueued here, which reaches it through
+        the event queue/consumer concurrently with `execute` still running. Auditing after
+        enqueuing that terminal event would race the caller-visible response against `execute`'s
+        own remaining code; a test driving the request through a short-lived event loop (e.g.
+        starlette's TestClient without `with client:`, which tears its portal down as soon as the
+        ASGI call returns) can then close out from under that task before the write finishes,
+        dropping the record while the response the caller got was already correct. Auditing first
+        makes the record exist before a caller can possibly observe "done".
+        """
         is_success = result.outcome == Outcome.SUCCESS
         terminal_state = TaskState.TASK_STATE_COMPLETED if is_success else TaskState.TASK_STATE_FAILED
         terminal_text = _EXTRACTION_SUCCEEDED_MESSAGE if is_success else _EXTRACTION_FAILED_MESSAGE
@@ -302,7 +327,6 @@ class IntentExecutor(AgentExecutor):
             self._agent.settings.intent_agent_name,
             result.text,
         )
-        return result
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         """Handle task cancellation by emitting a CANCELED status event."""

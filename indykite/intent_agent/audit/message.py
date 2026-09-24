@@ -8,7 +8,7 @@ carries the same text the caller received, so a record and the response it audit
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
@@ -45,10 +45,18 @@ class AuditMessage(BaseModel):
     prompt: str
     evaluations: list[dict[str, Any]]
     schema_version: str
+    policy_version: str
     llm_provider: str
     llm_model: str
     latency_ms: int
     validation_retries: int
+    # None means no policy fetch was ever attempted for this request (review) - the fail-fast
+    # paths in run_extraction that never reach get_cached_policies at all (schema unavailable,
+    # a timeout mid-schema-fetch). Distinct from False (attempted and succeeded, possibly with
+    # zero policies) - collapsing "never attempted" into False would make it indistinguishable
+    # from a real success, understating how often policy fetches actually happen versus how
+    # often the request never got that far.
+    policy_fetch_failed: bool | None
     outcome: Outcome
     message: str
 
@@ -67,7 +75,16 @@ FIELD_NAMES: tuple[str, ...] = tuple(AuditMessage.model_fields)
 
 
 def _cell(value: object) -> str:
-    """Stringify one field value for CSV/TXT output."""
+    """Stringify one field value for CSV/TXT output.
+
+    None (review: policy_fetch_failed's "no fetch attempted" state) renders as "" rather than
+    falling through to str(None) -> the literal text "None", inconsistent with every other
+    "not applicable" field here (schema_version/policy_version already use "" for their own
+    unavailable case) and liable to break a downstream CSV consumer expecting this column to be
+    strictly "True"/"False".
+    """
+    if value is None:
+        return ""
     if isinstance(value, str):
         return value
     if isinstance(value, list | dict):
@@ -90,6 +107,29 @@ def schema_version(schema: Mapping[str, Any] | None) -> str:
     if schema is None:
         return ""
     canonical = json.dumps(schema, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def policy_version(policies: Sequence[Mapping[str, Any]] | None) -> str:
+    """Hash of the fetched KBAC policies - "what policies were in effect for this
+    request", schema_version's companion field. Same stability guarantee regardless of
+    key/entry order - unlike schema_version, this also sorts the top-level list itself
+    (review): sort_keys=True alone only canonicalizes dict keys within each entry, so if the
+    endpoint ever returns the same policies in a different order, the naive approach would
+    still hash to a different value for identical policy state. Each entry is first
+    canonicalized on its own (sort_keys=True), then the entries themselves are sorted by that
+    canonical string before being joined, making the result independent of the original list
+    order too. Empty when no policies were fetched - none exist for this subject_type, the
+    fetch failed after retries, or no fetch was ever attempted at all (see
+    AuditMessage.policy_fetch_failed - False, True, and None respectively - for telling those
+    three apart).
+    """
+    if not policies:
+        return ""
+    canonical_entries = sorted(
+        json.dumps(policy, sort_keys=True, separators=(",", ":"), ensure_ascii=False) for policy in policies
+    )
+    canonical = json.dumps(canonical_entries, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 

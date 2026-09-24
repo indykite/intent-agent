@@ -19,6 +19,9 @@ app:
   logLevel: "INFO" # LOG_LEVEL
 
   geminiModel: "gemini-3.5-flash-lite" # GEMINI_MODEL
+  # Size of the dedicated schema/policy-fetch thread pool, not a request-concurrency limit -
+  # see config.py's Settings.fetch_executor_max_workers.
+  fetchExecutorMaxWorkers: 8 # FETCH_EXECUTOR_MAX_WORKERS
   toolCallMaxIterations: 5 # TOOL_CALL_MAX_ITERATIONS
   schemaPreviewChars: 12000 # SCHEMA_PREVIEW_CHARS
   llmTimeoutSeconds: 3.0 # LLM_TIMEOUT_SECONDS
@@ -26,8 +29,20 @@ app:
   validationMaxRetries: 1 # VALIDATION_MAX_RETRIES
 
   indykiteBaseUrl: "https://placeholder.example.com" # INDYKITE_BASE_URL
-  schemaFetchTimeoutSeconds: 30.0 # SCHEMA_FETCH_TIMEOUT_SECONDS
+  # llmTimeoutSeconds/schemaFetchTimeoutSeconds/policyFetchTimeoutSeconds must each stay <=
+  # requestTimeoutSeconds (Settings rejects a fetch/LLM timeout that could never fire before the
+  # whole-request deadline does - enforced here too by service.validateTimeouts, not just the
+  # Python validator, so a bad combination fails `helm install`/`helm template` instead of
+  # crash-looping the pod at startup) - both fetch timeouts are tight ceilings sized to leave
+  # room for the LLM calls in the same budget, not a generous allowance in their own right; tune
+  # against the platform's observed latency.
+  schemaFetchTimeoutSeconds: 3.0 # SCHEMA_FETCH_TIMEOUT_SECONDS
   schemaRefreshTtlMinutes: 5.0 # SCHEMA_REFRESH_TTL_MINUTES
+
+  policyFetchTimeoutSeconds: 2.0 # POLICY_FETCH_TIMEOUT_SECONDS
+  policyRefreshTtlMinutes: 5.0 # POLICY_REFRESH_TTL_MINUTES
+  policyFetchRetryAttempts: 2 # POLICY_FETCH_RETRY_ATTEMPTS
+  policyPreviewChars: 12000 # POLICY_PREVIEW_CHARS
 
   cacheBackend: "memory" # CACHE_BACKEND - "memory" or "redis"
 

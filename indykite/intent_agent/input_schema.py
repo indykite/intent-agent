@@ -33,6 +33,24 @@ def _edge_relations(schema: dict[str, Any]) -> list[str]:
     return sorted(relations)
 
 
+def _policy_action_names(policies: list[dict[str, Any]] | None) -> list[str]:
+    """Every distinct action name any fetched policy defines, sorted - every
+    policy's actions list regardless of resource.type, since the enum is one global list shared
+    by every evaluation in the response (JSON Schema can't make it conditional per-evaluation);
+    subject_binding._policy_actions_for_resource does the precise per-resource-type,
+    marked-only check post-assembly. Same shape rule as _edge_relations: only non-empty strings.
+    """
+    if not policies:
+        return []
+    names: set[str] = set()
+    for entry in policies:
+        policy = entry.get("policy") if isinstance(entry, dict) else None
+        actions = policy.get("actions") if isinstance(policy, dict) else None
+        if isinstance(actions, list):
+            names.update(name for name in actions if isinstance(name, str) and name)
+    return sorted(names)
+
+
 class _Subject(BaseModel):
     """AuthZEN subject. `id` is normally left absent - it's assigned deterministically
     post-LLM from the caller-supplied subject params, never trusted from the LLM. The
@@ -124,12 +142,13 @@ class _IntentInput(BaseModel):
 def _constrain_to_enum(field_schema: dict[str, Any], values: list[str]) -> None:
     """Restrict a (possibly nullable) string field's schema to `values`, in place.
 
-    No-op if `values` is empty. Only reachable for the action-name enum (_edge_relations) -
-    edges can't be ingested before their endpoint nodes, and build_input_schema's caller
-    (agent.run_extraction) already validates SUBJECT_TYPE against the schema's node types
-    before calling this, so _node_types(schema) can never be empty here. A schema with nodes
-    but no edges yet is a legitimate state, not a failure - there's no vocabulary to constrain
-    the action name to, so leaving it as a plain string is correct.
+    No-op if `values` is empty. Only reachable for the action-name enum (_edge_relations,
+    optionally widened by _policy_action_names) - edges can't be ingested before
+    their endpoint nodes, and build_input_schema's caller (agent.run_extraction) already
+    validates SUBJECT_TYPE against the schema's node types before calling this, so
+    _node_types(schema) can never be empty here. A schema with nodes but no edges yet, and no
+    policies fetched either, is a legitimate state, not a failure - there's no vocabulary to
+    constrain the action name to, so leaving it as a plain string is correct.
     """
     if not values:
         return
@@ -147,14 +166,21 @@ def _drop_pydantic_only_keys(node: JsonValue) -> JsonValue:
     return node
 
 
-def build_input_schema(schema: dict[str, Any]) -> dict[str, Any]:
+def build_input_schema(schema: dict[str, Any], policies: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Build the response_json_schema constraining the LLM's extraction output to this
     schema's actual vocabulary (TDD 4.6). Access-blind: enums list every entity/action the
     schema defines regardless of the caller's permissions (PRD 2.3.1).
+
+    action.name's enum additionally includes every action any fetched policy defines, in
+    a single global list, since JSON Schema can't make an
+    enum conditional per-evaluation; subject_binding.validate_evaluations enforces, per
+    evaluation, that a policy-only action name is only accepted when that evaluation is marked
+    action_derivation_rule="policy_based" and the policy's resource.type actually matches.
     """
     json_schema = _IntentInput.model_json_schema()
     defs = json_schema["$defs"]
     _constrain_to_enum(defs["_Subject"]["properties"]["type"], _node_types(schema))
-    _constrain_to_enum(defs["_Action"]["properties"]["name"], _edge_relations(schema))
+    action_names = sorted({*_edge_relations(schema), *_policy_action_names(policies)})
+    _constrain_to_enum(defs["_Action"]["properties"]["name"], action_names)
     _constrain_to_enum(defs["_Resource"]["properties"]["type"], _node_types(schema))
     return _drop_pydantic_only_keys(json_schema)

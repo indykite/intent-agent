@@ -51,6 +51,19 @@ def _llm_response(mocker, text="", tool_calls=()):
     return mocker.Mock(text=text, content=text, tool_calls=list(tool_calls))
 
 
+def _fake_schema_client(mocker, **kwargs):
+    """A fake SchemaClient - run_extraction only ever calls get_cached() on it (dispatched
+    through the fetch executor), never peek_cached(), so every behavior a test needs must be
+    configured via kwargs here (typically get_cached=...).
+    """
+    return mocker.Mock(**kwargs)
+
+
+def _fake_policy_client(mocker, **kwargs):
+    """A fake PolicyClient - see _fake_schema_client."""
+    return mocker.Mock(**kwargs)
+
+
 def _agent(monkeypatch, mocker, baseline_env, answers):
     """An IntentAgent over the CanBank schema whose LLM activates extract-intent and then
     answers with `answers` (dicts, serialized) in order.
@@ -62,8 +75,20 @@ def _agent(monkeypatch, mocker, baseline_env, answers):
     ]
     mock_ainvoke = mocker.AsyncMock(side_effect=responses)
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mock_ainvoke)))
-    fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=_canbank_schema()))
-    return IntentAgent(Settings(_env_file=None), llm=fake_llm, schema_client=fake_schema_client), mock_ainvoke
+    fake_schema_client = _fake_schema_client(mocker, get_cached=mocker.Mock(return_value=_canbank_schema()))
+    # No policies (a successful fetch that found none) - these golden scenarios are about the
+    # schema-derived pipeline, not ENG-9671, and a real PolicyClient would otherwise hit the
+    # network against this fake settings' base_url on every scenario.
+    fake_policy_client = _fake_policy_client(mocker, get_cached=mocker.Mock(return_value=([], False)))
+    return (
+        IntentAgent(
+            Settings(_env_file=None),
+            llm=fake_llm,
+            schema_client=fake_schema_client,
+            policy_client=fake_policy_client,
+        ),
+        mock_ainvoke,
+    )
 
 
 def _answer(*evaluations):
@@ -357,6 +382,85 @@ def test_golden_scenario_non_cel_filter_is_retried_until_it_parses(monkeypatch, 
     assert mock_ainvoke.call_count == _LLM_CALLS_WITH_ONE_RETRY
     feedback = json.loads(mock_ainvoke.call_args_list[-1].args[0][-1].content)
     assert "Malformed shape:\n- evaluations[0]: context.filters is not valid CEL (line 1, column" in feedback["reason"]
+
+
+def _agent_with_policies(monkeypatch, mocker, baseline_env, answers, policies):
+    """Like _agent, but with this request's PolicyClient.get_cached() returning `policies`
+    instead of the usual empty list - for the one golden scenario that actually exercises
+    ENG-9671's policy-derived action.name.
+    """
+    baseline_env()
+    responses = [
+        _llm_response(mocker, tool_calls=[_ACTIVATE_EXTRACT_INTENT_CALL]),
+        *(_llm_response(mocker, json.dumps(answer)) for answer in answers),
+    ]
+    mock_ainvoke = mocker.AsyncMock(side_effect=responses)
+    fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mock_ainvoke)))
+    fake_schema_client = _fake_schema_client(mocker, get_cached=mocker.Mock(return_value=_canbank_schema()))
+    fake_policy_client = _fake_policy_client(mocker, get_cached=mocker.Mock(return_value=(policies, False)))
+    return (
+        IntentAgent(
+            Settings(_env_file=None),
+            llm=fake_llm,
+            schema_client=fake_schema_client,
+            policy_client=fake_policy_client,
+        ),
+        mock_ainvoke,
+    )
+
+
+def test_golden_scenario_policy_derived_action_replays_a_real_captured_policy(monkeypatch, mocker, baseline_env):
+    """ENG-9671 end to end, replaying a policy actually captured from a live RC environment's
+    GET /access/v1/policies (not a synthetic shape): a KBAC policy defines "WAIVE_FEE", an
+    action that is not one of the CanBank schema's own edge relations at all. The prompt names
+    no specific account, so this is a Resource Search (no resource.id) with the "over a year"
+    condition expressed as a filters CEL clause, mirroring the policy's own cypher condition.
+    Marked action_derivation_rule="policy_based", it is accepted without a retry, and the
+    marker survives verbatim into what the caller gets.
+    """
+    policies = [
+        {
+            "policy": {
+                "meta": {"policy_version": "2.0-kbac"},
+                "subject": {"type": "Customer"},
+                "actions": ["WAIVE_FEE"],
+                "resource": {"type": "Account"},
+                "condition": {
+                    "cypher": "MATCH (subject:Customer), (resource:Account) WHERE resource.create_time < $one_year_ago"
+                },
+            },
+            "tags": [],
+        },
+    ]
+    prompt = "Can I get the annual fee waived on my account since I've had it for over a year?"
+    answer = {
+        "action": {"name": "WAIVE_FEE"},
+        "resource": {"type": "Account"},
+        "context": {
+            "parameters": {"action_derivation_rule": "policy_based"},
+            "filters": "resource.create_time < timestamp('2024-09-23T00:00:00Z')",
+        },
+    }
+    agent, mock_ainvoke = _agent_with_policies(monkeypatch, mocker, baseline_env, [_answer(answer)], policies)
+
+    result = asyncio.run(agent.run_extraction(prompt, RequestSubject(id="rebecca", type="Customer")))
+
+    assert result.outcome == Outcome.SUCCESS
+    assert result.validation_retries == 0
+    assert mock_ainvoke.call_count == _LLM_CALLS_TO_FIRST_ANSWER
+    assert result.evaluations == [
+        {
+            "action": {"name": "WAIVE_FEE"},
+            "resource": {"type": "Account"},
+            "context": {
+                "parameters": {"action_derivation_rule": "policy_based"},
+                "filters": "resource.create_time < timestamp('2024-09-23T00:00:00Z')",
+            },
+            "subject": {"type": "Customer", "id": "rebecca"},
+        },
+    ]
+    assert result.policy_version
+    assert result.policy_fetch_failed is False
 
 
 def _skill_json_examples():

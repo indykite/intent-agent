@@ -1,5 +1,7 @@
 import asyncio
 import json
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import httpx2
@@ -21,6 +23,7 @@ from indykite.intent_agent.errors import (
     SubjectTypeMismatchError,
     llm_timeout_error,
     no_intent_error,
+    request_timeout_error,
     schema_not_populated_error,
     schema_unavailable_error,
     subject_type_mismatch_error,
@@ -30,6 +33,7 @@ from indykite.intent_agent.input_schema import build_input_schema
 from indykite.intent_agent.schema import build_schema_cache
 from indykite.intent_agent.skills import discover_skills
 from indykite.intent_agent.subject_binding import (
+    PolicyContext,
     _bind_subject,
     _normalize_contexts,
     _vocabulary_reason,
@@ -48,6 +52,9 @@ _LLM_CALLS_TO_FIRST_ANSWER = 2
 _LLM_CALLS_WITH_ONE_RETRY = 3
 # A tool-call budget no test will exhaust, so a request-deadline test can't hit it first.
 _UNREACHABLE_TOOL_BUDGET = 100
+# Well under the 0.3s a blocked fetch/tool call sleeps for in the event-loop-not-blocked tests
+# below, but generous enough that scheduler jitter never makes a passing run flaky.
+_LOOP_NOT_BLOCKED_THRESHOLD_SECONDS = 0.15
 _ACTIVATE_EXTRACT_INTENT_CALL = {"name": "activate_skill", "args": {"name": "extract-intent"}, "id": "call-1"}
 # Vocabulary from test/fixtures/mock_ikg_schema.json: nodes Car/Company/Customer/_Application,
 # edge relations OWN/RENT/WORKS_AT.
@@ -79,6 +86,19 @@ def _load_empty_schema_fixture():
     return json.loads(_EMPTY_SCHEMA_FIXTURE_PATH.read_text())
 
 
+def _fake_schema_client(mocker, **kwargs):
+    """A fake SchemaClient - run_extraction only ever calls get_cached() on it (dispatched
+    through the fetch executor), never peek_cached(), so every behavior a test needs must be
+    configured via kwargs here (typically get_cached=...).
+    """
+    return mocker.Mock(**kwargs)
+
+
+def _fake_policy_client(mocker, **kwargs):
+    """A fake PolicyClient - see _fake_schema_client."""
+    return mocker.Mock(**kwargs)
+
+
 def test_discovers_extract_intent_skill():
     """The extract-intent SKILL.md must be discovered from the skills/ directory."""
     skills = discover_skills()
@@ -103,16 +123,23 @@ def test_build_app_registers_routes(monkeypatch, mocker):
 
 def test_build_app_closes_audit_sender_on_shutdown(monkeypatch, mocker):
     """The app's lifespan closes the audit sender on shutdown - that is what drains a buffered
-    (AUDIT_ASYNC) queue before the process exits, so nothing audited is lost on a rollout.
+    (AUDIT_ASYNC) queue before the process exits, so nothing audited is lost on a rollout. It
+    also shuts down the agent's own _fetch_executor (review) - each IntentAgent owns its own,
+    rather than sharing one process-wide singleton (review: a shared one would let one app's
+    shutdown break every other IntentAgent/build_app instance in the same process, since
+    ThreadPoolExecutor.shutdown() is not reversible), so asserting on this one instance's
+    executor cannot affect any other test.
     """
     settings = _full_settings(monkeypatch)
     fake_schema_client = mocker.Mock(preload=mocker.Mock(), get_cached=mocker.Mock(return_value=_load_schema_fixture()))
     sender = _fake_audit_sender(mocker)
-    app, _agent = build_app(settings, schema_client=fake_schema_client, audit_sender=sender)
+    app, agent = build_app(settings, schema_client=fake_schema_client, audit_sender=sender)
 
     with TestClient(app):
         sender.close.assert_not_awaited()
+        assert not agent._fetch_executor._shutdown
     sender.close.assert_awaited_once()
+    assert agent._fetch_executor._shutdown
 
 
 def test_build_app_starts_when_schema_unavailable_at_cold_start(monkeypatch, mocker):
@@ -583,6 +610,87 @@ def test_validate_evaluations_ignores_non_string_relations():
     ]
 
 
+_CAR_POLICY = [{"policy": {"actions": ["APPROVE_REFUND"], "resource": {"type": "Car"}}}]
+
+
+_POLICY_ACTION_ERROR = "evaluations[0]: action.name 'APPROVE_REFUND' is not defined in the data schema"
+
+
+@pytest.mark.parametrize(
+    ("resource_type", "marked", "expected_errors"),
+    [
+        pytest.param("Car", True, [], id="marked_matching_resource_accepted"),
+        pytest.param("Car", False, [_POLICY_ACTION_ERROR], id="unmarked_rejected_like_any_off_schema_value"),
+        pytest.param("Company", True, [_POLICY_ACTION_ERROR], id="marked_but_wrong_resource_type_rejected"),
+    ],
+)
+def test_validate_evaluations_policy_derived_action(resource_type, marked, expected_errors):
+    """A policy-only action name (not a schema edge relation, ENG-9671) is valid only when the
+    evaluation carries context.parameters.action_derivation_rule = "policy_based" *and* the
+    policy's resource.type matches this evaluation's resource.type - either condition missing
+    falls back to the same off-schema rejection as any other unrecognized action.name.
+    """
+    evaluation = {"action": {"name": "APPROVE_REFUND"}, "resource": {"type": resource_type}}
+    if marked:
+        evaluation["context"] = {"parameters": {"action_derivation_rule": "policy_based"}}
+    assert validate_evaluations(_load_schema_fixture(), [evaluation], _CAR_POLICY) == expected_errors
+
+
+def test_validate_evaluations_still_accepts_schema_edges_when_policies_are_present():
+    """A schema edge relation is valid whether marked or not, exactly as before ENG-9671 -
+    fetched policies only ever widen the vocabulary, never narrow the existing one.
+    """
+    evaluations = [{"action": {"name": "RENT"}, "resource": {"type": "Car"}}]
+    assert validate_evaluations(_load_schema_fixture(), evaluations, _CAR_POLICY) == []
+
+
+_EMPTY_SCHEMA_POLICY = [{"policy": {"actions": ["APPROVE_REFUND"], "resource": {"type": "_Application"}}}]
+_EMPTY_SCHEMA_POLICY_WRONG_RESOURCE = [
+    {"policy": {"actions": ["APPROVE_REFUND"], "resource": {"type": "OtherResource"}}}
+]
+_EMPTY_SCHEMA_POLICY_ACTION_ERROR = "evaluations[0]: action.name 'APPROVE_REFUND' is not defined in the data schema"
+
+
+@pytest.mark.parametrize(
+    ("policies", "marked", "expected_errors"),
+    [
+        pytest.param(_EMPTY_SCHEMA_POLICY, True, [], id="marked_matching_resource_accepted"),
+        pytest.param(
+            _EMPTY_SCHEMA_POLICY,
+            False,
+            [_EMPTY_SCHEMA_POLICY_ACTION_ERROR],
+            id="unmarked_rejected_even_with_no_schema_edges",
+        ),
+        pytest.param(
+            _EMPTY_SCHEMA_POLICY_WRONG_RESOURCE,
+            True,
+            [_EMPTY_SCHEMA_POLICY_ACTION_ERROR],
+            id="marked_but_wrong_resource_type_rejected",
+        ),
+        pytest.param(None, False, [], id="no_policies_at_all_stays_unconstrained"),
+        pytest.param([], False, [], id="empty_policies_list_stays_unconstrained"),
+    ],
+)
+def test_validate_evaluations_empty_edges_still_enforces_policy_membership(policies, marked, expected_errors):
+    """A schema with no edges at all (a real IndyKite environment with no data model yet - see
+    _load_empty_schema_fixture) used to leave action.name entirely unconstrained: _vocabulary_
+    reason's own "nothing to check against" rule for an empty edge_relations set returned None
+    for any non-blank name, bypassing the policy/marker check below it. Once policies are
+    fetched, that carve-out must not apply any more - an unmarked (or wrong-resource) policy
+    action must still be rejected exactly like it would be against a schema that does have
+    edges (test_validate_evaluations_policy_derived_action). The last two cases prove the
+    pre-ENG-9671 behavior survives intact when there is truly no vocabulary to check against
+    (no policies at all, fetched or not): the carve-out this fix narrows is "nothing to check
+    against", not "policies happen to be absent". resource.type is fixed to the one real node
+    type this fixture has (_Application) throughout, so only the policy's own scoping - not the
+    unrelated resource.type-vocabulary check - varies between cases.
+    """
+    evaluation = {"action": {"name": "APPROVE_REFUND"}, "resource": {"type": "_Application"}}
+    if marked:
+        evaluation["context"] = {"parameters": {"action_derivation_rule": "policy_based"}}
+    assert validate_evaluations(_load_empty_schema_fixture(), [evaluation], policies) == expected_errors
+
+
 def test_validation_feedback_error_lists_every_error_in_fixed_shape():
     """The follow-up message must be the fixed 4.7 error shape and carry each error verbatim
     in `reason`, one per line, plus the corrective instruction in `obligation` - not just the
@@ -635,14 +743,17 @@ def test_vocabulary_reason_ends_with_the_shared_schema_suffix(value, suffix):
     assert _vocabulary_reason("action.name", "RENT", {"RENT"}) is None
 
 
-def _normalize(llm_text, prompt="rent kitt"):
-    """normalize_intent_response against the fixture schema with the usual test subject."""
+def _normalize(llm_text, prompt="rent kitt", *, subject=None, policy_context=None):
+    """normalize_intent_response against the fixture schema with the usual test subject and,
+    by default, no policies fetched at all (as opposed to a fetch that failed - see
+    PolicyContext.fetch_failed) - most tests here don't care about ENG-9671 at all.
+    """
     return normalize_intent_response(
         llm_text,
         prompt,
         schema=_load_schema_fixture(),
-        subject_id="user-1",
-        subject_type="Customer",
+        subject=subject or RequestSubject(id="user-1", type="Customer"),
+        policy_context=policy_context or PolicyContext(policies=None, fetch_failed=False),
     )
 
 
@@ -735,6 +846,60 @@ def test_normalize_intent_response_still_validates_a_subject_search_type_against
     with pytest.raises(IntentValidationError) as excinfo:
         _normalize(llm_text, "which martians can rent kitt?")
     assert excinfo.value.errors == ["evaluations[0]: subject.type 'Martian' is not defined in the data schema"]
+
+
+def test_normalize_intent_response_accepts_a_marked_policy_derived_action_end_to_end():
+    """A policy-only action, marked action_derivation_rule="policy_based", passes validation
+    and the marker survives in the response's context.parameters unchanged (ENG-9671) - the
+    same passthrough treatment as every other context.parameters entry.
+    """
+    llm_text = json.dumps(
+        {
+            "evaluations": [
+                {
+                    "action": {"name": "APPROVE_REFUND"},
+                    "resource": {"type": "Car", "id": "kitt"},
+                    "context": {"parameters": {"action_derivation_rule": "policy_based"}},
+                },
+            ],
+        },
+    )
+    policy_context = PolicyContext(policies=_CAR_POLICY, fetch_failed=False)
+    data = json.loads(_normalize(llm_text, "approve a refund for kitt", policy_context=policy_context))
+    assert data["evaluations"][0]["action"] == {"name": "APPROVE_REFUND"}
+    assert data["evaluations"][0]["context"]["parameters"]["action_derivation_rule"] == "policy_based"
+
+
+@pytest.mark.parametrize(
+    ("fetch_failed", "llm_supplied_value", "expected_marker"),
+    [
+        pytest.param(True, None, True, id="fetch_failed_marks_every_evaluation"),
+        pytest.param(False, None, None, id="fetch_succeeded_omits_the_marker"),
+        pytest.param(False, True, None, id="fetch_succeeded_strips_llm_spoofed_true"),
+        pytest.param(True, False, True, id="fetch_failed_overrides_llm_supplied_false"),
+    ],
+)
+def test_normalize_intent_response_policy_fetch_failed_marker(fetch_failed, llm_supplied_value, expected_marker):
+    """policy_fetch_failed is a system-set flag, never the LLM's to produce (ENG-9671, review):
+    context.parameters is an open object in the structured output, so the model could supply
+    its own value there - it must never be trusted either way. A successful fetch strips it
+    out even if the model set it to True (spoofing a failure that never happened); a failed
+    fetch overrides it to True on every evaluation even if the model happened to set it to
+    False. Set after validation/subject binding so it can't be spoofed by the model's own
+    output and can't be lost by _normalize_contexts settling the context shape.
+    """
+    parameters = {"policy_fetch_failed": llm_supplied_value} if llm_supplied_value is not None else {}
+    evaluation = {"action": {"name": "RENT"}, "resource": {"type": "Car", "id": "kitt"}}
+    if parameters:
+        evaluation["context"] = {"parameters": parameters}
+    llm_text = json.dumps({"evaluations": [evaluation]})
+    policy_context = PolicyContext(policies=None, fetch_failed=fetch_failed)
+    data = json.loads(_normalize(llm_text, policy_context=policy_context))
+    result_parameters = data["evaluations"][0].get("context", {}).get("parameters", {})
+    if expected_marker is None:
+        assert "policy_fetch_failed" not in result_parameters
+    else:
+        assert result_parameters["policy_fetch_failed"] is expected_marker
 
 
 def test_normalize_intent_response_passes_context_through_verbatim():
@@ -910,7 +1075,7 @@ def _fake_audit_sender(mocker):
 def test_build_schema_cache_uses_memory_backend_by_default(monkeypatch):
     """CACHE_BACKEND defaults to memory - the in-process Memory cache - with no REDIS_URL set."""
     settings = _full_settings(monkeypatch)
-    assert isinstance(build_schema_cache(settings).backend, MemoryBackend)
+    assert isinstance(build_schema_cache(settings, ThreadPoolExecutor(max_workers=1)).backend, MemoryBackend)
 
 
 def test_build_schema_cache_uses_redis_backend_when_configured(monkeypatch):
@@ -923,29 +1088,94 @@ def test_build_schema_cache_uses_redis_backend_when_configured(monkeypatch):
     monkeypatch.setenv("REDIS_URL", redis_url)
     monkeypatch.setenv("SCHEMA_REFRESH_TTL_MINUTES", "2.0")
     settings = _full_settings(monkeypatch)
-    cache = build_schema_cache(settings)
+    cache = build_schema_cache(settings, ThreadPoolExecutor(max_workers=1))
     assert isinstance(cache.backend, RedisBackend)
     assert cache.backend.url == redis_url
     assert cache.expiration_time == 2.0 * 60
 
 
 def test_get_data_schema_tool_returns_cached_schema(monkeypatch, mocker):
-    """The get_data_schema tool must return the cached schema as minified JSON."""
+    """The get_data_schema tool must return the exact schema snapshot it was built with, as
+    minified JSON - not an independently re-fetched one (review): run_extraction already used
+    this same snapshot to build the response schema's enums, so a fresh get_cached_schema()
+    call here could return something the LLM's own enum and validate_evaluations were never
+    built against.
+    """
     settings = _full_settings(monkeypatch)
     schema = _load_schema_fixture()
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock()))
-    fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=schema))
-    agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client)
+    agent = IntentAgent(settings, llm=fake_llm)
 
-    tool = next(t for t in agent.tools if t.name == "get_data_schema")
-    result = tool.invoke({})
+    result = agent._make_get_data_schema_tool(schema).invoke({})
 
     assert json.loads(result) == schema
 
 
+@pytest.mark.parametrize(
+    ("policies", "policy_fetch_failed", "expected_json"),
+    [
+        pytest.param(
+            [{"policy": {"actions": ["APPROVE_REFUND"], "resource": {"type": "Car"}}, "tags": []}],
+            False,
+            [{"policy": {"actions": ["APPROVE_REFUND"], "resource": {"type": "Car"}}, "tags": []}],
+            id="returns_the_given_policies",
+        ),
+        pytest.param(None, True, [], id="none_returns_empty_list_not_null"),
+    ],
+)
+def test_get_policies_tool_returns_the_request_snapshot(
+    monkeypatch, mocker, policies, policy_fetch_failed, expected_json
+):
+    """The get_policies tool (ENG-9671) must return the exact policies snapshot it was built
+    with, as minified JSON - not an independently re-fetched one (review): run_extraction
+    already used this same snapshot to build request.policy_context and the response schema's
+    action enum, so a fresh get_cached_policies() call here could return a cache entry
+    refreshed or evicted since, one that snapshot and validate_evaluations were never checked
+    against. None (no policies fetched) must still hand the LLM valid JSON - an empty array,
+    not the string "null".
+    """
+    settings = _full_settings(monkeypatch)
+    fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock()))
+    agent = IntentAgent(settings, llm=fake_llm)
+
+    result = agent._make_get_policies_tool(policies, policy_fetch_failed=policy_fetch_failed).invoke({})
+
+    assert json.loads(result) == expected_json
+
+
+def test_get_policies_tool_logs_only_when_the_fetch_had_failed(monkeypatch, mocker, caplog):
+    """get_policies invoked against a failed fetch must log that server-side (review, High) -
+    keyed on policy_fetch_failed, not `policies is None`: PolicyClient can serve a real,
+    non-None stale list even when the live fetch failed, so the log must still fire for that
+    case, not just the "nothing to fall back on" one. The LLM still gets whatever policies
+    holds either way (same _policy_block convention) - this is the only trace of a failure. A
+    genuinely healthy fetch (policy_fetch_failed=False), empty or not, must not log anything -
+    the two must stay distinguishable in the logs.
+    """
+    caplog.set_level("WARNING")
+    settings = _full_settings(monkeypatch)
+    fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock()))
+    agent = IntentAgent(settings, llm=fake_llm)
+
+    agent._make_get_policies_tool(None, policy_fetch_failed=True).invoke({})
+    assert "get_policies invoked but this request's policy fetch had failed" in caplog.text
+
+    caplog.clear()
+    stale_policies = [{"policy": {"actions": ["APPROVE_REFUND"], "resource": {"type": "Car"}}, "tags": []}]
+    agent._make_get_policies_tool(stale_policies, policy_fetch_failed=True).invoke({})
+    assert "get_policies invoked but this request's policy fetch had failed" in caplog.text
+
+    caplog.clear()
+    agent._make_get_policies_tool([], policy_fetch_failed=False).invoke({})
+    assert caplog.text == ""
+
+
 def test_run_extraction_binds_structured_output_schema_derived_from_current_schema(monkeypatch, mocker):
     """run_extraction must call bind_tools with a response_schema derived from the last
-    successfully derived schema (via build_input_schema), not some other/unrelated schema.
+    successfully derived schema (via build_input_schema), not some other/unrelated schema -
+    and with the expected tool set. Tools are rebuilt fresh every request (ENG-9671 - policies
+    vary by subject_type), so two separately-built StructuredTool lists never compare equal by
+    identity; asserting on names is what is actually meaningful here.
     """
     settings = _full_settings(monkeypatch)
     schema = _load_schema_fixture()
@@ -954,16 +1184,19 @@ def test_run_extraction_binds_structured_output_schema_derived_from_current_sche
     fake_bound_llm = mocker.Mock(ainvoke=mock_ainvoke)
     mock_bind_tools = mocker.Mock(return_value=fake_bound_llm)
     fake_llm = mocker.Mock(bind_tools=mock_bind_tools)
-    fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=schema))
-    agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client)
+    fake_schema_client = _fake_schema_client(mocker, get_cached=mocker.Mock(return_value=schema))
+    fake_policy_client = _fake_policy_client(mocker, get_cached=mocker.Mock(return_value=([], False)))
+    agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client, policy_client=fake_policy_client)
 
     asyncio.run(agent.run_extraction("buy AAPL", RequestSubject(id="user-1", type="Customer")))
 
-    mock_bind_tools.assert_called_once_with(
-        agent.tools,
-        response_mime_type="application/json",
-        response_schema=build_input_schema(schema),
-    )
+    mock_bind_tools.assert_called_once()
+    call = mock_bind_tools.call_args
+    assert {t.name for t in call.args[0]} == {"activate_skill", "get_data_schema", "get_policies"}
+    assert call.kwargs == {
+        "response_mime_type": "application/json",
+        "response_schema": build_input_schema(schema, []),
+    }
 
 
 def test_run_extraction_rebuilds_schema_when_cached_schema_changes_between_requests(monkeypatch, mocker):
@@ -982,8 +1215,9 @@ def test_run_extraction_rebuilds_schema_when_cached_schema_changes_between_reque
     fake_bound_llm = mocker.Mock(ainvoke=mock_ainvoke)
     mock_bind_tools = mocker.Mock(return_value=fake_bound_llm)
     fake_llm = mocker.Mock(bind_tools=mock_bind_tools)
-    fake_schema_client = mocker.Mock(get_cached=mocker.Mock(side_effect=[schema_v1, schema_v2]))
-    agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client)
+    fake_schema_client = _fake_schema_client(mocker, get_cached=mocker.Mock(side_effect=[schema_v1, schema_v2]))
+    fake_policy_client = _fake_policy_client(mocker, get_cached=mocker.Mock(return_value=([], False)))
+    agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client, policy_client=fake_policy_client)
 
     asyncio.run(agent.run_extraction("buy AAPL", RequestSubject(id="user-1", type="Customer")))
     asyncio.run(agent.run_extraction("rent a boat", RequestSubject(id="user-1", type="Customer")))
@@ -1025,7 +1259,7 @@ def test_run_extraction_fails_before_any_llm_call(monkeypatch, mocker, caplog, c
     mock_ainvoke = mocker.AsyncMock()
     fake_bound_llm = mocker.Mock(ainvoke=mock_ainvoke)
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=fake_bound_llm))
-    fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=build_schema()))
+    fake_schema_client = _fake_schema_client(mocker, get_cached=mocker.Mock(return_value=build_schema()))
     agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client)
 
     result = asyncio.run(agent.run_extraction("buy AAPL", RequestSubject(id="user-1", type=subject_type)))
@@ -1033,6 +1267,9 @@ def test_run_extraction_fails_before_any_llm_call(monkeypatch, mocker, caplog, c
     assert json.loads(result.text) == expected_error("buy AAPL")
     assert result.outcome == Outcome.ERROR
     assert result.message == expected_error("buy AAPL")["reason"]
+    # None, not False (review): none of these three cases ever reach the policy-fetch phase, so
+    # a fetch was never attempted at all - False would misrepresent that as a real success.
+    assert result.policy_fetch_failed is None
     mock_ainvoke.assert_not_called()
     assert any(record.levelname == expected_level for record in caplog.records)
     if log_detail:
@@ -1056,8 +1293,16 @@ def _agent_with_responses(monkeypatch, mocker, responses, **env):
     settings = _full_settings(monkeypatch)
     mock_ainvoke = mocker.AsyncMock(side_effect=responses)
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mock_ainvoke)))
-    fake_schema_client = mocker.Mock(get_cached=mocker.Mock(return_value=_load_schema_fixture()))
-    return IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client), mock_ainvoke
+    fake_schema_client = _fake_schema_client(mocker, get_cached=mocker.Mock(return_value=_load_schema_fixture()))
+    # No policies by default (a successful fetch that found none, not a failure) - a real
+    # PolicyClient would otherwise hit the real network against the fake base_url on every
+    # run_extraction-level test here, and incidentally tag every evaluation
+    # policy_fetch_failed=True, which is its own dedicated test's concern, not this fixture's.
+    fake_policy_client = _fake_policy_client(mocker, get_cached=mocker.Mock(return_value=([], False)))
+    return (
+        IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client, policy_client=fake_policy_client),
+        mock_ainvoke,
+    )
 
 
 def test_run_extraction_returns_bound_evaluations_when_first_answer_is_on_schema(monkeypatch, mocker):
@@ -1272,6 +1517,158 @@ def test_run_extraction_short_circuits_repeat_skill_activation(monkeypatch, mock
     assert caplog.text.count("Activating skill: extract-intent") == 1
 
 
+@pytest.mark.parametrize(
+    ("cached_policies", "expect_block"),
+    [
+        pytest.param(
+            [{"policy": {"actions": ["APPROVE_REFUND"], "resource": {"type": "Car"}}, "tags": []}],
+            True,
+            id="policies_fetched_injects_the_block",
+        ),
+        pytest.param([], False, id="none_fetched_omits_the_block"),
+    ],
+)
+def test_run_extraction_policies_block_injection_on_skill_activation(
+    monkeypatch, mocker, cached_policies, expect_block
+):
+    """extract-intent's activation must inject a <policies> block alongside <data_schema> when
+    policies were fetched for this request (ENG-9671) - the LLM's other source for action.name -
+    and must not inject an empty/misleading block when none were fetched (a failed fetch or a
+    project with none at all), falling back to schema-only action derivation as before ENG-9671.
+    """
+    settings = _full_settings(monkeypatch)
+    mock_ainvoke = mocker.AsyncMock(
+        side_effect=[
+            _llm_response(mocker, tool_calls=[_ACTIVATE_EXTRACT_INTENT_CALL]),
+            _llm_response(mocker, _ON_SCHEMA_ANSWER),
+        ],
+    )
+    fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mock_ainvoke)))
+    fake_schema_client = _fake_schema_client(mocker, get_cached=mocker.Mock(return_value=_load_schema_fixture()))
+    fake_policy_client = _fake_policy_client(mocker, get_cached=mocker.Mock(return_value=(cached_policies, False)))
+    agent = IntentAgent(
+        settings,
+        llm=fake_llm,
+        schema_client=fake_schema_client,
+        policy_client=fake_policy_client,
+    )
+
+    asyncio.run(agent.run_extraction("rent kitt", RequestSubject(id="user-1", type="Customer")))
+
+    messages = mock_ainvoke.call_args_list[-1].args[0]
+    tool_results = [m.content for m in messages if isinstance(m, ToolMessage)]
+    if expect_block:
+        assert any("<policies>" in result and "APPROVE_REFUND" in result for result in tool_results)
+        assert any("policy_based" in result for result in tool_results)
+    else:
+        assert not any("</policies>" in result for result in tool_results)
+
+
+def test_run_extraction_marks_policy_fetch_failed_when_serving_stale_policies(monkeypatch, mocker):
+    """Review finding, High: PolicyClient.get_cached() can serve a real, non-None stale policy
+    list when the live fetch failed (it falls back to the last known-good entry rather than
+    losing it). An earlier version of run_extraction inferred fetch_failed as `policies is
+    None`, which that fallback made wrong - the audit record and the caller-facing
+    context.parameters.policy_fetch_failed marker both said the fetch succeeded, even though
+    the policies being used were stale and the live attempt had just failed. Must now be True
+    on both, driven by the explicit flag PolicyClient.get_cached() returns instead.
+    """
+    settings = _full_settings(monkeypatch)
+    stale_policies = [{"policy": {"actions": ["APPROVE_REFUND"], "resource": {"type": "Car"}}, "tags": []}]
+    mock_ainvoke = mocker.AsyncMock(
+        side_effect=[
+            _llm_response(mocker, tool_calls=[_ACTIVATE_EXTRACT_INTENT_CALL]),
+            _llm_response(mocker, _ON_SCHEMA_ANSWER),
+        ],
+    )
+    fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mock_ainvoke)))
+    fake_schema_client = _fake_schema_client(mocker, get_cached=mocker.Mock(return_value=_load_schema_fixture()))
+    fake_policy_client = _fake_policy_client(mocker, get_cached=mocker.Mock(return_value=(stale_policies, True)))
+    agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client, policy_client=fake_policy_client)
+
+    result = asyncio.run(agent.run_extraction("rent kitt", RequestSubject(id="user-1", type="Customer")))
+
+    assert result.outcome == Outcome.SUCCESS
+    assert result.policy_fetch_failed is True
+    assert json.loads(result.text)["evaluations"][0]["context"]["parameters"]["policy_fetch_failed"] is True
+
+
+def test_run_extraction_reuses_one_policy_snapshot_for_the_whole_request(monkeypatch, mocker):
+    """Review finding: activate_skill's extract-intent injection used to call
+    get_cached_policies() a second time, independent of the fetch run_extraction already used
+    to build request.policy_context and the response schema's action enum. If that first fetch
+    failed and a second, later fetch (e.g. after the cache entry gets repopulated) succeeded,
+    the LLM would see policies its own enum was never widened for and that
+    validate_evaluations/the audit trail never learn about either. Fixed by fetching policies
+    exactly once per request and threading that same snapshot into the injected block -
+    proven here by a policy_client whose second call would return different data, and
+    confirming it is never actually called a second time.
+    """
+    settings = _full_settings(monkeypatch)
+    mock_ainvoke = mocker.AsyncMock(
+        side_effect=[
+            _llm_response(mocker, tool_calls=[_ACTIVATE_EXTRACT_INTENT_CALL]),
+            _llm_response(mocker, _ON_SCHEMA_ANSWER),
+        ],
+    )
+    fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mock_ainvoke)))
+    fake_schema_client = _fake_schema_client(mocker, get_cached=mocker.Mock(return_value=_load_schema_fixture()))
+    first_fetch_policies = [{"policy": {"actions": ["APPROVE_REFUND"], "resource": {"type": "Car"}}, "tags": []}]
+    second_fetch_policies = [{"policy": {"actions": ["ESCALATE"], "resource": {"type": "Car"}}, "tags": []}]
+    fake_policy_client = _fake_policy_client(
+        mocker, get_cached=mocker.Mock(side_effect=[(first_fetch_policies, False), (second_fetch_policies, False)])
+    )
+    agent = IntentAgent(
+        settings,
+        llm=fake_llm,
+        schema_client=fake_schema_client,
+        policy_client=fake_policy_client,
+    )
+
+    asyncio.run(agent.run_extraction("rent kitt", RequestSubject(id="user-1", type="Customer")))
+
+    assert fake_policy_client.get_cached.call_count == 1
+    messages = mock_ainvoke.call_args_list[-1].args[0]
+    tool_results = [m.content for m in messages if isinstance(m, ToolMessage)]
+    assert any("APPROVE_REFUND" in result for result in tool_results)
+    assert not any("ESCALATE" in result for result in tool_results)
+
+
+def test_run_extraction_reuses_one_schema_snapshot_for_the_whole_request(monkeypatch, mocker):
+    """Review finding: activate_skill's extract-intent injection called get_cached_schema() a
+    second time, independent of the fetch run_extraction already used to build the response
+    schema's enums and validate subject_type. If a refresh landed between that first fetch and
+    this second one, the LLM would see a schema its own enum was never built for, and
+    validate_evaluations/the audit's schema_version would silently describe a different one.
+    Fixed by fetching the schema exactly once per request and threading that same snapshot into
+    the injected block - proven here by a schema_client whose second call would return
+    different data, and confirming it is never actually called a second time.
+    """
+    settings = _full_settings(monkeypatch)
+    mock_ainvoke = mocker.AsyncMock(
+        side_effect=[
+            _llm_response(mocker, tool_calls=[_ACTIVATE_EXTRACT_INTENT_CALL]),
+            _llm_response(mocker, _ON_SCHEMA_ANSWER),
+        ],
+    )
+    fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mock_ainvoke)))
+    first_fetch_schema = _load_schema_fixture()
+    second_fetch_schema = json.loads(json.dumps(first_fetch_schema))
+    second_fetch_schema["graph"]["nodes"]["TotallyDifferentNodeType"] = {"properties": {}}
+    fake_schema_client = _fake_schema_client(
+        mocker, get_cached=mocker.Mock(side_effect=[first_fetch_schema, second_fetch_schema])
+    )
+    fake_policy_client = _fake_policy_client(mocker, get_cached=mocker.Mock(return_value=([], False)))
+    agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client, policy_client=fake_policy_client)
+
+    asyncio.run(agent.run_extraction("rent kitt", RequestSubject(id="user-1", type="Customer")))
+
+    assert fake_schema_client.get_cached.call_count == 1
+    messages = mock_ainvoke.call_args_list[-1].args[0]
+    tool_results = [m.content for m in messages if isinstance(m, ToolMessage)]
+    assert not any("TotallyDifferentNodeType" in result for result in tool_results)
+
+
 def test_run_extraction_returns_timeout_error_when_llm_call_exceeds_limit(monkeypatch, mocker, caplog):
     """A single LLM call past LLM_TIMEOUT_SECONDS must surface as llm_timeout_error - not hang
     the request, and not be retried.
@@ -1309,6 +1706,9 @@ def test_run_extraction_enforces_request_deadline_across_calls(monkeypatch, mock
         _slow_tool_call,
         LLM_TIMEOUT_SECONDS=0.1,
         REQUEST_TIMEOUT_SECONDS=0.1,
+        SCHEMA_FETCH_TIMEOUT_SECONDS=0.03,
+        POLICY_FETCH_TIMEOUT_SECONDS=0.03,
+        POLICY_FETCH_RETRY_ATTEMPTS=1,
         TOOL_CALL_MAX_ITERATIONS=_UNREACHABLE_TOOL_BUDGET,
     )
 
@@ -1319,6 +1719,185 @@ def test_run_extraction_enforces_request_deadline_across_calls(monkeypatch, mock
     assert 1 < mock_ainvoke.call_count < _UNREACHABLE_TOOL_BUDGET
     assert "Request exceeded the 0.1s end-to-end budget" in caplog.text
     assert "LLM call exceeded" not in caplog.text
+
+
+def test_run_extraction_timeout_mid_policy_fetch_reports_the_fetch_as_failed(monkeypatch, mocker):
+    """A request deadline firing while get_cached_policies() is still running (review) must not
+    report the audit's policy_context as a *successful* fetch that found no policies - it never
+    finished at all. The real PolicyContext only replaces run_extraction's own default once that
+    fetch actually returns, so a timeout mid-fetch falls back to the default instead; that
+    default must itself already say fetch_failed=True, or the audit record would claim a policy
+    fetch that never completed was healthy, with an empty policy hash to match.
+
+    The caller must also get request_timeout_error, not llm_timeout_error (review) - the model
+    was never even reached, so "The model did not respond in time." would misattribute a slow
+    policy fetch to Gemini. schema_version is still reported, since the schema fetch that
+    preceded this one already succeeded.
+    """
+    monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "0.02")
+    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "0.01")
+    monkeypatch.setenv("SCHEMA_FETCH_TIMEOUT_SECONDS", "0.005")
+    monkeypatch.setenv("POLICY_FETCH_TIMEOUT_SECONDS", "0.005")
+    monkeypatch.setenv("POLICY_FETCH_RETRY_ATTEMPTS", "1")
+    settings = _full_settings(monkeypatch)
+    fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mocker.AsyncMock())))
+    schema = _load_schema_fixture()
+    fake_schema_client = _fake_schema_client(mocker, get_cached=mocker.Mock(return_value=schema))
+    fake_policy_client = _fake_policy_client(
+        mocker, get_cached=mocker.Mock(side_effect=lambda _subject_type: time.sleep(0.1) or [])
+    )
+    agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client, policy_client=fake_policy_client)
+
+    result = asyncio.run(agent.run_extraction("rent kitt", RequestSubject(id="user-1", type="Customer")))
+
+    assert result.outcome == Outcome.ERROR
+    assert result.policy_fetch_failed is True
+    assert result.policy_version == ""
+    assert result.schema_version == schema_version(schema)
+    assert json.loads(result.text) == request_timeout_error("rent kitt")
+
+
+def test_run_extraction_timeout_mid_schema_fetch_reports_the_request_timeout(monkeypatch, mocker):
+    """A request deadline firing while get_cached_schema() is still running (review) must
+    report request_timeout_error, not llm_timeout_error - the model was never even reached, so
+    blaming it for a slow schema fetch would misattribute the failure. Unlike the mid-policy-
+    fetch case, schema_version/policy_context are both still their unset defaults here: neither
+    a schema nor a policy was ever confirmed one way or the other.
+    """
+    monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "0.02")
+    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "0.01")
+    monkeypatch.setenv("SCHEMA_FETCH_TIMEOUT_SECONDS", "0.005")
+    monkeypatch.setenv("POLICY_FETCH_TIMEOUT_SECONDS", "0.005")
+    monkeypatch.setenv("POLICY_FETCH_RETRY_ATTEMPTS", "1")
+    settings = _full_settings(monkeypatch)
+    fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mocker.AsyncMock())))
+    fake_schema_client = _fake_schema_client(
+        mocker, get_cached=mocker.Mock(side_effect=lambda: time.sleep(0.1) or _load_schema_fixture())
+    )
+    fake_policy_client = _fake_policy_client(mocker, get_cached=mocker.Mock(return_value=([], False)))
+    agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client, policy_client=fake_policy_client)
+
+    result = asyncio.run(agent.run_extraction("rent kitt", RequestSubject(id="user-1", type="Customer")))
+
+    assert result.outcome == Outcome.ERROR
+    assert result.schema_version == ""
+    assert result.policy_fetch_failed is None
+    assert result.policy_version == ""
+    assert json.loads(result.text) == request_timeout_error("rent kitt")
+
+
+def test_run_extraction_slow_schema_fetch_does_not_block_the_event_loop(monkeypatch, mocker):
+    """SchemaClient/PolicyClient hit the platform over a synchronous httpx2.Client, so a
+    slow/unreachable fetch run directly on the event loop would stall every concurrent request
+    this process is serving, not just this one (reported in review). Fetching via the
+    dedicated _fetch_executor fixes that specific claim - proven here by a concurrent, unrelated
+    coroutine completing well before the slow fetch does, rather than the whole loop stalling
+    for its duration. (Python cannot preempt an already-running thread, so this request's own
+    latency still tracks the fetch's duration once started - see run_extraction's docstring;
+    that is a separate, already-documented limitation this test does not attempt to disprove.)
+    """
+    settings = _full_settings(monkeypatch)
+    mock_ainvoke = mocker.AsyncMock(return_value=_llm_response(mocker, text="no intent here"))
+    fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mock_ainvoke)))
+    fake_schema_client = _fake_schema_client(
+        mocker, get_cached=mocker.Mock(side_effect=lambda: (time.sleep(0.3), _load_schema_fixture())[1])
+    )
+    fake_policy_client = _fake_policy_client(mocker, get_cached=mocker.Mock(return_value=([], False)))
+    agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client, policy_client=fake_policy_client)
+
+    async def _scenario():
+        slow_task = asyncio.create_task(agent.run_extraction("rent kitt", RequestSubject(id="user-1", type="Customer")))
+        started = time.perf_counter()
+        await asyncio.sleep(0.05)  # the loop must still service this while the fetch blocks its own thread
+        concurrent_elapsed = time.perf_counter() - started
+        await slow_task  # let the slow request finish so no task is left dangling
+        return concurrent_elapsed
+
+    concurrent_elapsed = asyncio.run(_scenario())
+
+    assert concurrent_elapsed < _LOOP_NOT_BLOCKED_THRESHOLD_SECONDS
+
+
+def test_run_extraction_get_policies_tool_call_does_not_block_the_event_loop(monkeypatch, mocker):
+    """The on-demand get_policies tool (ENG-9671) can call into PolicyClient.get_cached, a
+    synchronous httpx2 call, exactly like run_extraction's own pre-check fetch - but this call
+    happens later, when the LLM decides to invoke the tool mid-conversation, so it needs its
+    own fix: _dispatch_tool_call now awaits ainvoke() rather than calling invoke() directly.
+    StructuredTool's ainvoke() runs a plain sync-defined tool via a thread-pool executor, so a
+    slow/hung fetch triggered by this on-demand tool call cannot block every other concurrent
+    request either - proven here the same way as the pre-check fetch: a concurrent, unrelated
+    coroutine completes well before the slow tool call does.
+    """
+    settings = _full_settings(monkeypatch)
+    get_policies_call = {"name": "get_policies", "args": {}, "id": "call-2"}
+    mock_ainvoke = mocker.AsyncMock(
+        side_effect=[
+            _llm_response(mocker, tool_calls=[_ACTIVATE_EXTRACT_INTENT_CALL]),
+            _llm_response(mocker, tool_calls=[get_policies_call]),
+            _llm_response(mocker, _ON_SCHEMA_ANSWER),
+        ],
+    )
+    fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mock_ainvoke)))
+    fake_schema_client = _fake_schema_client(mocker, get_cached=mocker.Mock(return_value=_load_schema_fixture()))
+
+    call_count = 0
+
+    def _get_cached(_subject_type):
+        nonlocal call_count
+        call_count += 1
+        if call_count > 1:  # the on-demand get_policies tool call, not run_extraction's own pre-check
+            time.sleep(0.3)
+        return [], False
+
+    fake_policy_client = _fake_policy_client(mocker, get_cached=mocker.Mock(side_effect=_get_cached))
+    agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client, policy_client=fake_policy_client)
+
+    async def _scenario():
+        slow_task = asyncio.create_task(agent.run_extraction("rent kitt", RequestSubject(id="user-1", type="Customer")))
+        started = time.perf_counter()
+        await asyncio.sleep(0.05)  # the loop must still service this while the tool call blocks its own thread
+        concurrent_elapsed = time.perf_counter() - started
+        await slow_task  # let the slow request finish so no task is left dangling
+        return concurrent_elapsed
+
+    concurrent_elapsed = asyncio.run(_scenario())
+
+    assert concurrent_elapsed < _LOOP_NOT_BLOCKED_THRESHOLD_SECONDS
+
+
+def test_schema_and_policy_fetches_use_the_dedicated_fetch_executor(monkeypatch, mocker):
+    """Schema/policy fetches must run on the agent's own dedicated _fetch_executor, not the
+    event loop's shared default one (review, ENG-9671): Python cannot preempt an already-running
+    synchronous call, so a stuck/unreachable endpoint's worker thread keeps running past this
+    request's own REQUEST_TIMEOUT_SECONDS deadline. Enough concurrent requests hitting a
+    genuinely down endpoint could otherwise pile up orphaned workers on the *shared* default
+    executor and starve unrelated concurrent requests' tool calls and audit writes, which also
+    use it - routing these two fetches through their own small, bounded pool instead contains
+    that pile-up to fetches specifically. Every IntentAgent owns its own such pool (review:
+    not a shared module-level one, see __init__'s docstring), so this drives it from a real
+    instance rather than a module-level name.
+    """
+    settings = _full_settings(monkeypatch)
+    agent = IntentAgent(settings, llm=mocker.Mock())
+    calls: list[object] = []
+
+    async def _scenario():
+        loop = asyncio.get_running_loop()
+        real_run_in_executor = loop.run_in_executor
+
+        def _record(executor, func, *args):
+            calls.append(executor)
+            return real_run_in_executor(executor, func, *args)
+
+        loop.run_in_executor = _record
+        try:
+            return await agent._run_in_fetch_executor(lambda: "ok")
+        finally:
+            loop.run_in_executor = real_run_in_executor
+
+    assert asyncio.run(_scenario()) == "ok"
+    assert calls == [agent._fetch_executor]
+    assert agent._fetch_executor is not None  # loop's shared default executor is None, not this
 
 
 def test_run_extraction_times_out_during_retry_too(monkeypatch, mocker):

@@ -1,5 +1,6 @@
 {{- include "service.validateCacheBackend" . }}
 {{- include "service.validateRedisConfig" . }}
+{{- include "service.validateTimeouts" . }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -66,6 +67,8 @@ spec:
               value: {{ .Values.app.logLevel | quote }}
             - name: GEMINI_MODEL
               value: {{ .Values.app.geminiModel | quote }}
+            - name: FETCH_EXECUTOR_MAX_WORKERS
+              value: {{ .Values.app.fetchExecutorMaxWorkers | int64 | quote }}
             - name: TOOL_CALL_MAX_ITERATIONS
               value: {{ .Values.app.toolCallMaxIterations | int64 | quote }}
             - name: SCHEMA_PREVIEW_CHARS
@@ -82,6 +85,14 @@ spec:
               value: {{ .Values.app.schemaFetchTimeoutSeconds | quote }}
             - name: SCHEMA_REFRESH_TTL_MINUTES
               value: {{ .Values.app.schemaRefreshTtlMinutes | quote }}
+            - name: POLICY_FETCH_TIMEOUT_SECONDS
+              value: {{ .Values.app.policyFetchTimeoutSeconds | quote }}
+            - name: POLICY_REFRESH_TTL_MINUTES
+              value: {{ .Values.app.policyRefreshTtlMinutes | quote }}
+            - name: POLICY_FETCH_RETRY_ATTEMPTS
+              value: {{ .Values.app.policyFetchRetryAttempts | int64 | quote }}
+            - name: POLICY_PREVIEW_CHARS
+              value: {{ .Values.app.policyPreviewChars | int64 | quote }}
             - name: CACHE_BACKEND
               value: {{ .Values.app.cacheBackend | quote }}
             {{- if .Values.app.redisUrlSecretRef.name }}

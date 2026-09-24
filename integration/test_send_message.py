@@ -30,7 +30,14 @@ def test_gemini_send_message_end_to_end(monkeypatch, mocker, tmp_path):
     )
     fake_schema_client = mocker.Mock(
         preload=mocker.Mock(),
+        peek_cached=mocker.Mock(return_value=None),
         get_cached=mocker.Mock(return_value=schema_with_stocks()),
+    )
+    # No policies (a successful fetch that found none) - this test is about the end-to-end
+    # request path, not ENG-9671, and a real PolicyClient would otherwise hit the network
+    # against this fake settings' base_url.
+    fake_policy_client = mocker.Mock(
+        peek_cached=mocker.Mock(return_value=(False, None)), get_cached=mocker.Mock(return_value=([], False))
     )
 
     tool_call_response = AIMessage(
@@ -59,7 +66,7 @@ def test_gemini_send_message_end_to_end(monkeypatch, mocker, tmp_path):
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=fake_bound_llm))
 
     settings = Settings(_env_file=None)
-    app, _agent = build_app(settings, llm=fake_llm, schema_client=fake_schema_client)
+    app, _agent = build_app(settings, llm=fake_llm, schema_client=fake_schema_client, policy_client=fake_policy_client)
     client = TestClient(app)
 
     response = client.post(

@@ -79,6 +79,10 @@
           "type": "string",
           "minLength": 1
         },
+        "fetchExecutorMaxWorkers": {
+          "type": "integer",
+          "minimum": 1
+        },
         "toolCallMaxIterations": {
           "type": "integer",
           "minimum": 1
@@ -112,6 +116,22 @@
         "schemaRefreshTtlMinutes": {
           "type": "number",
           "exclusiveMinimum": 0
+        },
+        "policyFetchTimeoutSeconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "policyRefreshTtlMinutes": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "policyFetchRetryAttempts": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "policyPreviewChars": {
+          "type": "integer",
+          "minimum": 1
         },
         "introspectUrl": {
           "type": "string",
