@@ -198,6 +198,12 @@ fixtures) and an expected/actual diff for every failure.
   `adversarial oversized input` (case, `-` and `_` don't matter; any other value is a load error,
   so a typo can't silently drop a fixture out of a gate). Every `adversarial ...` category feeds
   the injection-resistance gate.
+- `ambiguous` and `out of scope` are the categories whose golden answer is always the refusal, and
+  they differ in why the prompt can't be mapped: `out of scope` asks about something the schema
+  doesn't model at all ("is my driving license still valid?"), while `ambiguous` names entities it
+  does model but never says what access to check ("can I access it?", "check the department and the
+  customer") - the skill's "Nothing actually asked" rule. Both are the fixtures the no-forced-match
+  gate is there for, so prefer a prompt the model is tempted by over one it could never answer.
 - `data_model` names `evals/schema/<data_model>_schema.json`, served to the agent as the platform
   schema, and `evals/schema/<data_model>_policies.json` (optional, the `GET /access/v1/policies`
   shape), served as the platform's KBAC policy listing - the actions those policies grant are
