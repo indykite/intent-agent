@@ -498,7 +498,9 @@ def test_bind_subject_search_marker_without_a_searched_type_falls_back_to_overri
                 "resource": {"type": "Car"},
                 "context": {
                     "parameters": {"attribute": "price"},
-                    "filters": "resource.colour == 'black'",
+                    # `model` is one of Car's own properties in the fixture schema - a filter
+                    # reading a property the type doesn't have is its own error (filters_off_schema_property)
+                    "filters": "resource.model == 'DeLorean'",
                     "qualifiers": {"time": "this weekend"},
                     "extra": "open object, passed through",
                 },
@@ -921,7 +923,7 @@ def test_normalize_intent_response_passes_context_through_verbatim():
     """
     # Valid CEL whose string literal carries injection-looking content: the parser accepts it,
     # and the agent must pass it on untouched rather than sanitize it.
-    filters = 'resource.name.contains("refund\'); DROP TABLE decisions; --")'
+    filters = 'resource.model.contains("refund\'); DROP TABLE decisions; --")'
     llm_text = json.dumps(
         {
             "prompt": "decisions about refunds",
@@ -2028,11 +2030,84 @@ def test_normalize_intent_response_lifts_a_pure_external_id_filter_into_the_reso
 
 
 @pytest.mark.parametrize(
+    "filters",
+    [
+        # Seen live (ENG-9810 follow-up): unsure which property carries the name, the model ORs
+        # the id against an invented one. Every clause names the same instance the id does.
+        pytest.param("resource.external_id == 'kitt' || resource.email == 'kitt'", id="hedged_with_another_property"),
+        pytest.param("'kitt' == resource.external_id || resource.model == 'kitt'", id="mixed_operand_order"),
+        # The model writing the AuthZEN field name instead of the property behind it.
+        pytest.param("resource.id == 'kitt'", id="id_property"),
+    ],
+)
+def test_normalize_intent_response_lifts_an_identifier_hedged_across_properties(filters):
+    """A chain of `||` equalities against the same literal, one of them the id, identifies exactly
+    one resource - so it collapses into `resource.id` like the lone id filter does. Without this an
+    Access Evaluation goes out with no resource.id, which AuthZEN rejects outright ("missing field
+    evaluations[0].resource.id"); the invented property in the hedge is consumed with the filter.
+    """
+    llm_text = json.dumps(
+        {"evaluations": [{"action": {"name": "RENT"}, "resource": {"type": "Car"}, "context": {"filters": filters}}]},
+    )
+    data = json.loads(_normalize(llm_text, "can I rent kitt?"))
+    assert data["evaluations"][0]["resource"] == {"type": "Car", "id": "kitt"}
+    assert data["evaluations"][0]["context"] == {}
+
+
+def test_normalize_intent_response_rejects_a_filter_reading_a_property_the_type_lacks():
+    """A filter may only read the resource type's own properties: `Car` has make/model/vin/year in
+    the fixture schema, not `email`, and a condition on a property that doesn't exist can't be
+    answered downstream. It is fed back for a retry like any off-schema value. Only reachable when
+    the filter isn't a pure identifier - that case is lifted away before validation runs.
+    """
+    llm_text = json.dumps(
+        {
+            "evaluations": [
+                {
+                    "action": {"name": "RENT"},
+                    "resource": {"type": "Car"},
+                    "context": {"filters": "resource.email == 'kitt' && resource.year == 1963"},
+                },
+            ],
+        },
+    )
+    with pytest.raises(IntentValidationError) as excinfo:
+        _normalize(llm_text, "can I rent kitt?")
+    assert excinfo.value.errors == [
+        "evaluations[0]: context.filters reads resource.email, which is not a property of the resource type"
+    ]
+
+
+def test_normalize_intent_response_allows_a_filter_on_the_authzen_resource_fields():
+    """`id` and `type` belong to the AuthZEN resource object rather than the graph node, so the
+    data schema's property list never contains them and a filter naming them is still valid.
+    """
+    llm_text = json.dumps(
+        {
+            "evaluations": [
+                {
+                    "action": {"name": "RENT"},
+                    "resource": {"type": "Car", "id": "kitt"},
+                    "context": {"filters": "resource.type == 'Car' && resource.year > 1960"},
+                },
+            ],
+        },
+    )
+    data = json.loads(_normalize(llm_text, "can I rent kitt?"))
+    assert data["evaluations"][0]["context"] == {"filters": "resource.type == 'Car' && resource.year > 1960"}
+
+
+@pytest.mark.parametrize(
     ("resource", "filters"),
     [
         pytest.param({"type": "Car", "id": "herbie"}, "resource.external_id == 'kitt'", id="id_already_set"),
-        pytest.param({"type": "Car"}, "resource.external_id == 'kitt' && resource.status == 'free'", id="compound"),
-        pytest.param({"type": "Car"}, "resource.name == 'kitt'", id="other_property"),
+        pytest.param({"type": "Car"}, "resource.external_id == 'kitt' && resource.year == 1963", id="compound"),
+        pytest.param({"type": "Car"}, "resource.model == 'kitt'", id="other_property"),
+        pytest.param(
+            {"type": "Car"},
+            "resource.external_id == 'kitt' || resource.model == 'herbie'",
+            id="disjunction_over_different_literals",
+        ),
         pytest.param({"type": "Car"}, "resource.external_id != 'kitt'", id="not_equality"),
         pytest.param({"type": "Car"}, "resource.external_id.contains('kit')", id="method_call"),
     ],
@@ -2801,6 +2876,35 @@ def test_normalize_intent_response_completes_a_blank_second_subject_type_only_fo
     with pytest.raises(IntentValidationError) as excinfo:
         _normalize(llm_text, "who at acme can rent?")
     assert excinfo.value.errors == ["evaluations[1]: subject.type is missing or blank"]
+
+
+def test_normalize_intent_response_reports_a_search_marker_without_a_subject_object():
+    """Seen live on subject_search_test_1: the model marks a Subject Search but leaves the
+    `subject` object out, mixing up SKILL.md's "omit subject" rule for the other kinds with the
+    Subject Search exception. The marker alone can't say which type to search for, so this is
+    reported as exactly that - before the fix the marker was ignored, the caller was bound, and
+    the caller's own relationship check failed instead, which sent the retry after the action name
+    and got an empty evaluations array back.
+    """
+    llm_text = json.dumps(
+        {
+            "evaluations": [
+                {
+                    "action": {"name": "RENT"},
+                    "resource": {"type": "Car", "id": "kitt"},
+                    "context": {"parameters": {"subject_source": "search"}},
+                },
+            ],
+        },
+    )
+    with pytest.raises(IntentValidationError) as excinfo:
+        _normalize(llm_text, "who can rent kitt?")
+    assert excinfo.value.errors == [
+        (
+            'evaluations[0]: context.parameters.subject_source is "search" but subject.type is missing '
+            "- a Subject Search must name the subject type to search for"
+        )
+    ]
 
 
 def test_normalize_intent_response_reads_the_gate_from_a_lifted_external_id_filter():

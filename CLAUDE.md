@@ -191,15 +191,22 @@ plus the policy-granted actions, the same union `build_input_schema` puts in the
 the structured-output enum, since Gemini treats the enum as a strong hint, not a guarantee - and
 checks `context`'s shape the same way (`filters` a string, `parameters`/`qualifiers` objects;
 null keys, a blank `filters` and the model's internal `subject_source` / `resource_source`
-binding markers are dropped afterwards, a filter that only pins `resource.external_id == '<id>'`
-on an id-less resource is lifted into `resource.id` - same single resource, the AuthZEN shape for
-it - an evaluation whose `action.name` is present but blank is dropped as the model's "no action
+binding markers are dropped afterwards, a filter that identifies one resource on an id-less
+resource is lifted into `resource.id` - same single resource, the AuthZEN shape for it, and an
+Access Evaluation without it is rejected downstream; that covers a lone
+`resource.external_id == '<id>'` (or `resource.id`, the model's other spelling) and a chain of
+`||` equalities against the same literal where one pins the id, the model's hedge when it doesn't
+know which property carries the name (`resource.external_id == 'Volvo' || resource.email ==
+'Volvo'`), but never a `&&`, a parenthesised group or clauses over different literals - an
+evaluation whose `action.name` is present but blank is dropped as the model's "no action
 fits" (retrying it was seen to force a match instead), a Subject Search over a node type the schema
 doesn't mark DigitalTwin is dropped too (only DigitalTwin types are candidates; seen live as a
 spurious second candidate next to the right one; an undefined type is still fed back), `resource_source: "caller"` binds the
 caller's own type/id as the resource ("who can access me?"), a blank second-subject type is
 completed from the gate evaluation, and everything else passes through verbatim as untrusted data) and enforces CEL on `filters` (`cel.py`, on `cel-python`): it must parse,
-may reference only the `resource` variable, and may not call `dyn()`/`type()` - the same
+may reference only the `resource` variable, may read only properties the schema observed for that
+`resource.type` (plus AuthZEN's own `id`/`type`; a type the schema lists no properties for
+disables the check rather than failing every filter), and may not call `dyn()`/`type()` - the same
 posture as the platform's (blocked reflection functions, size limit). The
 expression is never evaluated here; IBAC does that. An
 off-schema value (or non-JSON output) raises `IntentValidationError`; `IntentAgent` feeds the

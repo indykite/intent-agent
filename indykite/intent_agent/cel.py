@@ -29,6 +29,11 @@ MAX_FILTER_LENGTH = 1000
 _VARIABLE_NODES = frozenset({"ident", "dot_ident"})
 _GLOBAL_CALL_NODES = frozenset({"ident_arg", "dot_ident_arg"})
 _METHOD_CALL_NODE = "member_dot_arg"
+_MEMBER_DOT_NODE = "member_dot"
+
+# Fields of the AuthZEN resource object itself rather than of the graph node, so a filter may
+# name them even though the data schema's property list never does.
+_ALWAYS_KNOWN_PROPERTIES = frozenset({"id", "type"})
 
 _environment = celpy.Environment()
 
@@ -39,6 +44,10 @@ class _Findings:
 
     foreign: list[str] = field(default_factory=list)
     blocked: list[str] = field(default_factory=list)
+    # The properties read off the filter variable itself (`resource.<name>`), so they can be
+    # checked against the resource type's own properties; a deeper access (`resource.a.b`)
+    # contributes only its first name, the one the data schema can speak for.
+    attributes: list[str] = field(default_factory=list)
 
     def note(self, names: list[str], name: str) -> None:
         if name not in names:
@@ -76,32 +85,63 @@ def _walk_method_call(node: Tree, bound: frozenset[str], findings: _Findings) ->
         _walk(argument, bound, findings)
 
 
+def _filter_variable_attribute(node: Tree) -> str | None:
+    """`x` in `resource.x`, or None when the receiver is anything else - a nested access
+    (`resource.a.b`, whose receiver is itself a member access) or another variable.
+    """
+    receiver, attribute = node.children[0], node.children[1]
+    return str(attribute) if _bare_identifier(receiver) == FILTER_VARIABLE else None
+
+
+def _note_variable(node: Tree, bound: frozenset[str], findings: _Findings) -> None:
+    """Record a variable reference that is neither the filter variable nor a loop variable."""
+    name = str(node.children[0])
+    if name != FILTER_VARIABLE and name not in bound:
+        findings.note(findings.foreign, name)
+
+
+def _walk_global_call(node: Tree, bound: frozenset[str], findings: _Findings) -> None:
+    """Visit a global call `f(args)`, recording a blocked function by name."""
+    function = str(node.children[0])
+    if function in _BLOCKED_FUNCTIONS:
+        findings.note(findings.blocked, function)
+    for child in node.children[1:]:
+        _walk(child, bound, findings)
+
+
 def _walk(node: object, bound: frozenset[str], findings: _Findings) -> None:
-    """Visit `node` with the loop variables in scope, recording foreign variables and blocked calls."""
+    """Visit `node` with the loop variables in scope, recording foreign variables, blocked calls
+    and the properties read off the filter variable.
+    """
     if not isinstance(node, Tree):
         return
     if node.data in _VARIABLE_NODES:
-        name = str(node.children[0])
-        if name != FILTER_VARIABLE and name not in bound:
-            findings.note(findings.foreign, name)
+        _note_variable(node, bound, findings)
     elif node.data in _GLOBAL_CALL_NODES:
-        function = str(node.children[0])
-        if function in _BLOCKED_FUNCTIONS:
-            findings.note(findings.blocked, function)
-        for child in node.children[1:]:
-            _walk(child, bound, findings)
+        _walk_global_call(node, bound, findings)
     elif node.data == _METHOD_CALL_NODE:
         _walk_method_call(node, bound, findings)
     else:
+        if node.data == _MEMBER_DOT_NODE:
+            attribute = _filter_variable_attribute(node)
+            if attribute is not None:
+                findings.note(findings.attributes, attribute)
         for child in node.children:
             _walk(child, bound, findings)
 
 
-def filter_errors(expression: str) -> list[str]:
+def filter_errors(expression: str, properties: set[str] | None = None) -> list[str]:
     """Every reason `expression` isn't an acceptable `context.filters` value; empty if it is.
 
     Messages are ready to be `reason` lines of errors.validation_feedback_error, in the same
     style as subject_binding's shape checks (they file under its "Malformed shape" heading).
+
+    With `properties` - the resource type's own properties from the data schema - a filter that
+    reads a property the type doesn't have is an error too: seen live, flash-lite invents one to
+    widen a match (`resource.email == 'Volvo'` on a `Car`), which reads as a real condition
+    downstream and can't be answered. An empty or absent set disables that check rather than
+    failing every filter: a type the schema observed no properties for, or a schema that couldn't
+    be fetched, is no evidence that a property doesn't exist.
     """
     if len(expression) > MAX_FILTER_LENGTH:
         return [f"context.filters is longer than {MAX_FILTER_LENGTH} characters"]
@@ -117,4 +157,11 @@ def filter_errors(expression: str) -> list[str]:
         for name in findings.foreign
     ]
     errors.extend(f"context.filters calls {function}(), which is not allowed" for function in findings.blocked)
+    if properties:
+        known = properties | _ALWAYS_KNOWN_PROPERTIES
+        errors.extend(
+            f"context.filters reads {FILTER_VARIABLE}.{name}, which is not a property of the resource type"
+            for name in findings.attributes
+            if name not in known
+        )
     return errors

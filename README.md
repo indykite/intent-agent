@@ -406,8 +406,10 @@ metadata: the exemption changes the evaluations, not who is audited as the calle
 
 Model behaviour varies between providers, model versions and even runs, so a response that
 differs from what you expected is not necessarily the binding's doing. Typical model-side
-variations: an identifier written as a `context.filters` term (`resource.external_id == '...'`)
-instead of `resource.id` (the agent lifts that exact form into `resource.id` afterwards), an
+variations: an identifier written as a `context.filters` term (`resource.external_id == '...'`,
+or that ORed against another property holding the same literal) instead of `resource.id` (the
+agent lifts both forms into `resource.id` afterwards, and rejects a filter reading a property the
+resource type doesn't have, which is how those hedges get invented), an
 identifier dropped altogether, or a Subject Search placed before the evaluation about a named
 second subject (a search can never serve as the second-subject gate, so that evaluation is
 then bound to the caller rather than trusted). `make evals` measures the current model against

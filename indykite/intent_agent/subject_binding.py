@@ -53,6 +53,24 @@ def _node_types(schema: dict[str, Any]) -> set[str]:
     return set(nodes.keys())
 
 
+def _node_properties(schema: dict[str, Any]) -> dict[str, set[str]]:
+    """Each node type's own property names, as the data schema observed them.
+
+    A type whose properties are missing or malformed maps to an empty set, which disables the
+    filter-property check for it (cel.filter_errors) rather than rejecting every filter on it.
+    """
+    nodes = schema.get("graph", {}).get("nodes", {})
+    if not isinstance(nodes, dict):
+        return {}
+    properties: dict[str, set[str]] = {}
+    for node_type, node in nodes.items():
+        metadata = node.get("metadata") if isinstance(node, dict) else None
+        declared = metadata.get("properties") if isinstance(metadata, dict) else None
+        names = {name for name in declared if isinstance(name, str)} if isinstance(declared, dict) else set()
+        properties[node_type] = names
+    return properties
+
+
 def _edge_relations(schema: dict[str, Any]) -> set[str]:
     """Return every distinct edge relation (action name) defined in the given schema.
 
@@ -214,7 +232,7 @@ _CONTEXT_KEY_TYPES: dict[str, type] = {"filters": str, "parameters": dict, "qual
 _TYPE_NAMES = {str: "a string", dict: "an object"}
 
 
-def _context_errors(context: object) -> list[str]:
+def _context_errors(context: object, properties: set[str] | None = None) -> list[str]:
     """Describe every way `context` departs from the PRD's shape (TDD 3.2): an object whose
     keys have the types in _CONTEXT_KEY_TYPES. An absent or null context, or an absent/null
     key, is fine - each is optional; any other key is passed through untouched (the PRD calls
@@ -234,8 +252,9 @@ def _context_errors(context: object) -> list[str]:
     filters = context.get("filters")
     if not _blank(filters):
         # A blank (or non-string, reported above) filter is not checked as CEL - a blank one
-        # means "no filter" and is dropped by _normalize_contexts.
-        errors.extend(filter_errors(filters))
+        # means "no filter" and is dropped by _normalize_contexts. `properties` are the resource
+        # type's own, so a filter reading a property that type doesn't have is reported too.
+        errors.extend(filter_errors(filters, properties))
     return errors
 
 
@@ -244,6 +263,7 @@ def _evaluation_errors(
     node_types: set[str],
     edge_relations: set[str],
     policies: list[dict[str, Any]] | None,
+    node_properties: dict[str, set[str]] | None = None,
 ) -> list[str]:
     """Return every reason this evaluation can't be accepted, empty if it can.
 
@@ -255,7 +275,8 @@ def _evaluation_errors(
     type, or a blank/off-schema type/name inside it) means the LLM tried and failed to
     correlate it. subject is exempt from the malformed-shape check (though not the
     blank/off-schema one) since _bind_subject replaces a non-object subject outright either
-    way. context has no schema vocabulary to check against, only a shape (_context_errors).
+    way. context is checked for its shape and, where the schema observed properties for
+    resource.type, for filters reading a property that type doesn't have (_context_errors).
     action.name is additionally valid as a policy-derived action for resource.type when marked
     action_derivation_rule="policy_based" (ENG-9671) - see _action_name_error.
     """
@@ -280,7 +301,19 @@ def _evaluation_errors(
     subject = evaluation.get("subject")
     if isinstance(subject, dict):
         errors.append(_vocabulary_reason("subject.type", subject.get("type"), node_types))
-    errors.extend(_context_errors(evaluation.get("context")))
+    if _subject_source(evaluation) == _SUBJECT_SOURCE_SEARCH and not isinstance(subject, dict):
+        # Seen live (flash-lite): the marker is set but the `subject` object is left out, mixing up
+        # SKILL.md's "omit subject" rule for the other evaluation kinds with the Subject Search
+        # exception. Without this the marker is ignored, _bind_subject binds the caller, and the
+        # caller then fails the relationship check - which sends the retry after the action name
+        # instead of the missing type, and it answers with an empty array instead. A subject that
+        # is present but blank already reports itself above; this is the case nothing else sees.
+        errors.append(
+            'context.parameters.subject_source is "search" but subject.type is missing - a Subject '
+            "Search must name the subject type to search for"
+        )
+    properties = (node_properties or {}).get(resource_type) if isinstance(resource_type, str) else None
+    errors.extend(_context_errors(evaluation.get("context"), properties))
     return [error for error in errors if error]
 
 
@@ -413,10 +446,11 @@ def validate_evaluations(
     """
     node_types = _node_types(schema)
     edge_relations = _edge_relations(schema)
+    node_properties = _node_properties(schema)
     errors = [
         f"evaluations[{index}]: {error}"
         for index, evaluation in enumerate(evaluations)
-        for error in _evaluation_errors(evaluation, node_types, edge_relations, policies)
+        for error in _evaluation_errors(evaluation, node_types, edge_relations, policies, node_properties)
     ]
     if caller_type is not None and not errors and (edge_relations or policies):
         errors = _caller_relationship_errors(schema, evaluations, policies, caller_type, caller_id)
@@ -663,22 +697,56 @@ def _drop_blank_resource_ids(data: dict[str, Any]) -> None:
             del resource["id"]
 
 
-# A filter that only pins the resource's external_id, either way round: `resource.external_id ==
-# 'x'` or `'x' == resource.external_id`, single or double quotes. Anything more (another clause,
-# another property, a method call) is a real property condition and is left alone.
-_EXTERNAL_ID_FILTER = re.compile(
-    r"""^\s*(?:resource\.external_id\s*==\s*(?P<q1>['"])(?P<a>[^'"]+)(?P=q1)"""
-    r"""|(?P<q2>['"])(?P<b>[^'"]+)(?P=q2)\s*==\s*resource\.external_id)\s*$"""
+# One `resource.<property> == '<literal>'` clause, either way round, single or double quotes.
+_EQUALITY_CLAUSE = re.compile(
+    r"""^\s*(?:resource\.(?P<prop>\w+)\s*==\s*(?P<q1>['"])(?P<a>[^'"]*)(?P=q1)"""
+    r"""|(?P<q2>['"])(?P<b>[^'"]*)(?P=q2)\s*==\s*resource\.(?P<prop2>\w+))\s*$"""
 )
+# The properties that name one resource instance: the platform's external_id *is* the id
+# (SKILL.md), and the model sometimes writes resource.id for it directly.
+_ID_PROPERTIES = frozenset({"external_id", "id"})
+
+
+def _filter_identifier(filters: str) -> str | None:
+    """The single resource id `filters` pins, or None when it says anything else.
+
+    Two forms qualify. A lone `resource.external_id == 'x'`, and a chain of `||` clauses that all
+    compare to the *same* literal where one of them is the id: seen live, flash-lite hedges with
+    `resource.external_id == 'Volvo' || resource.email == 'Volvo'` when it is unsure which
+    property carries the name. Every alternative there names the instance the id already names,
+    so collapsing them into resource.id keeps the question and drops only the hedge. A `&&`, a
+    parenthesised group, or a clause comparing to a different literal is a real condition on
+    which resources qualify, and is left alone.
+    """
+    if "&&" in filters or "(" in filters or ")" in filters:
+        return None
+    properties: set[str] = set()
+    literals: set[str] = set()
+    for clause in filters.split("||"):
+        match = _EQUALITY_CLAUSE.match(clause)
+        if match is None:
+            return None
+        properties.add(match.group("prop") or match.group("prop2"))
+        first = match.group("a")
+        literals.add(first if first is not None else match.group("b"))
+    if not properties & _ID_PROPERTIES or len(literals) != 1:
+        return None
+    identifier = literals.pop()
+    return None if _blank(identifier) else identifier
 
 
 def _lift_external_id_filters(data: dict[str, Any]) -> None:
-    """Move a pure `resource.external_id == '<id>'` filter into `resource.id` when the model left
-    the id blank. The platform's external_id *is* the resource id (SKILL.md: id = the node's
-    external_id), so the two forms name the same single resource - but only the id form is the
-    AuthZEN shape for one named instance, and it's what the golden answers expect. Seen live with
-    flash-lite, which prefers the filter form despite being told otherwise; this makes the
-    response independent of that habit without guessing at any other filter's meaning.
+    """Move a filter that only identifies one resource (_filter_identifier) into `resource.id`
+    when the model left the id blank. The platform's external_id *is* the resource id (SKILL.md:
+    id = the node's external_id), so the two forms name the same single resource - but only the
+    id form is the AuthZEN shape for one named instance, it's what the golden answers expect, and
+    an Access Evaluation without it is rejected downstream ("missing field resource.id"). Seen
+    live with flash-lite, which prefers the filter form despite being told otherwise; this makes
+    the response independent of that habit without guessing at any other filter's meaning.
+
+    Runs before validate_evaluations on purpose: a hedged filter is consumed here, so the
+    invented property it hedged with (`resource.email` on a Car) never reaches the property check
+    as a retry-worthy error. What the lift can't resolve, that check still reports.
     """
     for evaluation in data.get("evaluations", []):
         if not isinstance(evaluation, dict):
@@ -694,12 +762,11 @@ def _lift_external_id_filters(data: dict[str, Any]) -> None:
         filters = context.get("filters")
         if not isinstance(filters, str):
             continue
-        match = _EXTERNAL_ID_FILTER.match(filters)
-        if match is None:
+        # None for anything that isn't one identified resource, including
+        # `resource.external_id == '  '`, which names nothing and stays the filter it is.
+        lifted = _filter_identifier(filters)
+        if lifted is None:
             continue
-        lifted = match.group("a") or match.group("b")
-        if _blank(lifted):
-            continue  # `resource.external_id == '  '` names nothing; left as the filter it is
         resource["id"] = lifted
         del context["filters"]
 
