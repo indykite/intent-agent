@@ -315,6 +315,30 @@ def _require_str(raw: dict[str, Any], key: str, path: Path, *, allow_blank: bool
     return value
 
 
+# A bare model name: one path segment, so no separator and no `..` can reach outside schema/.
+_DATA_MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+
+
+def _require_data_model(raw: dict[str, Any], path: Path) -> str:
+    """`raw["data_model"]` as a bare model name - the stem of a file directly under `schema/`.
+
+    It is interpolated into the schema and policy file names, so anything with a path separator or
+    a `..` segment would name a file outside `schema/`: `../outside` resolves and loads today. The
+    files it can reach are narrow (a `*_schema.json` that parses as JGF, a `*_policies.json` in the
+    listing shape) and a fixture author can already edit the runner itself, so this is input
+    validation rather than a boundary - the same reason `canonical_category` refuses an unknown
+    category: a fixture must not quietly read something other than the model it names.
+    """
+    data_model = _require_str(raw, "data_model", path)
+    if not _DATA_MODEL.match(data_model):
+        message = (
+            f"{path.name}: data model {data_model!r} is not a bare model name - it names a file "
+            f"directly under {path.parent.name}/schema/, so letters, digits, '_' and '-' only"
+        )
+        raise FixtureError(message)
+    return data_model
+
+
 def _evaluation_shape_problem(evaluation: dict[str, Any]) -> str | None:
     """Why this golden evaluation isn't a shape the pipeline can return, or None. Mirrors what
     subject_binding rejects or drops: `resource` must be an object with a non-blank string
@@ -416,7 +440,7 @@ def load_fixture(path: Path, *, schema_dir: Path | None = None) -> Fixture:
     except ValueError as exc:
         message = f"{path.name}: {exc}"
         raise FixtureError(message) from exc
-    data_model = _require_str(raw, "data_model", path)
+    data_model = _require_data_model(raw, path)
     schema_path = schema_dir / f"{data_model}_schema.json"
     if not schema_path.is_file():
         message = f"{path.name}: data model {data_model!r} has no schema file at {schema_path}"

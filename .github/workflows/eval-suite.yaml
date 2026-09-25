@@ -49,14 +49,10 @@ jobs:
 
     env:
       PYTHONUNBUFFERED: 1
-      # Relative to the workspace on purpose: the follow-up steps guard on hashFiles('tmp/evals/report.md'),
-      # which only resolves workspace-relative patterns - a run that exits before writing a report
-      # (fixture error) must not add three missing-file failures on top of the real one.
-      EVAL_REPORT_DIR: ${{ github.workspace }}/tmp/evals
 
     steps:
       - name: actions/checkout
-        uses: indykite/ops-common/.github/actions/git-checkout@master # actions/checkout with dynamic fetch-depth resolution
+        uses: indykite/ops-common/.github/actions/git-checkout@4c4cb34f01107182013dd8fe8a9de28ba7958153 # master
 
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1 - https://github.com/astral-sh/setup-uv/releases
@@ -64,8 +60,10 @@ jobs:
           python-version: "3.13"
           enable-cache: true
 
-      - name: Install project
-        run: uv sync --locked
+      - name: Verify the lockfile is current
+        # `make evals` installs what it needs through `uv run --locked`; this fails the job early,
+        # and with a clear message, when uv.lock no longer matches pyproject.toml.
+        run: make install_dev
 
       - name: Check the Gemini API key is available
         env:
@@ -91,22 +89,23 @@ jobs:
           AUDIT_FILE_STORAGE_PATH: ${{ runner.temp }}/audit
           AUDIT_FILE_FORMAT: json
           AUDIT_FILE_ROTATION_STRATEGY: time
-        run: |
-          uv run --locked python -m evals \
-            --concurrency 4 \
-            --markdown "$EVAL_REPORT_DIR/report.md" \
-            --json "$EVAL_REPORT_DIR/report.json"
+        # The same command as a local run, reports included (Makefile: EVAL_REPORT_DIR, EVAL_CONCURRENCY).
+        run: make evals
 
+      # The two steps below must also run when `make evals` failed, which is the normal way a gate
+      # regression arrives: that is what the report is needed for. They are skipped on a cancelled
+      # run, and the hashFiles guard keeps a run that died before writing a report (a fixture error)
+      # from piling missing-file failures on top of the real one.
       - name: Publish the per-category breakdown to the job summary
-        if: always() && hashFiles('tmp/evals/report.md') != ''
-        run: cat "$EVAL_REPORT_DIR/report.md" >> "$GITHUB_STEP_SUMMARY"
+        if: ${{ !cancelled() && hashFiles('tmp/evals/report.md') != '' }}
+        run: cat tmp/evals/report.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: actions/upload-artifact/eval-report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1 - https://github.com/actions/upload-artifact/releases
-        if: always() && hashFiles('tmp/evals/report.md') != ''
+        if: ${{ !cancelled() && hashFiles('tmp/evals/report.md') != '' }}
         with:
           name: eval-report
-          path: ${{ env.EVAL_REPORT_DIR }}/
+          path: tmp/evals/
           if-no-files-found: error
 
       - name: Add comment to PR
@@ -114,9 +113,9 @@ jobs:
         # Same-repository PRs only: a fork PR's token is read-only whatever `permissions` asks for,
         # so the comment would fail a job whose evals passed. Forks keep the summary and artifact.
         if: >-
-          always() && github.event_name == 'pull_request'
+          ${{ !cancelled() && github.event_name == 'pull_request'
           && github.event.pull_request.head.repo.full_name == github.repository
-          && hashFiles('tmp/evals/report.md') != ''
+          && hashFiles('tmp/evals/report.md') != '' }}
         with:
           message-id: golden-eval-suite
-          message-path: ${{ env.EVAL_REPORT_DIR }}/report.md
+          message-path: tmp/evals/report.md

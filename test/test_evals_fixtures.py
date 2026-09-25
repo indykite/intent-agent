@@ -81,6 +81,11 @@ def test_unknown_category_is_rejected_naming_the_file(eval_fixture_file):
         ({"category": ""}, "'category' must be a non-empty string"),
         ({"data_model": ""}, "'data_model' must be a non-empty string"),
         ({"data_model": "missing_model"}, "data model 'missing_model' has no schema file"),
+        # A data_model is interpolated into the schema / policies file names, so it has to be one
+        # path segment: `../outside` resolved and loaded a *_schema.json from outside schema/.
+        ({"data_model": "../outside"}, "data model '../outside' is not a bare model name"),
+        ({"data_model": "nested/user_model"}, "data model 'nested/user_model' is not a bare model name"),
+        ({"data_model": ".."}, "data model '..' is not a bare model name"),
         ({"expected": "yes"}, "'expected' must be an object"),
         ({"expected": {"prompt": "Can I access the document doc123?", "evaluations": []}}, "non-empty array"),
         ({"expected": {"prompt": "Can I access the document doc123?", "evaluations": ["x"]}}, "non-empty array"),

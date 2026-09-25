@@ -2881,10 +2881,12 @@ def test_normalize_intent_response_completes_a_blank_second_subject_type_only_fo
 def test_normalize_intent_response_reports_a_search_marker_without_a_subject_object():
     """Seen live on subject_search_test_1: the model marks a Subject Search but leaves the
     `subject` object out, mixing up SKILL.md's "omit subject" rule for the other kinds with the
-    Subject Search exception. The marker alone can't say which type to search for, so this is
-    reported as exactly that - before the fix the marker was ignored, the caller was bound, and
-    the caller's own relationship check failed instead, which sent the retry after the action name
-    and got an empty evaluations array back.
+    Subject Search exception. With several DigitalTwin types (the fixture schema has Company and
+    Customer) the marker alone can't say which type to search for, so this is reported as exactly
+    that - before the fix the marker was ignored, the caller was bound, and the caller's own
+    relationship check failed instead, which sent the retry after the action name and got an
+    empty evaluations array back. With exactly one DigitalTwin type the type is completed
+    instead (see ..._completes_a_subject_search_type_from_the_single_digital_twin).
     """
     llm_text = json.dumps(
         {

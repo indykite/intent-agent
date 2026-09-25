@@ -7,7 +7,7 @@
 	start_docker_compose stop_docker_compose destroy_docker_compose \
 	start_mock_introspect_service evals
 
-build_integration: build integration dry_run
+build_integration: build integration dry_run evals
 build: project_check codestyle_check test
 dry_run:
 
@@ -51,10 +51,17 @@ test:
 integration:
 	uv run --locked pytest integration
 
+# Overridable so a local run and the CI run are the same command; CI keeps the defaults.
+EVAL_REPORT_DIR ?= tmp/evals
+EVAL_CONCURRENCY ?= 4
+
 evals:
 	@set -e
-	mkdir -p tmp/evals
-	uv run --locked python -m evals --markdown tmp/evals/report.md --json tmp/evals/report.json
+	mkdir -p $(EVAL_REPORT_DIR)
+	uv run --locked python -m evals \
+		--concurrency $(EVAL_CONCURRENCY) \
+		--markdown $(EVAL_REPORT_DIR)/report.md \
+		--json $(EVAL_REPORT_DIR)/report.json
 
 # This target contains combined coverage from unit & integration tests
 test_coverage:
