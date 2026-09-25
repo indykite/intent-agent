@@ -60,3 +60,10 @@ license:
   confidenceLevel: 0.9
   full: true
   ignored: []
+
+# Non-standard Trivy config; consumed only by custom CI.
+notify:
+  slack:
+    channel: "#team-engineering-ml"
+  jira:
+    team: "ML"
