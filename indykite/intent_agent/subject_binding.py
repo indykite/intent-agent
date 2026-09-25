@@ -705,6 +705,10 @@ _EQUALITY_CLAUSE = re.compile(
 # The properties that name one resource instance: the platform's external_id *is* the id
 # (SKILL.md), and the model sometimes writes resource.id for it directly.
 _ID_PROPERTIES = frozenset({"external_id", "id"})
+# `resource["external_id"]` selects the same property as `resource.external_id` in CEL, so the
+# bracket spelling is folded into the dot one before the clauses are read - otherwise the same
+# filter would lift or not depending on how the model happened to write it.
+_RESOURCE_INDEX = re.compile(r"""resource\[\s*(?P<q>['"])(?P<prop>\w+)(?P=q)\s*\]""")
 
 
 def _filter_identifier(filters: str) -> str | None:
@@ -718,6 +722,7 @@ def _filter_identifier(filters: str) -> str | None:
     parenthesised group, or a clause comparing to a different literal is a real condition on
     which resources qualify, and is left alone.
     """
+    filters = _RESOURCE_INDEX.sub(lambda match: f"resource.{match.group('prop')}", filters)
     if "&&" in filters or "(" in filters or ")" in filters:
         return None
     properties: set[str] = set()

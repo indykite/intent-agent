@@ -23,13 +23,19 @@ _BLOCKED_FUNCTIONS = frozenset({"dyn", "type"})
 _COMPREHENSION_MACROS = frozenset({"all", "exists", "exists_one", "filter", "map"})
 # Generous for a prompt-derived condition; a filter past it is runaway output, not intent.
 MAX_FILTER_LENGTH = 1000
+# The opening and closing quote of a string literal, the shortest form `_string_literal` accepts.
+_QUOTE_PAIR = 2
 
 # celpy's grammar rule names: a variable reference, with or without CEL's leading-dot absolute
 # form (`.subject.id`), and a global function call in the same two spellings.
 _VARIABLE_NODES = frozenset({"ident", "dot_ident"})
 _GLOBAL_CALL_NODES = frozenset({"ident_arg", "dot_ident_arg"})
 _METHOD_CALL_NODE = "member_dot_arg"
+# CEL selects a field two ways, `resource.email` and `resource["email"]`, and they mean the same
+# thing - so the property check has to see both or the bracket form walks past it.
 _MEMBER_DOT_NODE = "member_dot"
+_MEMBER_INDEX_NODE = "member_index"
+_MEMBER_ACCESS_NODES = frozenset({_MEMBER_DOT_NODE, _MEMBER_INDEX_NODE})
 
 # Fields of the AuthZEN resource object itself rather than of the graph node, so a filter may
 # name them even though the data schema's property list never does.
@@ -44,10 +50,13 @@ class _Findings:
 
     foreign: list[str] = field(default_factory=list)
     blocked: list[str] = field(default_factory=list)
-    # The properties read off the filter variable itself (`resource.<name>`), so they can be
-    # checked against the resource type's own properties; a deeper access (`resource.a.b`)
-    # contributes only its first name, the one the data schema can speak for.
+    # The properties read off the filter variable itself (`resource.<name>`, `resource["<name>"]`),
+    # so they can be checked against the resource type's own properties; a deeper access
+    # (`resource.a.b`) contributes only its first name, the one the data schema can speak for.
     attributes: list[str] = field(default_factory=list)
+    # `resource[<expression>]`, where the property read is only known once the expression is
+    # evaluated - so it can't be matched against the schema's property list at all.
+    computed_index: bool = False
 
     def note(self, names: list[str], name: str) -> None:
         if name not in names:
@@ -85,12 +94,37 @@ def _walk_method_call(node: Tree, bound: frozenset[str], findings: _Findings) ->
         _walk(argument, bound, findings)
 
 
-def _filter_variable_attribute(node: Tree) -> str | None:
-    """`x` in `resource.x`, or None when the receiver is anything else - a nested access
-    (`resource.a.b`, whose receiver is itself a member access) or another variable.
+def _string_literal(node: object) -> str | None:
+    """The value of a string-literal node (`'email'` -> `email`), or None for anything else - a
+    computed key, a number, a raw or triple-quoted literal this doesn't try to decode.
     """
-    receiver, attribute = node.children[0], node.children[1]
-    return str(attribute) if _bare_identifier(receiver) == FILTER_VARIABLE else None
+    while isinstance(node, Tree) and node.data != "literal" and len(node.children) == 1:
+        node = node.children[0]
+    if not (isinstance(node, Tree) and node.data == "literal"):
+        return None
+    token = str(node.children[0])
+    quoted = len(token) >= _QUOTE_PAIR and token[0] == token[-1] and token[0] in "'\""
+    return token[1:-1] if quoted else None
+
+
+def _note_member_access(node: Tree, findings: _Findings) -> None:
+    """Record the property a `resource.x` / `resource["x"]` node reads. Anything else is skipped:
+    a nested access (`resource.a.b`, whose receiver is itself a member access) contributes only
+    its first name, and an access on another variable contributes nothing. An index whose key is
+    an expression rather than a literal names a property only at evaluation time, so it is noted
+    as computed instead - filter_errors reports it when it has a property list to check against.
+    """
+    receiver, key = node.children[0], node.children[1]
+    if _bare_identifier(receiver) != FILTER_VARIABLE:
+        return
+    if node.data == _MEMBER_DOT_NODE:
+        findings.note(findings.attributes, str(key))
+        return
+    name = _string_literal(key)
+    if name is None:
+        findings.computed_index = True
+    else:
+        findings.note(findings.attributes, name)
 
 
 def _note_variable(node: Tree, bound: frozenset[str], findings: _Findings) -> None:
@@ -122,10 +156,8 @@ def _walk(node: object, bound: frozenset[str], findings: _Findings) -> None:
     elif node.data == _METHOD_CALL_NODE:
         _walk_method_call(node, bound, findings)
     else:
-        if node.data == _MEMBER_DOT_NODE:
-            attribute = _filter_variable_attribute(node)
-            if attribute is not None:
-                findings.note(findings.attributes, attribute)
+        if node.data in _MEMBER_ACCESS_NODES:
+            _note_member_access(node, findings)
         for child in node.children:
             _walk(child, bound, findings)
 
@@ -164,4 +196,9 @@ def filter_errors(expression: str, properties: set[str] | None = None) -> list[s
             for name in findings.attributes
             if name not in known
         )
+        if findings.computed_index:
+            errors.append(
+                f"context.filters indexes {FILTER_VARIABLE} with an expression instead of a property "
+                "name, so what it reads can't be checked against the resource type"
+            )
     return errors

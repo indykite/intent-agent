@@ -2038,6 +2038,10 @@ def test_normalize_intent_response_lifts_a_pure_external_id_filter_into_the_reso
         pytest.param("'kitt' == resource.external_id || resource.model == 'kitt'", id="mixed_operand_order"),
         # The model writing the AuthZEN field name instead of the property behind it.
         pytest.param("resource.id == 'kitt'", id="id_property"),
+        # `resource["external_id"]` is the same selection as `resource.external_id` in CEL, so the
+        # lift must not depend on which spelling the model reached for.
+        pytest.param("resource['external_id'] == 'kitt'", id="indexed_access"),
+        pytest.param('resource["external_id"] == "kitt" || resource["email"] == "kitt"', id="indexed_hedge"),
     ],
 )
 def test_normalize_intent_response_lifts_an_identifier_hedged_across_properties(filters):

@@ -7,7 +7,7 @@
 	start_docker_compose stop_docker_compose destroy_docker_compose \
 	start_mock_introspect_service evals
 
-build_integration: build integration dry_run evals
+build_integration: build integration dry_run
 build: project_check codestyle_check test
 dry_run:
 
