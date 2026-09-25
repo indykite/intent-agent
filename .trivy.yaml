@@ -29,9 +29,10 @@ scan:
   disable-telemetry: true
   offline: true
   scanners:
-    - vuln
+    # - vuln # keep disabled so not checked on PRs but explicitly via scheduled .github/workflows/pre-commit-cache.yaml
     - secret
     - misconfig
+    - license # while enabled but run via the separate 'trivy-license' action
   skip-files: [".env"]
   skip-dirs: ["**/.terraform/**", "**/.terragrunt-cache/**"]
   show-suppressed: true
@@ -55,4 +56,7 @@ misconfiguration:
 rego:
   # Same as '--config-data'
   data: [.trivy_data.yaml]
-  # TODO: add licensing restrictions, https://trivy.dev/latest/docs/references/configuration/config-file/#license-options
+license:
+  confidenceLevel: 0.9
+  full: true
+  ignored: []

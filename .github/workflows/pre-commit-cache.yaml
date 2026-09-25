@@ -47,6 +47,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: trivy
-        uses: indykite/ops-common/.github/actions/trivy@4c4cb34f01107182013dd8fe8a9de28ba7958153 # master
+        uses: indykite/ops-common/.github/actions/trivy@master
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          scanners: vuln,secret,misconfig,license
+          slack-bot-token: ${{ secrets.SLACK_BOT_TOKEN }}
+          jira-api-token: ${{ secrets.JIRA_API_TOKEN }}
