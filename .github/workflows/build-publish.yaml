@@ -20,8 +20,13 @@ on: # yamllint disable-line rule:truthy
       - published
 
 concurrency:
-  group: build-publish-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # github.event_name is appended because the `v*` tag push and the paired `release: published`
+  # event resolve to the same github.ref (the release tag) - without it they'd share a group and
+  # cancel-in-progress would let one cancel the other, even though the tag push is what builds
+  # the release image and the release event is what publishes the chart (see build-docker's and
+  # publish-chart's `if:` conditions below).
+  group: build-publish-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  cancel-in-progress: false
 
 env:
   PLATFORMS: linux/amd64,linux/arm64
