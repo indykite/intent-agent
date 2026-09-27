@@ -174,11 +174,8 @@ jobs:
       - name: Resolve chart dependencies
         run: helm dependency build chart/
 
-      # TODO: bump this pin to master once ops-common's ENG-9630-helm-chart-publish-docker-hub
-      # branch (adding dockerhub-* inputs to chart-publish) merges - currently pinned to that
-      # branch's tip commit directly, not yet on master.
       - name: Publish chart
-        uses: indykite/ops-common/.github/actions/chart-publish@d12e782d0c76cef9e6356de37d1bf0f9f06ee377 # ENG-9630-helm-chart-publish-docker-hub
+        uses: indykite/ops-common/.github/actions/chart-publish@9b035b382d4edcd1d626c404472fc869a14e6cb3 # master
         with:
           workload-identity-provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER_MGMT }}
           gcp-service-account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
