@@ -176,13 +176,13 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
-          version: v4.2.4 # renovate: datasource=github-releases,depName=helm/helm
+          version: v4.3.0 # renovate: datasource=github-releases,depName=helm/helm
 
       - name: Resolve chart dependencies
         run: helm dependency build chart/
 
       - name: Publish chart
-        uses: indykite/ops-common/.github/actions/chart-publish@9b035b382d4edcd1d626c404472fc869a14e6cb3 # master
+        uses: indykite/ops-common/.github/actions/chart-publish@9966c9123555d65b89078ff044d4db3f6b4da866 # master
         with:
           workload-identity-provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER_MGMT }}
           gcp-service-account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
