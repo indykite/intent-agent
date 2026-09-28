@@ -1,5 +1,5 @@
 ---
-name: Build & publish container and chart
+name: Build, publish container & chart and deploy to dev/rc
 
 on: # yamllint disable-line rule:truthy
   pull_request:
@@ -9,23 +9,20 @@ on: # yamllint disable-line rule:truthy
     paths:
       - Dockerfile
       - uv.lock
-      - .github/workflows/build-publish.yaml
+      - ".github/workflows/build-publish-deploy.yaml"
       - "chart/**"
     types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: ["master"]
-    tags: ["v*"]
   release:
     types:
       - published
 
 concurrency:
-  # github.event_name is appended because the `v*` tag push and the paired `release: published`
-  # event resolve to the same github.ref (the release tag) - without it they'd share a group and
-  # cancel-in-progress would let one cancel the other, even though the tag push is what builds
-  # the release image and the release event is what publishes the chart (see build-docker's and
-  # publish-chart's `if:` conditions below).
-  group: build-publish-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  # A release's tag/commit is only ever built here via `release: published` (there's no separate
+  # tag-push trigger to collide with it), so github.ref alone already distinguishes every trigger
+  # this workflow reacts to.
+  group: build-publish-deploy-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 env:
@@ -51,20 +48,47 @@ jobs:
       suffix: ${{ steps.compute.outputs.suffix }}
       image-tag: ${{ steps.compute.outputs.image-tag }}
       chart-tag: ${{ steps.compute.outputs.chart-tag }}
+      chart-version: ${{ steps.compute.outputs.chart-version }}
+    env:
+      PYTHONUNBUFFERED: 1
     steps:
       - name: actions/checkout
         uses: indykite/ops-common/.github/actions/git-checkout@4c4cb34f01107182013dd8fe8a9de28ba7958153 # actions/checkout with dynamic fetch-depth resolution
 
+      - name: Extract version name
+        id: extract-version
+        if: github.event_name == 'release'
+        run: |
+          TAG_NAME=${{ github.event.release.tag_name }}
+          echo "TAG_NAME=$TAG_NAME" >> "$GITHUB_ENV"
+          VERSION=${TAG_NAME#v}
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "image-version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Install uv
+        if: github.event_name == 'release'
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1 - https://github.com/astral-sh/setup-uv/releases
+
+      # Building project only for release to ensure it definitely passes quality gates before publishing image & chart
+      - name: Build project using composite action
+        if: github.event_name == 'release'
+        uses: indykite/ops-common/.github/actions/python-build@4c4cb34f01107182013dd8fe8a9de28ba7958153 # master
+        id: build_python
+        with:
+          codecov-token: ${{ secrets.CODECOV_TOKEN }}
+          python-version: 3.13
+
       # pull_request builds get <chart version>-pr-<number>-<sha>, master (push) builds get
-      # <chart version>-dev-<sha>. A release build - both the `release: published` event and its
-      # paired `v*` tag push - gets no suffix: chart/Chart.yaml's version is already the release
-      # version (release-please's extra-files config, release-please-config.json), matching the
-      # container image tag docker/metadata-action's type=semver produces from that same tag.
+      # <chart version>-dev-<sha>. A release build (the `release: published` event - the only
+      # trigger that ever builds/publishes a tag, see the "on:" triggers above) gets no suffix:
+      # chart/Chart.yaml's version is already the release version (release-please's extra-files
+      # config, release-please-config.json), matching the container image tag
+      # docker/metadata-action's type=semver produces from that same tag.
       - name: Compute version suffix
         id: compute
         env:
           IS_PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
-          IS_MASTER_PUSH: ${{ github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/') }}
+          IS_MASTER_PUSH: ${{ github.event_name == 'push' }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           CHART_VERSION=$(yq eval '.version' chart/Chart.yaml)
@@ -80,6 +104,9 @@ jobs:
             echo "suffix=${SUFFIX}"
             echo "image-tag=${SUFFIX:+${CHART_VERSION}-${SUFFIX}}"
             echo "chart-tag=${SUFFIX:+${CHART_VERSION}-${SUFFIX}}"
+            # Unsuffixed, unlike image-tag/chart-tag above (which are blank for a release build) -
+            # deploy-rc needs the plain release version chart/Chart.yaml already carries by then.
+            echo "chart-version=${CHART_VERSION}"
           } >> "$GITHUB_OUTPUT"
 
   build-docker:
@@ -87,9 +114,6 @@ jobs:
     timeout-minutes: 10
     runs-on: ubuntu-latest
     needs: [version]
-    # The release image is built by the paired `v*` tag push instead (type=semver below) - the
-    # `release: published` event itself carries no new commit to build.
-    if: success() && github.event_name != 'release'
     outputs:
       image-tag: ${{ needs.version.outputs.image-tag }}
     steps:
@@ -100,9 +124,8 @@ jobs:
         id: registries
         env:
           GAR_IMAGE: ${{ format('{0}/{1}/indykite/{2}', vars.ARTIFACT_REGISTRY_URL, secrets.GCP_PROJECT_ID_MGMT, github.event.repository.name) }}
-          # Docker Hub only gets the release image, not every PR/dev build - gated on the same
-          # `v*` tag push that actually produces the release's GAR image (see this job's own note
-          # below on why `release: published` itself builds nothing).
+          # Docker Hub only gets the release image, not every PR/dev build - true precisely when
+          # this run's ref is the release tag, i.e. only for the `release: published` event.
           IS_RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
         run: |
           {
@@ -120,9 +143,9 @@ jobs:
         id: meta
         with:
           images: ${{ steps.registries.outputs.images }}
-          # The type=raw tag covers this job's two non-tag triggers (PR and master push); a v*
-          # tag push carries no version.image-tag (see the "version" job) and gets its version
-          # from type=semver above instead.
+          # The type=raw tag covers this job's two non-release triggers (PR and master push); a
+          # release build carries no version.image-tag (see the "version" job) and gets its
+          # version from type=semver above instead.
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -161,9 +184,6 @@ jobs:
     timeout-minutes: 10
     runs-on: ubuntu-slim
     needs: [version]
-    # A `v*` tag push publishes no chart of its own - the paired `release: published` event does
-    # that instead (chart/Chart.yaml's version is already the release version by then).
-    if: success() && (github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/'))
     steps:
       - name: actions/checkout
         uses: indykite/ops-common/.github/actions/git-checkout@4c4cb34f01107182013dd8fe8a9de28ba7958153 # actions/checkout with dynamic fetch-depth resolution
@@ -221,7 +241,11 @@ jobs:
     name: Deploy to dev
     timeout-minutes: 3
     runs-on: ubuntu-latest
-    needs: [version, build-docker]
+    # Waits on publish-chart too, not just build-docker - both the image and the chart it
+    # references (see chart/templates/deployment.yaml's appVersion fallback) must actually be
+    # published before pointing ArgoCD at this version, or dev ends up syncing a chart/image
+    # that doesn't exist in the registry yet.
+    needs: [version, build-docker, publish-chart]
     steps:
       - name: Checkout argocd applications repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -238,4 +262,31 @@ jobs:
           git config user.name "GitHub Actions"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -am "Updated intent-agent chart on dev to version ${{ needs.version.outputs.chart-tag }}"
+          git push
+
+  deploy-rc:
+    # Only deploy on an actual release.
+    if: ${{ github.event_name == 'release' }}
+    name: Deploy to rc
+    timeout-minutes: 3
+    runs-on: ubuntu-latest
+    # Same reasoning as deploy-dev's needs: - both build-docker and publish-chart run in this
+    # same release-triggered run now, so wait on both before pointing ArgoCD at this version.
+    needs: [version, build-docker, publish-chart]
+    steps:
+      - name: Checkout argocd applications repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: indykite/ml-argocd-applications
+          ssh-key: ${{ secrets.SSH_DEPLOY_KEY_ML_ARGOCD_APPLICATIONS }}
+
+      - name: Update chart version to new release on rc
+        run: |
+          yq -i '.chartTargetRevision = "${{ needs.version.outputs.chart-version }}"' apps/ml-charts/intent-agent/chart-version-rc.yaml
+
+      - name: Commit & push new release version
+        run: |-
+          git config user.name "GitHub Actions"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Updated intent-agent chart on rc to version ${{ needs.version.outputs.chart-version }}"
           git push
