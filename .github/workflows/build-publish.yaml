@@ -50,6 +50,7 @@ jobs:
     outputs:
       suffix: ${{ steps.compute.outputs.suffix }}
       image-tag: ${{ steps.compute.outputs.image-tag }}
+      chart-tag: ${{ steps.compute.outputs.chart-tag }}
     steps:
       - name: actions/checkout
         uses: indykite/ops-common/.github/actions/git-checkout@4c4cb34f01107182013dd8fe8a9de28ba7958153 # actions/checkout with dynamic fetch-depth resolution
@@ -78,6 +79,7 @@ jobs:
           {
             echo "suffix=${SUFFIX}"
             echo "image-tag=${SUFFIX:+${CHART_VERSION}-${SUFFIX}}"
+            echo "chart-tag=${SUFFIX:+${CHART_VERSION}-${SUFFIX}}"
           } >> "$GITHUB_OUTPUT"
 
   build-docker:
@@ -209,13 +211,13 @@ jobs:
           repository: indykite/ml-argocd-applications
           ssh-key: ${{ secrets.SSH_DEPLOY_KEY_ML_ARGOCD_APPLICATIONS }}
 
-      - name: Update docker image version to new release on dev
+      - name: Update chart version to new release on dev
         run: |
-          yq -i '.image.tag = "${{ needs.version.outputs.image-tag }}"' apps/ml-charts/intent-agent/values-dev.yaml
+          yq -i '.chartTargetRevision = "${{ needs.version.outputs.chart-tag }}"' apps/ml-charts/intent-agent/chart-version-dev.yaml
 
       - name: Commit & push new release version
         run: |-
           git config user.name "GitHub Actions"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -am "Updated intent-agent on dev to version ${{ needs.version.outputs.image-tag }}"
+          git commit -am "Updated intent-agent chart on dev to version ${{ needs.version.outputs.chart-tag }}"
           git push

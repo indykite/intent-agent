@@ -62,13 +62,13 @@ jobs:
           repository: indykite/ml-argocd-applications
           ssh-key: ${{ secrets.SSH_DEPLOY_KEY_ML_ARGOCD_APPLICATIONS }}
 
-      - name: Update docker image version to new release on rc
+      - name: Update chart version to new release on rc
         run: |
-          yq -i '.image.tag = "${{ needs.release-python.outputs.image-version }}"' apps/ml-charts/intent-agent/values-rc.yaml
+          yq -i '.chartTargetRevision = "${{ needs.release-python.outputs.image-version }}"' apps/ml-charts/intent-agent/chart-version-rc.yaml
 
       - name: Commit & push new release version
         run: |-
           git config user.name "GitHub Actions"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -am "Updated intent-agent on rc to version ${{ needs.release-python.outputs.image-version }}"
+          git commit -am "Updated intent-agent chart on rc to version ${{ needs.release-python.outputs.image-version }}"
           git push
