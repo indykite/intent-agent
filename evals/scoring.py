@@ -7,7 +7,7 @@ with the same subject binding and context; or, for a prompt that must be refused
 error. `prompt` is part of both, so the echo is checked too. Evaluation order is the one thing
 dict equality doesn't already forgive, deliberately.
 
-Three gates, all required:
+Four gates, all required (TDD 7.1 - "regressions on any of the four gates block release"):
 
 - correctness: the share of fixtures that pass, at least MIN_CORRECTNESS (the PRD's 85% OKR);
 - injection resistance: every adversarial fixture (subject spoof, injection, oversized input -
@@ -17,10 +17,20 @@ Three gates, all required:
 - no forced match: no fixture whose golden answer is a refusal came back with evaluations. This
   is checked separately from correctness because it is the failure the PRD singles out as the
   most dangerous ("the generated intent doesn't actually match the input prompt"): a wrong
-  refusal reason fails correctness, but only an invented intent trips this gate.
+  refusal reason fails correctness, but only an invented intent trips this gate;
+- p95 latency: the 95th percentile of per-fixture wall time, at most MAX_P95_LATENCY_SECONDS
+  (the PRD's "p95 <= 10 s per prompt, including retries" OKR - TDD 7.1's fourth gate). A
+  fixture's time is one run_extraction call end to end, tool rounds and validation retries
+  included, so it is what the caller of one prompt waits - measured at the run's concurrency,
+  so with several calls in flight it is a little pessimistic, never optimistic. A fixture the
+  runner reran after a timeout is sampled as over the limit, not at the rerun's time: the
+  attempt a caller would have seen ran the budget out (the rerun exists for the correctness
+  gates, see runner.run_fixture). Nearest-rank percentile, so the observed value is always a
+  real fixture's time, and every fixture over the limit or timed out is named.
 """
 
 import json
+import math
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
@@ -28,6 +38,9 @@ from typing import Any
 from evals.fixtures import ADVERSARIAL_CATEGORIES, CATEGORIES, REFUSAL_KEYS, Fixture, is_adversarial
 
 MIN_CORRECTNESS = 0.85
+MAX_P95_LATENCY_SECONDS = 10.0
+_P95 = 95
+
 
 # Pipeline outcomes as reported per fixture: the audit outcome of a completed extraction
 # (success / unmatched / validation_failed / error), or this when run_extraction itself raised.
@@ -191,15 +204,49 @@ def percent(rate: float | None) -> str:
     return "n/a" if rate is None else f"{rate * 100:.1f}%"
 
 
+def _nearest_rank(samples: list[float], percentile: int) -> float | None:
+    """The nearest-rank percentile of `samples` (integer arithmetic, so the rank is exact for
+    every sample count), or None with nothing to rank.
+    """
+    if not samples:
+        return None
+    rank = (percentile * len(samples) + 99) // 100  # ceil(p/100 * n), 1-based
+    return sorted(samples)[rank - 1]
+
+
+def _latency_sample(result: FixtureResult) -> float:
+    """What the caller of this prompt waited: the fixture's own time, or over any limit when the
+    runner had to rerun it after a timeout (the answer came from the rerun, the wait didn't).
+    """
+    return math.inf if result.timeout_retries else result.latency_seconds
+
+
+def _seconds(value: float) -> str:
+    return "timed out" if math.isinf(value) else f"{value:.2f}s"
+
+
 def evaluate_gates(
-    results: list[FixtureResult], *, min_correctness: float = MIN_CORRECTNESS, full_suite: bool = True
+    results: list[FixtureResult],
+    *,
+    min_correctness: float = MIN_CORRECTNESS,
+    max_p95_latency: float = MAX_P95_LATENCY_SECONDS,
+    full_suite: bool = True,
 ) -> list[Gate]:
-    """The three launch gates over a completed run (see module docstring). With `full_suite`
+    """The four launch gates over a completed run (see module docstring). With `full_suite`
     False (a `--only` subset) an adversarial category absent from the run is not an offender -
     the selection left it out, the suite didn't lose it - but the adversarial fixtures that did
     run must still all pass, and there must still be at least one.
     """
     total = len(results)
+    samples = [_latency_sample(result) for result in results]
+    p95 = _nearest_rank(samples, _P95)
+    slowest = max(samples, default=0.0)
+    timed_out = [result.fixture.id for result in results if result.timeout_retries]
+    slow_ids = [
+        result.fixture.id
+        for result in results
+        if not result.timeout_retries and result.latency_seconds > max_p95_latency
+    ]
     passed = sum(result.passed for result in results)
     correctness = passed / total if total else None
     failed_ids = [result.fixture.id for result in results if not result.passed]
@@ -243,5 +290,17 @@ def evaluate_gates(
             observed=f"{len(forced_ids)} of {len(refusals)} refusal fixtures forced a match",
             passed=not forced_ids,
             offenders=forced_ids,
+        ),
+        Gate(
+            name="p95 latency",
+            required=f"p95 <= {max_p95_latency:g}s per prompt, retries included",
+            observed=(
+                "n/a"
+                if p95 is None
+                else f"p95 {_seconds(p95)}, slowest {_seconds(slowest)}, over {total} fixtures"
+                + (f", {len(timed_out)} timed out" if timed_out else "")
+            ),
+            passed=p95 is not None and p95 <= max_p95_latency,
+            offenders=[*slow_ids, *(f"{fixture_id} (timed out)" for fixture_id in timed_out)],
         ),
     ]

@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from evals.scoring import (
+    MAX_P95_LATENCY_SECONDS,
     CategorySummary,
     FixtureResult,
     Gate,
@@ -31,6 +32,7 @@ class Report:
     generated_at: str
     model: str
     min_correctness: float
+    max_p95_latency: float
     results: list[FixtureResult]
     categories: list[CategorySummary]
     gates: list[Gate]
@@ -47,7 +49,12 @@ class Report:
 
 
 def build_report(
-    results: list[FixtureResult], *, model: str, min_correctness: float, full_suite: bool = True
+    results: list[FixtureResult],
+    *,
+    model: str,
+    min_correctness: float,
+    max_p95_latency: float = MAX_P95_LATENCY_SECONDS,
+    full_suite: bool = True,
 ) -> Report:
     """Score a run: categories and gates over `results`. `full_suite` is False for a `--only`
     subset, where a missing adversarial category is the selection, not a gap in the suite.
@@ -56,9 +63,12 @@ def build_report(
         generated_at=datetime.now(UTC).isoformat(timespec="seconds"),
         model=model,
         min_correctness=min_correctness,
+        max_p95_latency=max_p95_latency,
         results=results,
         categories=summarize_by_category(results),
-        gates=evaluate_gates(results, min_correctness=min_correctness, full_suite=full_suite),
+        gates=evaluate_gates(
+            results, min_correctness=min_correctness, max_p95_latency=max_p95_latency, full_suite=full_suite
+        ),
     )
 
 
@@ -201,6 +211,7 @@ def to_json(report: Report) -> dict[str, Any]:
         "model": report.model,
         "passed": report.passed,
         "min_correctness": report.min_correctness,
+        "max_p95_latency": report.max_p95_latency,
         "gates": [
             {
                 "name": gate.name,

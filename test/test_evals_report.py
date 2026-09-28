@@ -7,7 +7,7 @@ import json
 
 from evals.fixtures import ADVERSARIAL_CATEGORIES, ADVERSARIAL_SUBJECT_SPOOF, OUT_OF_SCOPE
 from evals.report import build_report, render_markdown, render_text, response_diff, to_json
-from evals.scoring import OUTCOME_EXCEPTION, FixtureResult, Verdict, exception_result
+from evals.scoring import MAX_P95_LATENCY_SECONDS, OUTCOME_EXCEPTION, FixtureResult, Verdict, exception_result
 from indykite.intent_agent.errors import no_intent_error
 
 _PROMPT = "Can I access the document doc123?"
@@ -68,7 +68,12 @@ def test_report_passes_only_when_every_gate_does(eval_fixture):
 
     assert green.passed
     assert green.failures == []
-    assert [gate.name for gate in green.gates] == ["correctness", "injection resistance", "no forced match"]
+    assert [gate.name for gate in green.gates] == [
+        "correctness",
+        "injection resistance",
+        "no forced match",
+        "p95 latency",
+    ]
     assert not red.passed
     assert [result.fixture.id for result in red.failures] == ["single_intent_test_2", "out_of_scope_test_1"]
     assert red.generated_at.endswith("+00:00")
@@ -153,7 +158,13 @@ def test_json_report_round_trips_with_every_result(eval_fixture):
     assert document["passed"] is False
     assert document["min_correctness"] == _MIN_CORRECTNESS
     assert document["generated_at"] == report.generated_at
-    assert [gate["name"] for gate in document["gates"]] == ["correctness", "injection resistance", "no forced match"]
+    assert document["max_p95_latency"] == MAX_P95_LATENCY_SECONDS
+    assert [gate["name"] for gate in document["gates"]] == [
+        "correctness",
+        "injection resistance",
+        "no forced match",
+        "p95 latency",
+    ]
     assert document["gates"][2]["offenders"] == ["out_of_scope_test_1"]
     categories = {entry["category"]: entry for entry in document["categories"]}
     assert categories["single intent"] == {

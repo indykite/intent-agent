@@ -51,7 +51,9 @@ test:
 integration:
 	uv run --locked pytest integration
 
-# Overridable so a local run and the CI run are the same command; CI keeps the defaults.
+# Overridable so a local run and the CI run are the same command; CI keeps the defaults. Override
+# as make variables (`make evals EVAL_CONCURRENCY=1`), not environment variables: `-include .env`
+# above re-assigns any name that is also in .env, and a makefile assignment wins over the environment.
 EVAL_REPORT_DIR ?= tmp/evals
 EVAL_CONCURRENCY ?= 4
 
