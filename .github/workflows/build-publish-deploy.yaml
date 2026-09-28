@@ -58,8 +58,12 @@ jobs:
       - name: Extract version name
         id: extract-version
         if: github.event_name == 'release'
+        # A release tag is caller-controlled (git ref names can carry shell metacharacters), so it
+        # goes through env: and is only ever expanded as a quoted shell variable below - never
+        # interpolated directly into the script.
+        env:
+          TAG_NAME: ${{ github.event.release.tag_name }}
         run: |
-          TAG_NAME=${{ github.event.release.tag_name }}
           echo "TAG_NAME=$TAG_NAME" >> "$GITHUB_ENV"
           VERSION=${TAG_NAME#v}
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
@@ -203,8 +207,13 @@ jobs:
       # patch.
       - name: Set chart appVersion for this build
         if: needs.version.outputs.image-tag != ''
+        # image-tag is derived from chart/Chart.yaml, which a PR controls - read it via env: and
+        # yq's strenv() rather than interpolating it into the yq expression, so a value containing
+        # a quote can't break out of it and run arbitrary shell.
+        env:
+          IMAGE_TAG: ${{ needs.version.outputs.image-tag }}
         run: |
-          yq -i '.appVersion = "${{ needs.version.outputs.image-tag }}"' chart/Chart.yaml
+          yq -i '.appVersion = strenv(IMAGE_TAG)' chart/Chart.yaml
 
       # chart/charts/ isn't committed (see chart/Chart.lock and .gitignore) - the
       # chart-publish composite action's own "Package chart" step (helm package) needs
@@ -254,8 +263,13 @@ jobs:
           ssh-key: ${{ secrets.SSH_DEPLOY_KEY_ML_ARGOCD_APPLICATIONS }}
 
       - name: Update chart version to new release on dev
+        # Same injection concern as publish-chart's "Set chart appVersion" step: chart-tag is
+        # derived from chart/Chart.yaml, so read it via env:/strenv() rather than interpolating it
+        # into the yq expression.
+        env:
+          CHART_TAG: ${{ needs.version.outputs.chart-tag }}
         run: |
-          yq -i '.chartTargetRevision = "${{ needs.version.outputs.chart-tag }}"' apps/ml-charts/intent-agent/chart-version-dev.yaml
+          yq -i '.chartTargetRevision = strenv(CHART_TAG)' apps/ml-charts/intent-agent/chart-version-dev.yaml
 
       - name: Commit & push new release version
         run: |-
@@ -281,8 +295,13 @@ jobs:
           ssh-key: ${{ secrets.SSH_DEPLOY_KEY_ML_ARGOCD_APPLICATIONS }}
 
       - name: Update chart version to new release on rc
+        # Same injection concern as publish-chart's "Set chart appVersion" step: chart-version is
+        # derived from chart/Chart.yaml, so read it via env:/strenv() rather than interpolating it
+        # into the yq expression.
+        env:
+          CHART_VERSION: ${{ needs.version.outputs.chart-version }}
         run: |
-          yq -i '.chartTargetRevision = "${{ needs.version.outputs.chart-version }}"' apps/ml-charts/intent-agent/chart-version-rc.yaml
+          yq -i '.chartTargetRevision = strenv(CHART_VERSION)' apps/ml-charts/intent-agent/chart-version-rc.yaml
 
       - name: Commit & push new release version
         run: |-

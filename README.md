@@ -1,7 +1,6 @@
 # Intent Agent
 
-[![Build Python project for master](https://github.com/indykite/intent-agent/actions/workflows/master-build.yaml/badge.svg)](https://github.com/indykite/intent-agent/actions/workflows/master-build.yaml)
-[![Build & publish release artifacts](https://github.com/indykite/intent-agent/actions/workflows/publish-release.yaml/badge.svg)](https://github.com/indykite/intent-agent/actions/workflows/publish-release.yaml)
+[![Build for master](https://github.com/indykite/intent-agent/actions/workflows/master-build.yaml/badge.svg)](https://github.com/indykite/intent-agent/actions/workflows/master-build.yaml)
 [![codecov](https://codecov.io/gh/indykite/intent-agent/branch/master/graph/badge.svg?token=gpcjoHjGyj)](https://codecov.io/gh/indykite/intent-agent) <!-- skipcq: SCT-1000 -->
 
 ## Release strategy
