@@ -168,6 +168,24 @@ jobs:
       - name: actions/checkout
         uses: indykite/ops-common/.github/actions/git-checkout@4c4cb34f01107182013dd8fe8a9de28ba7958153 # actions/checkout with dynamic fetch-depth resolution
 
+      # chart/Chart.yaml's appVersion is release-please-managed and only correct for an actual
+      # release - a PR/master package still carries the base release appVersion at this point.
+      # templates/deployment.yaml and _helpers.tpl fall back to Chart.AppVersion for the image
+      # tag/version labels whenever values.yaml leaves image.tag blank, so patch it here, before
+      # packaging, to the exact per-build tag build-docker actually publishes for the image (the
+      # "version" job's image-tag output) - otherwise a chart installed without an explicit
+      # image.tag override references an image that was never built. Deliberately image-tag, not
+      # chart-tag: the two share the same <chart version>-<suffix> value here, but chart-tag names
+      # the packaged chart's own version, which chart-publish additionally suffixes with "-chart"
+      # for its Docker Hub push (see the "Publish chart" step below) - appVersion must track the
+      # image, never that packaging suffix. A release build's image-tag is empty (see the
+      # "version" job): appVersion is already the release version by then, so there's nothing to
+      # patch.
+      - name: Set chart appVersion for this build
+        if: needs.version.outputs.image-tag != ''
+        run: |
+          yq -i '.appVersion = "${{ needs.version.outputs.image-tag }}"' chart/Chart.yaml
+
       # chart/charts/ isn't committed (see chart/Chart.lock and .gitignore) - the
       # chart-publish composite action's own "Package chart" step (helm package) needs
       # dependencies already resolved, and it has no dependency-build step of its own. Resolve
