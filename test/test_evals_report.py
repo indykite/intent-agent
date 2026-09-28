@@ -4,6 +4,7 @@ every failure with its diff.
 """
 
 import json
+from dataclasses import replace
 
 from evals.fixtures import ADVERSARIAL_CATEGORIES, ADVERSARIAL_SUBJECT_SPOOF, OUT_OF_SCOPE
 from evals.report import build_report, render_markdown, render_text, response_diff, to_json
@@ -98,6 +99,8 @@ def test_text_report_has_gates_categories_and_failures(eval_fixture):
     assert "  [FAIL] correctness: 66.7% (4/6) (required: >= 85.0% of fixtures match)" in text
     assert "  [PASS] injection resistance: 100.0% (3/3)" in text
     assert "  [FAIL] no forced match: 1 of 1 refusal fixtures forced a match" in text
+    assert "    offenders: out_of_scope_test_1\n" in text
+    assert "    offenders: single_intent_test_2, out_of_scope_test_1\n" in text  # the correctness gate's
     assert "category" in text
     assert "single intent" in text
     assert "0 (no fixtures)" in text  # the categories without fixtures stay visible
@@ -113,6 +116,7 @@ def test_text_report_for_a_green_run_has_no_failures_section(eval_fixture):
     text = render_text(build_report(_green_results(eval_fixture), model="gemini-test", min_correctness=0.85))
 
     assert "Failures" not in text
+    assert "offenders" not in text
     assert "[PASS] correctness: 100.0% (5/5)" in text
     assert text.endswith("Result: PASS\n")
 
@@ -130,6 +134,8 @@ def test_markdown_report_has_tables_and_collapsed_failures(eval_fixture):
         "| 100.0% (3/3) | ✅ PASS |"
     )
     assert injection_row in markdown
+    assert "- **no forced match** offenders: `out_of_scope_test_1`" in markdown
+    assert "- **correctness** offenders: `single_intent_test_2`, `out_of_scope_test_1`" in markdown
     assert "| single intent | 2 | 1 | 1 | 0 | 1 | 50.0% |" in markdown
     assert "| ambiguous | 0 (no fixtures) | 0 | 0 | 0 | 0 | n/a |" in markdown
     assert "### Failures (2)" in markdown
@@ -147,6 +153,26 @@ def test_markdown_report_for_a_green_run(eval_fixture):
 
     assert markdown.startswith("## Golden eval suite: ✅ PASS\n")
     assert "### Failures" not in markdown
+    assert "offenders" not in markdown
+
+
+def test_a_slow_fixture_that_matched_is_still_named_in_both_readable_reports(eval_fixture):
+    """The latency gate's offenders can be fixtures that passed every other gate, so they appear
+    in no failure section - the gate line itself has to name them, in the text and the Markdown.
+    """
+    results = _green_results(eval_fixture)
+    results[0] = replace(results[0], latency_seconds=12.0)
+    results[1] = replace(results[1], timeout_retries=1)
+
+    report = build_report(results, model="gemini-test", min_correctness=0.85)
+
+    assert report.failures == []
+    offenders = f"single_intent_test_1, {results[1].fixture.id} (timed out)"
+    assert f"    offenders: {offenders}\n" in render_text(report)
+    assert (
+        f"- **p95 latency** offenders: `single_intent_test_1`, `{results[1].fixture.id} (timed out)`"
+        in render_markdown(report)
+    )
 
 
 def test_json_report_round_trips_with_every_result(eval_fixture):

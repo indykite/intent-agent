@@ -184,7 +184,9 @@ def test_missing_settings_are_a_usage_error(suite, run_suite, monkeypatch, caplo
         ["--min-correctness", "-0.1"],
         ["--max-p95-latency", "0"],
         ["--max-p95-latency", "nan"],
+        ["--max-p95-latency", "inf"],  # would make `p95 <= limit` true even for a timed-out sample
         ["--llm-timeout", "0"],
+        ["--llm-timeout", "inf"],
         ["--request-timeout", "nan"],
         ["--llm-timeout", "30", "--request-timeout", "20"],
     ],

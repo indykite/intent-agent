@@ -21,6 +21,7 @@ import asyncio
 import fnmatch
 import json
 import logging
+import math
 import sys
 from pathlib import Path
 
@@ -98,13 +99,19 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         parser.error("--timeout-retries must not be negative")
     if not 0.0 <= args.min_correctness <= 1.0:
         parser.error("--min-correctness must be between 0 and 1")
-    if not args.max_p95_latency > 0:  # written this way round so NaN is rejected too
-        parser.error("--max-p95-latency must be positive")
-    if not args.llm_timeout > 0 or not args.request_timeout > 0:
-        parser.error("--llm-timeout and --request-timeout must be positive")
+    # Finite and positive: NaN compares false to everything, and `inf` would pass a `> 0` check
+    # while making `p95 <= limit` true for a timed-out fixture (or a timeout that never fires).
+    if not _finite_positive(args.max_p95_latency):
+        parser.error("--max-p95-latency must be a positive number")
+    if not (_finite_positive(args.llm_timeout) and _finite_positive(args.request_timeout)):
+        parser.error("--llm-timeout and --request-timeout must be positive numbers")
     if args.llm_timeout > args.request_timeout:
         parser.error("--llm-timeout must not exceed --request-timeout")
     return args
+
+
+def _finite_positive(value: float) -> bool:
+    return math.isfinite(value) and value > 0
 
 
 def _select(fixtures: list[Fixture], pattern: str | None) -> list[Fixture]:
