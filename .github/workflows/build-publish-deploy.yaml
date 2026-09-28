@@ -1,0 +1,309 @@
+---
+name: Build, publish container & chart and deploy to dev/rc
+
+on: # yamllint disable-line rule:truthy
+  pull_request:
+    branches: ["master"]
+    # Superset of both jobs' concerns: chart/** so a chart-only PR builds/publishes a matching
+    # image too (see the "version" job), plus Dockerfile/uv.lock/this workflow for image-only PRs.
+    paths:
+      - Dockerfile
+      - uv.lock
+      - ".github/workflows/build-publish-deploy.yaml"
+      - "chart/**"
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: ["master"]
+  release:
+    types:
+      - published
+
+concurrency:
+  # A release's tag/commit is only ever built here via `release: published` (there's no separate
+  # tag-push trigger to collide with it), so github.ref alone already distinguishes every trigger
+  # this workflow reacts to.
+  group: build-publish-deploy-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+env:
+  PLATFORMS: linux/amd64,linux/arm64
+
+#
+# https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#permissions
+# "all of those that are not specified are set to none."
+permissions:
+  id-token: write # required by https://github.com/google-github-actions/auth
+  contents: read # required by checkout
+
+jobs:
+  version:
+    # Single source of truth for the non-stable version scheme both the container image
+    # (build-docker's type=raw tag) and the Helm chart (publish-chart's version-suffix input)
+    # apply - computed once here instead of duplicated in both jobs.
+    name: Compute version
+    timeout-minutes: 2
+    runs-on: ubuntu-slim
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    outputs:
+      suffix: ${{ steps.compute.outputs.suffix }}
+      image-tag: ${{ steps.compute.outputs.image-tag }}
+      chart-tag: ${{ steps.compute.outputs.chart-tag }}
+      chart-version: ${{ steps.compute.outputs.chart-version }}
+    env:
+      PYTHONUNBUFFERED: 1
+    steps:
+      - name: actions/checkout
+        uses: indykite/ops-common/.github/actions/git-checkout@4c4cb34f01107182013dd8fe8a9de28ba7958153 # actions/checkout with dynamic fetch-depth resolution
+
+      - name: Extract version name
+        id: extract-version
+        if: github.event_name == 'release'
+        # A release tag is caller-controlled (git ref names can carry shell metacharacters), so it
+        # goes through env: and is only ever expanded as a quoted shell variable below - never
+        # interpolated directly into the script.
+        env:
+          TAG_NAME: ${{ github.event.release.tag_name }}
+        run: |
+          echo "TAG_NAME=$TAG_NAME" >> "$GITHUB_ENV"
+          VERSION=${TAG_NAME#v}
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "image-version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Install uv
+        if: github.event_name == 'release'
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1 - https://github.com/astral-sh/setup-uv/releases
+
+      # Building project only for release to ensure it definitely passes quality gates before publishing image & chart
+      - name: Build project using composite action
+        if: github.event_name == 'release'
+        uses: indykite/ops-common/.github/actions/python-build@4c4cb34f01107182013dd8fe8a9de28ba7958153 # master
+        id: build_python
+        with:
+          codecov-token: ${{ secrets.CODECOV_TOKEN }}
+          python-version: 3.13
+
+      # pull_request builds get <chart version>-pr-<number>-<sha>, master (push) builds get
+      # <chart version>-dev-<sha>. A release build (the `release: published` event - the only
+      # trigger that ever builds/publishes a tag, see the "on:" triggers above) gets no suffix:
+      # chart/Chart.yaml's version is already the release version (release-please's extra-files
+      # config, release-please-config.json), matching the container image tag
+      # docker/metadata-action's type=semver produces from that same tag.
+      - name: Compute version suffix
+        id: compute
+        env:
+          IS_PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
+          IS_MASTER_PUSH: ${{ github.event_name == 'push' }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          CHART_VERSION=$(yq eval '.version' chart/Chart.yaml)
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          if [[ "${IS_PULL_REQUEST}" == "true" ]]; then
+            SUFFIX="pr-${PR_NUMBER}-${SHORT_SHA}"
+          elif [[ "${IS_MASTER_PUSH}" == "true" ]]; then
+            SUFFIX="dev-${SHORT_SHA}"
+          else
+            SUFFIX=""
+          fi
+          {
+            echo "suffix=${SUFFIX}"
+            echo "image-tag=${SUFFIX:+${CHART_VERSION}-${SUFFIX}}"
+            echo "chart-tag=${SUFFIX:+${CHART_VERSION}-${SUFFIX}}"
+            # Unsuffixed, unlike image-tag/chart-tag above (which are blank for a release build) -
+            # deploy-rc needs the plain release version chart/Chart.yaml already carries by then.
+            echo "chart-version=${CHART_VERSION}"
+          } >> "$GITHUB_OUTPUT"
+
+  build-docker:
+    name: Build Docker container
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    needs: [version]
+    outputs:
+      image-tag: ${{ needs.version.outputs.image-tag }}
+    steps:
+      - name: Check out repo
+        uses: indykite/ops-common/.github/actions/git-checkout@4c4cb34f01107182013dd8fe8a9de28ba7958153 # actions/checkout with dynamic fetch-depth resolution
+
+      - name: Determine target registries
+        id: registries
+        env:
+          GAR_IMAGE: ${{ format('{0}/{1}/indykite/{2}', vars.ARTIFACT_REGISTRY_URL, secrets.GCP_PROJECT_ID_MGMT, github.event.repository.name) }}
+          # Docker Hub only gets the release image, not every PR/dev build - true precisely when
+          # this run's ref is the release tag, i.e. only for the `release: published` event.
+          IS_RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          {
+            echo "is-release-tag=${IS_RELEASE_TAG}"
+            echo "images<<EOF"
+            echo "$GAR_IMAGE"
+            if [[ "${IS_RELEASE_TAG}" == "true" ]]; then
+              echo "docker.io/indykite/${{ github.event.repository.name }}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Generate Docker meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0 - https://github.com/docker/metadata-action/releases
+        id: meta
+        with:
+          images: ${{ steps.registries.outputs.images }}
+          # The type=raw tag covers this job's two non-release triggers (PR and master push); a
+          # release build carries no version.image-tag (see the "version" job) and gets its
+          # version from type=semver above instead.
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha
+            type=semver,pattern={{version}}
+            type=raw,value=${{ needs.version.outputs.image-tag }},enable=${{ needs.version.outputs.image-tag != '' }}
+
+      - name: Setup Docker
+        uses: indykite/ops-common/.github/actions/docker-setup@fab8561ba189cabf8cb64a8b8f128d868d102e8e # master
+        with:
+          workload-identity-provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER_MGMT }}
+          gcp-service-account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          docker-repository-hostname: ${{ vars.ARTIFACT_REGISTRY_URL }}
+          platforms: ${{ env.PLATFORMS }}
+          dockerhub-username: ${{ steps.registries.outputs.is-release-tag == 'true' && secrets.DOCKERHUB_USERNAME || '' }}
+          dockerhub-token: ${{ steps.registries.outputs.is-release-tag == 'true' && secrets.DOCKERHUB_TOKEN || '' }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0 - https://github.com/docker/build-push-action/releases
+        with:
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: ${{ env.PLATFORMS }}
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # SBOM
+          provenance: mode=max
+          sbom: true
+
+  publish-chart:
+    name: Publish Helm chart
+    timeout-minutes: 10
+    runs-on: ubuntu-slim
+    needs: [version]
+    steps:
+      - name: actions/checkout
+        uses: indykite/ops-common/.github/actions/git-checkout@4c4cb34f01107182013dd8fe8a9de28ba7958153 # actions/checkout with dynamic fetch-depth resolution
+
+      # chart/Chart.yaml's appVersion is release-please-managed and only correct for an actual
+      # release - a PR/master package still carries the base release appVersion at this point.
+      # templates/deployment.yaml and _helpers.tpl fall back to Chart.AppVersion for the image
+      # tag/version labels whenever values.yaml leaves image.tag blank, so patch it here, before
+      # packaging, to the exact per-build tag build-docker actually publishes for the image (the
+      # "version" job's image-tag output) - otherwise a chart installed without an explicit
+      # image.tag override references an image that was never built. Deliberately image-tag, not
+      # chart-tag: the two share the same <chart version>-<suffix> value here, but chart-tag names
+      # the packaged chart's own version, which chart-publish additionally suffixes with "-chart"
+      # for its Docker Hub push (see the "Publish chart" step below) - appVersion must track the
+      # image, never that packaging suffix. A release build's image-tag is empty (see the
+      # "version" job): appVersion is already the release version by then, so there's nothing to
+      # patch.
+      - name: Set chart appVersion for this build
+        if: needs.version.outputs.image-tag != ''
+        # image-tag is derived from chart/Chart.yaml, which a PR controls - read it via env: and
+        # yq's strenv() rather than interpolating it into the yq expression, so a value containing
+        # a quote can't break out of it and run arbitrary shell.
+        env:
+          IMAGE_TAG: ${{ needs.version.outputs.image-tag }}
+        run: |
+          yq -i '.appVersion = strenv(IMAGE_TAG)' chart/Chart.yaml
+
+      # chart/charts/ isn't committed (see chart/Chart.lock and .gitignore) - the
+      # chart-publish composite action's own "Package chart" step (helm package) needs
+      # dependencies already resolved, and it has no dependency-build step of its own. Resolve
+      # strictly from chart/Chart.lock here (helm dependency build, not update) so the published
+      # package embeds the redis subchart without silently drifting to a newer version.
+      - name: Install Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.0 # renovate: datasource=github-releases,depName=helm/helm
+
+      - name: Resolve chart dependencies
+        run: helm dependency build chart/
+
+      - name: Publish chart
+        uses: indykite/ops-common/.github/actions/chart-publish@9966c9123555d65b89078ff044d4db3f6b4da866 # master
+        with:
+          workload-identity-provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER_MGMT }}
+          gcp-service-account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          artifact-registry-url: "${{ vars.ARTIFACT_REGISTRY_URL }}/${{ secrets.GCP_PROJECT_ID_MGMT }}/indykite"
+          immutable-tags: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
+          version-suffix: ${{ needs.version.outputs.suffix }}
+          # Docker Hub only gets the chart on an actual release, not PR/dev builds - same scoping
+          # as the container image's Docker Hub push in the "build-docker" job. Namespace matches
+          # the container image's ("indykite"); chart-publish appends its own '-chart' suffix to
+          # the version so the chart's tag doesn't collide with the image's in indykite/intent-agent.
+          dockerhub-username: ${{ github.event_name == 'release' && secrets.DOCKERHUB_USERNAME || '' }}
+          dockerhub-token: ${{ github.event_name == 'release' && secrets.DOCKERHUB_TOKEN || '' }}
+          dockerhub-repository: ${{ github.event_name == 'release' && 'indykite' || '' }}
+
+  deploy-dev:
+    # Only deploy on push to master
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+    name: Deploy to dev
+    timeout-minutes: 3
+    runs-on: ubuntu-latest
+    # Waits on publish-chart too, not just build-docker - both the image and the chart it
+    # references (see chart/templates/deployment.yaml's appVersion fallback) must actually be
+    # published before pointing ArgoCD at this version, or dev ends up syncing a chart/image
+    # that doesn't exist in the registry yet.
+    needs: [version, build-docker, publish-chart]
+    steps:
+      - name: Checkout argocd applications repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: indykite/ml-argocd-applications
+          ssh-key: ${{ secrets.SSH_DEPLOY_KEY_ML_ARGOCD_APPLICATIONS }}
+
+      - name: Update chart version to new release on dev
+        # Same injection concern as publish-chart's "Set chart appVersion" step: chart-tag is
+        # derived from chart/Chart.yaml, so read it via env:/strenv() rather than interpolating it
+        # into the yq expression.
+        env:
+          CHART_TAG: ${{ needs.version.outputs.chart-tag }}
+        run: |
+          yq -i '.chartTargetRevision = strenv(CHART_TAG)' apps/ml-charts/intent-agent/chart-version-dev.yaml
+
+      - name: Commit & push new release version
+        run: |-
+          git config user.name "GitHub Actions"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Updated intent-agent chart on dev to version ${{ needs.version.outputs.chart-tag }}"
+          git push
+
+  deploy-rc:
+    # Only deploy on an actual release.
+    if: ${{ github.event_name == 'release' }}
+    name: Deploy to rc
+    timeout-minutes: 3
+    runs-on: ubuntu-latest
+    # Same reasoning as deploy-dev's needs: - both build-docker and publish-chart run in this
+    # same release-triggered run now, so wait on both before pointing ArgoCD at this version.
+    needs: [version, build-docker, publish-chart]
+    steps:
+      - name: Checkout argocd applications repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: indykite/ml-argocd-applications
+          ssh-key: ${{ secrets.SSH_DEPLOY_KEY_ML_ARGOCD_APPLICATIONS }}
+
+      - name: Update chart version to new release on rc
+        # Same injection concern as publish-chart's "Set chart appVersion" step: chart-version is
+        # derived from chart/Chart.yaml, so read it via env:/strenv() rather than interpolating it
+        # into the yq expression.
+        env:
+          CHART_VERSION: ${{ needs.version.outputs.chart-version }}
+        run: |
+          yq -i '.chartTargetRevision = strenv(CHART_VERSION)' apps/ml-charts/intent-agent/chart-version-rc.yaml
+
+      - name: Commit & push new release version
+        run: |-
+          git config user.name "GitHub Actions"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Updated intent-agent chart on rc to version ${{ needs.version.outputs.chart-version }}"
+          git push

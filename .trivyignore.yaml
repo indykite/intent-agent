@@ -1,0 +1,6 @@
+---
+licenses:
+  - id: Apache-2.0
+    paths:
+      - "LICENSE"
+    statement: "Repository's own LICENSE file, not a third-party dependency license"

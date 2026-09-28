@@ -2,10 +2,16 @@
 replicaCount: 1
 
 image:
-  repository: europe-west1-docker.pkg.dev/placeholder
+  repository: docker.io/indykite
   name: intent-agent
   pullPolicy: Always
-  tag: "0.0.0"
+  # Blank defaults to Chart.yaml's version (see templates/deployment.yaml) - for a release
+  # package this is the release-please-managed release version (same as appVersion); for a
+  # PR/master package it's the version-suffixed value `helm package --version` stamped on it
+  # (e.g. "0.3.0-dev-abc1234"), matching the image tag published for that same commit. Per-
+  # environment values files (values-dev.yaml, values-rc.yaml) override this explicitly with the
+  # actual deployed image tag.
+  tag: ""
 
 # app.* mirrors indykite/intent_agent/config.py's Settings fields 1:1 (env var names
 # in comments match .env.example). Keep the two in sync when Settings gains a field.

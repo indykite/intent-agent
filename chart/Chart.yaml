@@ -3,7 +3,12 @@ apiVersion: v2
 name: intent-agent
 description: IndyKite Intent Agent - A2A service extracting AuthZEN-style intent from natural-language prompts
 type: application
-version: 0.2.7
+# version/appVersion are release-please-managed (see ../release-please-config.json's
+# extra-files) and always match the container image version for a real release. PR/master
+# builds don't touch this file - the build-publish-deploy workflow suffixes the packaged version
+# at publish time instead (see .github/workflows/build-publish-deploy.yaml).
+version: 0.3.0
+appVersion: "0.3.0"
 
 keywords:
   - intent-agent
