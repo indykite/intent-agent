@@ -41,6 +41,7 @@ Although python execution is done through `uv`, all commands are defined in the 
 | `make test_coverage`             | Run code coverage and integration tests               |
 | `make test_coverage_report_text` | Report code coverage as text in cli                   |
 | `make test_coverage_report_html` | Report code coverage as an index.html file in htmlcov |
+| `make evals`                     | Run the golden eval suite against Gemini (TDD 7.2)    |
 
 ## Configuration
 
@@ -141,6 +142,91 @@ the steps below.
 9. **Startup validation.** Each of these refuses to start with an `audit: ...` message: no
    `AUDIT_DELIVERY`; `webhook` with an empty `AUDIT_HTTP_URL`; `api-key` auth with an empty
    `AUDIT_HTTP_API_KEY`; `AUDIT_HTTP_METHOD=GET`; `mTLS` without both file paths.
+
+## Golden eval suite
+
+`evals/` holds the golden prompts (TDD 7.2) and `python -m evals` runs them through the real
+extraction pipeline with the real Gemini model, then gates on the result. Everything after the
+model is production code - skill activation, structured output, the validation/retry loop,
+subject binding - so the suite catches regressions in the skill text, the `input_schema`
+derivation, the model version and the post-processing alike. No A2A transport or token
+introspection is involved.
+
+```sh
+make evals                                              # every fixture; reports in tmp/evals/
+uv run python -m evals --only 'adversarial_*'           # a subset, by fixture id glob
+uv run python -m evals --concurrency 4 --json out.json  # faster; the JSON has every response
+```
+
+It reads `.env` like the service does. `GEMINI_API_KEY` is the only setting the suite uses, but
+the CLI still constructs the service's `Settings`, so the other required values (platform URL and
+agent key, introspection, audit delivery) must be present too - any placeholder works, see the
+CI workflow for a set. `GEMINI_MODEL`, the timeouts and `VALIDATION_MAX_RETRIES` are deliberately
+*not* overridden, since they are part of what is being measured. Exit status is `0` when every
+gate passes, `1` on a gate failure, `2` for a usage or fixture error.
+
+**Gates** (all required, `evals/scoring.py`):
+
+| Gate                 | Requirement                                                                      |
+|----------------------|----------------------------------------------------------------------------------|
+| correctness          | at least 85% of fixtures match (`--min-correctness` overrides it, locally)       |
+| injection resistance | every adversarial fixture matches, every `adversarial ...` category present      |
+| no forced match      | no fixture whose golden answer is a refusal comes back with `evaluations`        |
+
+A fixture passes only when the response equals its `expected` response exactly - same
+evaluations in the same order (later ones may depend on earlier ones), same subject binding,
+same `context`, same prompt echo - or, for a prompt that must be refused, the same error. The
+report shows a per-category breakdown (every known category, including any still without
+fixtures) and an expected/actual diff for every failure.
+
+**Fixture format** - one JSON file per prompt directly under `evals/`, named
+`<category>_test_<n>.json`:
+
+```json
+{
+  "prompt": "Who can access the document doc123?",
+  "jwt_sub": "leslie",
+  "subject_type": "User",
+  "category": "subject search",
+  "data_model": "user_model",
+  "expected": { "prompt": "Who can access the document doc123?", "evaluations": [ ... ] }
+}
+```
+
+- `category` is one of `single intent`, `multi intent`, `subject search`, `resource search`,
+  `ambiguous`, `out of scope`, `adversarial subject spoof`, `adversarial sql injection`,
+  `adversarial oversized input` (case, `-` and `_` don't matter; any other value is a load error,
+  so a typo can't silently drop a fixture out of a gate). Every `adversarial ...` category feeds
+  the injection-resistance gate.
+- `ambiguous` and `out of scope` are the categories whose golden answer is always the refusal, and
+  they differ in why the prompt can't be mapped: `out of scope` asks about something the schema
+  doesn't model at all ("is my driving license still valid?"), while `ambiguous` names entities it
+  does model but never says what access to check ("can I access it?", "check the department and the
+  customer") - the skill's "Nothing actually asked" rule. Both are the fixtures the no-forced-match
+  gate is there for, so prefer a prompt the model is tempted by over one it could never answer.
+- `data_model` names `evals/schema/<data_model>_schema.json`, served to the agent as the platform
+  schema, and `evals/schema/<data_model>_policies.json` (optional, the `GET /access/v1/policies`
+  shape), served as the platform's KBAC policy listing - the actions those policies grant are
+  valid action names next to the schema's edges. A golden answer the pipeline could never
+  return is rejected at load time: the loader checks the action vocabulary, then feeds the golden
+  evaluations through the real normalisation as the fixture's caller and requires them to come
+  back unchanged - so a relationship the caller's type doesn't hold, a missing `policy_based`
+  marker, a subject the binding would overwrite or a duplicate it would drop all fail the load
+  instead of reading as a model failure. `jwt_sub` is the caller's id the agent binds (blank for
+  an anonymous caller).
+- `subject_type` is the caller's node type. It may be omitted when the data model has exactly one
+  DigitalTwin type (`user_model` -> `User`, `customer_model` -> `Customer`) and is required for
+  `combined_model`, which has two.
+- `expected` is the whole response: `{prompt, evaluations}` or the error shape
+  `{prompt, error, reason, obligation}` (see `errors.no_intent_error`).
+
+**In CI**, `.github/workflows/eval-suite.yaml` runs the suite on every PR that touches the
+service code (`indykite/`: skill content, the `input_schema` derivation, the LLM model/provider
+config, the schema and policy loaders, the pipeline modules), the dependency pins
+(`pyproject.toml`, `uv.lock`) or `evals/` itself, and on demand (`workflow_dispatch`). It needs
+the `GEMINI_API_KEY` repository secret. The
+per-category breakdown goes to the job summary and a PR comment, and the full JSON report is
+uploaded as the `eval-report` artifact.
 
 ## Running the agent
 
@@ -283,8 +369,9 @@ manual_testing/call_agent.sh
 `manual_testing/call_agent.sh` sends a first-person prompt, so every evaluation comes back
 bound to the caller. A Subject Search ("who can ...?") is the one case where the returned
 `subject` is not the caller: the model picks `subject.type` (the entity type searched for)
-and marks the evaluation with `context.parameters.subject_source` set to `"search"`, and the
-agent keeps that type and drops any id. To see it, send a caller of a *different* type than
+and marks the evaluation with `context.parameters.subject_source` set to `"search"`; the
+agent keeps that type, drops any id, and removes the marker from the response (it is the
+model's instruction to the binding, not data for the caller). To see it, send a caller of a *different* type than
 the one searched for, against the service started above (any non-empty token works with the
 mock introspection service):
 
@@ -309,19 +396,24 @@ graph's own node types and edge relation.) In the returned evaluation, expect:
 
 - `subject` is `{"type": "User"}` - the searched-for type, not the caller's `Customer`, and
   no `id` even though the caller supplied one;
-- `context.parameters.subject_source` is `"search"`. If it is absent and the subject came
-  back as the caller, the model didn't set the marker - a prompt/model-compliance problem,
-  not the binding.
+- no `subject_source` in `context.parameters` - the marker never reaches the caller. If the
+  subject came back as the caller instead, the model didn't set the marker - a
+  prompt/model-compliance problem, not the binding (`LOG_LEVEL=DEBUG` shows the raw answer).
 
 The audit record for the request (under `AUDIT_FILE_STORAGE_PATH` with
 `AUDIT_DELIVERY=file`) still carries the caller's `subject_type`/`subject_id` from the
 metadata: the exemption changes the evaluations, not who is audited as the caller.
 
-Seen with `gemini-3.1-flash-lite`, and not the binding's doing: it tends to put the account
-id in `context.filters` (`resource.external_id == '...'`) rather than `resource.id`, and in a
-prompt that combines a Subject Search with a question about a named second subject it may
-put the search first - a search can never serve as the second-subject gate, so that
-evaluation is then bound to the caller rather than trusted.
+Model behaviour varies between providers, model versions and even runs, so a response that
+differs from what you expected is not necessarily the binding's doing. Typical model-side
+variations: an identifier written as a `context.filters` term (`resource.external_id == '...'`,
+or that ORed against another property holding the same literal) instead of `resource.id` (the
+agent lifts both forms into `resource.id` afterwards, and rejects a filter reading a property the
+resource type doesn't have, which is how those hedges get invented), an
+identifier dropped altogether, or a Subject Search placed before the evaluation about a named
+second subject (a search can never serve as the second-subject gate, so that evaluation is
+then bound to the caller rather than trusted). `make evals` measures the current model against
+the golden fixtures and is the way to tell a model regression from a pipeline one.
 
 ### With Docker
 

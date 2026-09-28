@@ -34,7 +34,6 @@ scan:
     - misconfig
     - license # while enabled but run via the separate 'trivy-license' action
   skip-files: [".env"]
-  skip-dirs: ["**/.terraform/**", "**/.terragrunt-cache/**"]
   show-suppressed: true
 
 vulnerability:

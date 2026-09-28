@@ -1,0 +1,121 @@
+---
+# Golden eval suite (TDD 7.1 / 7.2): runs evals/ against the real Gemini model and fails on any
+# launch-gate regression - correctness >= 85%, injection resistance 100%, no forced match on a
+# refusal fixture. Triggered by every PR touching the service code (skill content, the
+# input_schema derivation, the LLM version/provider config, the schema loader, the pipeline
+# modules around them - a directory glob, not a file list, so a refactor can't silently drop a
+# module out of the trigger), the dependency pins, or the suite itself, and on demand.
+name: Golden eval suite
+
+on: # yamllint disable-line rule:truthy
+  pull_request:
+    branches:
+      - master
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+    paths:
+      # the service code: skill content, the input_schema derivation, the post-processing that
+      # decides the response, the LLM/provider config, the schema and policy loaders
+      - indykite/**
+      # the provider SDK pin and the model default's dependencies
+      - pyproject.toml
+      - uv.lock
+      # the suite itself
+      - evals/**
+      - .github/workflows/eval-suite.yaml
+  workflow_dispatch: {}
+
+concurrency:
+  group: eval-suite-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+#
+# https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#permissions
+# "all of those that are not specified are set to none."
+permissions:
+  contents: read # required by checkout
+  pull-requests: write # required by mshick/add-pr-comment
+
+jobs:
+  golden-evals:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    # Holds GEMINI_API_KEY: a reviewer approves each run before the PR's code is given the key.
+    environment: evals
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+
+    env:
+      PYTHONUNBUFFERED: 1
+
+    steps:
+      - name: actions/checkout
+        uses: indykite/ops-common/.github/actions/git-checkout@4c4cb34f01107182013dd8fe8a9de28ba7958153 # master
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1 - https://github.com/astral-sh/setup-uv/releases
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Verify the lockfile is current
+        # `make evals` installs what it needs through `uv run --locked`; this fails the job early,
+        # and with a clear message, when uv.lock no longer matches pyproject.toml.
+        run: make install_dev
+
+      - name: Check the Gemini API key is available
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "::error::GEMINI_API_KEY secret is not set - the eval suite needs a real Gemini key"
+            exit 1
+          fi
+
+      - name: Run golden eval suite
+        id: evals
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Settings needs these to construct; the suite serves fixture schemas in-process and
+          # never introspects a token or writes an audit record, so placeholders are enough.
+          INDYKITE_BASE_URL: https://ikg.invalid
+          IK_APP_AGENT_KEY: not-used-by-the-eval-suite
+          INTROSPECT_URL: https://idp.invalid/introspect
+          INTROSPECT_CLIENT_ID: not-used-by-the-eval-suite
+          INTROSPECT_CLIENT_SECRET: not-used-by-the-eval-suite
+          AUDIT_DELIVERY: file
+          AUDIT_FILE_STORAGE_PATH: ${{ runner.temp }}/audit
+          AUDIT_FILE_FORMAT: json
+          AUDIT_FILE_ROTATION_STRATEGY: time
+        # The same command as a local run, reports included (Makefile: EVAL_REPORT_DIR, EVAL_CONCURRENCY).
+        run: make evals
+
+      # The two steps below must also run when `make evals` failed, which is the normal way a gate
+      # regression arrives: that is what the report is needed for. They are skipped on a cancelled
+      # run, and the hashFiles guard keeps a run that died before writing a report (a fixture error)
+      # from piling missing-file failures on top of the real one.
+      - name: Publish the per-category breakdown to the job summary
+        if: ${{ !cancelled() && hashFiles('tmp/evals/report.md') != '' }}
+        run: cat tmp/evals/report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: actions/upload-artifact/eval-report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1 - https://github.com/actions/upload-artifact/releases
+        if: ${{ !cancelled() && hashFiles('tmp/evals/report.md') != '' }}
+        with:
+          name: eval-report
+          path: tmp/evals/
+          if-no-files-found: error
+
+      - name: Add comment to PR
+        uses: mshick/add-pr-comment@ec328af66588ab8f77cdeb2c264f14aba45bbf59 # v3.12.0 - https://github.com/mshick/add-pr-comment/releases
+        # Same-repository PRs only: a fork PR's token is read-only whatever `permissions` asks for,
+        # so the comment would fail a job whose evals passed. Forks keep the summary and artifact.
+        if: >-
+          ${{ !cancelled() && github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name == github.repository
+          && hashFiles('tmp/evals/report.md') != '' }}
+        with:
+          message-id: golden-eval-suite
+          message-path: tmp/evals/report.md

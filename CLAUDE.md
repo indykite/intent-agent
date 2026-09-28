@@ -67,6 +67,7 @@ make fix                  # ruff format + ruff check --fix
 make codestyle_check       # ruff check only (no autofix)
 make test                  # uv run --locked pytest test
 make test_coverage         # coverage across test/ + integration/
+make evals                 # golden eval suite against the real Gemini model (needs GEMINI_API_KEY)
 make build                 # the full gate: project_check + codestyle_check + test
 make build_docker_image    # docker buildx build --platform linux/amd64 ...
 make start_docker_app
@@ -130,6 +131,18 @@ Eight modules carry whole service:
   A2A `AgentSkill` list for the agent card.
 - **`schema.py`** — `SchemaClient`: fetches/caches the IndyKite graph schema (JGF) over `httpx2`;
   `build_schema_cache(settings)` picks the `dogpile.cache` region it caches into.
+- **`policy.py`** — `PolicyClient`: fetches/caches the caller's subject type's ACTIVE KBAC
+  policies (`GET /access/v1/policies?subject_type=`, X-IK-ClientKey, per-subject-type cache key,
+  retry + short failure backoff, no cold-start preload since the subject type is per request);
+  `get_cached(subject_type) -> (policies, fetch_failed)`. The entries (`{"policy": {subject,
+  actions, resource, condition}, "tags"}`) are the second source of action names next to graph
+  edges (PRD erratum 2026-09-04): `input_schema` widens the enum with them, `render_schema_summary`
+  lists them as "Policy actions", `agent._policy_block` injects the raw list too, and
+  `subject_binding._action_name_error` accepts a policy action only when the evaluation is marked
+  `action_derivation_rule: "policy_based"` and the policy's resource type matches. A failed fetch
+  never fails the request: extraction runs edge-only and `policy_fetch_failed` is set on the
+  audit record and the response context. The eval runner serves fixture policies through
+  `evals.runner.FixturePolicyClient` (same `get_cached(subject_type)` contract).
 - **`auth.py`** — pulls the Bearer `access_token` off the A2A request context and validates it via
   RFC 7662 Token Introspection against the external IdP (no local JWT decode/signature check -
   the introspection call itself is what covers signature validity). Every introspection refusal
@@ -147,8 +160,10 @@ Eight modules carry whole service:
 **Skills / progressive disclosure.** `skills/<name>/SKILL.md` (YAML frontmatter + markdown body)
 discovered by `skills.discover_skills()` relative to `skills.py`'s own directory, at `IntentAgent`
 construction time. System prompt only lists skill names/descriptions; LLM calls `activate_skill`
-to fetch skill's full body on demand, and for `extract-intent` specifically, cached IndyKite
-schema + the caller-supplied subject id get injected into that response. Currently one skill ships:
+to fetch skill's full body on demand, and for `extract-intent` specifically, the cached IndyKite
+schema gets injected into that response as `input_schema.render_schema_summary`'s compact
+node/edge vocabulary (a few KB; the raw JGF is tens of KB and used to be cut mid-JSON at
+`SCHEMA_PREVIEW_CHARS`, which then sent the model re-fetching until the tool budget was gone). Currently one skill ships:
 `extract-intent` — deliberately no separate `get-data-schema` skill; schema fetching = internal
 infrastructure (`SchemaClient`, wired through `IntentAgent.load_data_schema`/
 `get_cached_schema`), not LLM-facing capability. A `get_data_schema` tool is exposed to the LLM
@@ -170,12 +185,28 @@ keeps the stale schema instead of losing it.
 
 **Validation loop (TDD 4.8/4.9).** After the LLM's final answer, `subject_binding.py`'s
 `normalize_intent_response` checks every evaluation's `subject.type` / `action.name` /
-`resource.type` against the cached schema (`validate_evaluations`) - belt-and-braces on top of
+`resource.type` against the cached schema (`validate_evaluations`; `action.name` against edges
+plus the policy-granted actions, the same union `build_input_schema` puts in the enum and
+`render_schema_summary` lists as "Policy actions") - belt-and-braces on top of
 the structured-output enum, since Gemini treats the enum as a strong hint, not a guarantee - and
 checks `context`'s shape the same way (`filters` a string, `parameters`/`qualifiers` objects;
-null keys and a blank `filters` are dropped afterwards, everything else passes through verbatim
-as untrusted data) and enforces CEL on `filters` (`cel.py`, on `cel-python`): it must parse,
-may reference only the `resource` variable, and may not call `dyn()`/`type()` - the same
+null keys, a blank `filters` and the model's internal `subject_source` / `resource_source`
+binding markers are dropped afterwards, a filter that identifies one resource on an id-less
+resource is lifted into `resource.id` - same single resource, the AuthZEN shape for it, and an
+Access Evaluation without it is rejected downstream; that covers a lone
+`resource.external_id == '<id>'` (or `resource.id`, the model's other spelling) and a chain of
+`||` equalities against the same literal where one pins the id, the model's hedge when it doesn't
+know which property carries the name (`resource.external_id == 'Volvo' || resource.email ==
+'Volvo'`), but never a `&&`, a parenthesised group or clauses over different literals - an
+evaluation whose `action.name` is present but blank is dropped as the model's "no action
+fits" (retrying it was seen to force a match instead), a Subject Search over a node type the schema
+doesn't mark DigitalTwin is dropped too (only DigitalTwin types are candidates; seen live as a
+spurious second candidate next to the right one; an undefined type is still fed back), `resource_source: "caller"` binds the
+caller's own type/id as the resource ("who can access me?"), a blank second-subject type is
+completed from the gate evaluation, and everything else passes through verbatim as untrusted data) and enforces CEL on `filters` (`cel.py`, on `cel-python`): it must parse,
+may reference only the `resource` variable, may read only properties the schema observed for that
+`resource.type` (plus AuthZEN's own `id`/`type`; a type the schema lists no properties for
+disables the check rather than failing every filter), and may not call `dyn()`/`type()` - the same
 posture as the platform's (blocked reflection functions, size limit). The
 expression is never evaluated here; IBAC does that. An
 off-schema value (or non-JSON output) raises `IntentValidationError`; `IntentAgent` feeds the
@@ -191,7 +222,12 @@ Both surface as `llm_timeout_error`. Exhausting `TOOL_CALL_MAX_ITERATIONS`
 after `extract-intent` was activated is also `no_intent_error`, never the free-text placeholder;
 a repeat `activate_skill` for the already-active skill gets a short "answer now" tool message
 instead of the skill body plus schema again (seen live: Gemini otherwise re-activates until the
-budget is gone). Every error - caller-facing or fed
+budget is gone). An `{evaluations}` answer given *without* ever activating the skill (the bound
+structured output yields that shape regardless) is never passed through as free text - it would
+be unvalidated and carry whatever subject the model chose; `_activate_and_ask_again` injects the
+skill content as the next message and the conversation is an extraction from there.
+`resource.id` is a required string in the structured output (a required field is filled far
+more reliably than an optional one; `""` = many resources, dropped again in normalisation). Every error - caller-facing or fed
 back to the LLM - is the fixed `{prompt, error, reason, obligation}` shape built by
 `errors.error_response`; new ones go in `errors.py` next to the existing ones, never as ad-hoc
 dicts or strings elsewhere.
@@ -218,6 +254,28 @@ classify it; a new exit path from the pipeline must set its outcome there, not i
 `redis` using `REDIS_URL` — required whenever `CACHE_BACKEND=redis` (`Settings` fails fast at
 startup otherwise). Multi-instance deployments need `redis` so instances share one schema cache
 entry (see the pre-merge multi-instance validation below).
+
+**Golden eval suite (TDD 7.1/7.2).** `evals/` = fixtures (`<category>_test_<n>.json`, schemas
+under `evals/schema/`) + the runner package (`fixtures.py` load/validate, `runner.py` drives
+`IntentAgent.run_extraction` with the fixture schema served in place of the platform's,
+`scoring.py` verdict/categories/gates, `report.py` text/Markdown/JSON, `__main__.py` CLI).
+Not shipped in the image, not under `test/` - it calls the real Gemini model, so it's
+`make evals` / `python -m evals`, never part of `make test`. Pass rule: response == `expected`,
+exactly (evaluation order included). Gates: correctness ≥85%, every fixture of every
+`adversarial ...` category passes (every such category must be present), no refusal fixture answered with evaluations; exit 1 on any.
+`.github/workflows/eval-suite.yaml` runs it on PRs touching the service code (`indykite/**` - a
+directory glob, not a file list, so a refactor can't drop a module out of the trigger), the
+dependency pins (`pyproject.toml`, `uv.lock`) or `evals/**`, and on demand; needs the
+`GEMINI_API_KEY` repo secret. Each data
+model under `evals/schema/` has a `_schema.json` and, for policy-granted actions, a
+`_policies.json` in the platform listing shape. The loader round-trips every golden answer
+through `normalize_intent_response` as the fixture's caller and rejects one that comes back
+different - the pipeline's own rules are the producibility check, not a copy of them. New fixture category
+or gate = `fixtures.CATEGORIES` / `scoring.evaluate_gates`, not a parallel script. The fixtures
+are the validated spec (they outrank the TDD's fixture shape): a red gate means the pipeline
+doesn't produce the golden answer yet (e.g. context markers or action names the current skill /
+schema validation don't support) - change the skill/pipeline, don't loosen the pass rule or
+edit golden answers to fit.
 
 **A2A transport quirks** (worth knowing before curling this service or writing integration
 test): JSON-RPC method name is `SendMessage`, not `message/send`; requests need

@@ -102,3 +102,67 @@ def test_filter_errors_caps_the_length():
     expression = " || ".join(["resource.name == 'x'"] * (MAX_FILTER_LENGTH // 10))
     assert len(expression) > MAX_FILTER_LENGTH
     assert filter_errors(expression) == [f"context.filters is longer than {MAX_FILTER_LENGTH} characters"]
+
+
+_CAR_PROPERTIES = {"external_id", "make", "model", "vin", "year"}
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        pytest.param("resource.model == 'V70'", id="dot_access"),
+        pytest.param("resource['model'] == 'V70'", id="single_quoted_index"),
+        pytest.param('resource["model"] == "V70"', id="double_quoted_index"),
+        pytest.param("resource.id == 'kitt' && resource.type == 'Car'", id="authzen_resource_fields_always_known"),
+        pytest.param("resource.tags.exists(t, t == 'x')", id="unknown_property_without_a_property_list"),
+    ],
+)
+def test_filter_errors_accepts_known_properties(expression):
+    """With a property list, a filter reading the resource type's own properties is accepted in
+    either CEL spelling; `id` / `type` belong to the AuthZEN resource object and always are. The
+    last case passes no list at all, which disables the check (an unobserved type, or no schema).
+    """
+    properties = None if "tags" in expression else _CAR_PROPERTIES
+    assert filter_errors(expression, properties) == []
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        pytest.param(
+            "resource.email == 'Volvo'",
+            ["context.filters reads resource.email, which is not a property of the resource type"],
+            id="dot_access",
+        ),
+        pytest.param(
+            "resource['email'] == 'Volvo'",
+            ["context.filters reads resource.email, which is not a property of the resource type"],
+            id="index_is_the_same_selection_as_the_dot_form",
+        ),
+        pytest.param(
+            "resource.email == 'a' || resource.colour == 'b'",
+            [
+                "context.filters reads resource.email, which is not a property of the resource type",
+                "context.filters reads resource.colour, which is not a property of the resource type",
+            ],
+            id="every_unknown_property_at_once",
+        ),
+        pytest.param(
+            "resource['ema' + 'il'] == 'Volvo'",
+            [
+                (
+                    "context.filters indexes resource with an expression instead of a property name, "
+                    "so what it reads can't be checked against the resource type"
+                )
+            ],
+            id="computed_key_cannot_be_checked",
+        ),
+    ],
+)
+def test_filter_errors_rejects_properties_the_resource_type_lacks(expression, expected):
+    """A condition on a property the type doesn't have can't be answered downstream, so it is fed
+    back for a retry - whichever way the property was selected. A computed index names a property
+    only once evaluated, which is the one case nothing static can check, so it is refused outright
+    rather than waved through.
+    """
+    assert filter_errors(expression, _CAR_PROPERTIES) == expected

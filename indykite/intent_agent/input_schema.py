@@ -1,15 +1,28 @@
-"""Builds the schema-derived response_json_schema that constrains Gemini's structured output
-to the live IndyKite graph schema's actual node/edge vocabulary (TDD 4.6).
+"""The two things the LLM is given that derive from the live IndyKite graph schema: the
+response_json_schema constraining its structured output to the schema's actual node/edge
+vocabulary (TDD 4.6, build_input_schema), and the compact vocabulary summary injected into the
+extract-intent skill activation (render_schema_summary).
 """
 
 from typing import Any
 
 from pydantic import BaseModel, Field, JsonValue
 
+_DIGITAL_TWIN_LABEL = "DigitalTwin"
+
+
+def _graph(schema: dict[str, Any]) -> dict[str, Any]:
+    """The JGF `graph` object, or `{}` when the document has none or it isn't an object - every
+    reader below tolerates a missing or malformed section the same way, so a malformed platform
+    response reads as an empty graph rather than raising on `.get`.
+    """
+    graph = schema.get("graph")
+    return graph if isinstance(graph, dict) else {}
+
 
 def _node_types(schema: dict[str, Any]) -> list[str]:
     """Return every node type label in the schema, sorted for a stable enum order."""
-    nodes = schema.get("graph", {}).get("nodes", {})
+    nodes = _graph(schema).get("nodes", {})
     if not isinstance(nodes, dict):
         return []
     return sorted(nodes.keys())
@@ -22,7 +35,7 @@ def _edge_relations(schema: dict[str, Any]) -> list[str]:
     put into a string enum, the same rule as subject_binding._edge_relations so the enum and
     the post-assembly check agree on the vocabulary.
     """
-    edges = schema.get("graph", {}).get("edges", [])
+    edges = _graph(schema).get("edges", [])
     if not isinstance(edges, list):
         return []
     relations = {
@@ -90,12 +103,18 @@ class _Resource(BaseModel):
     # they're written for the model. The `id` description steers it toward filling the id in
     # rather than restating the identifier as a context.filters term - seen live with flash-lite,
     # which still prefers the filter form more often than not (test/test_golden_scenarios.py
-    # replays the answers it does give).
-    id: str | None = Field(
-        default=None,
+    # replays the answers it does give), and which drops the identifier altogether when told
+    # more forcefully never to use the filter form; subject_binding lifts the pure external_id
+    # filter form back into the id afterwards instead.
+    # Required (not nullable): Gemini fills a required field far more reliably than an optional
+    # one, and flash-lite dropped a person's identifier ("user flo") when it was optional. An
+    # empty string is the "many resources" answer and is removed again by
+    # subject_binding._drop_blank_resource_ids.
+    id: str = Field(
         description=(
             "The identifier (external_id) of the one resource instance the prompt names, e.g. an "
-            "account number or document id. Omit only when the prompt is about many resources."
+            "account number, a document id, or a person's identifier ('flo' in 'user flo'). Use "
+            'the empty string "" only when the prompt is about many resources rather than one.'
         ),
     )
     type: str | None = None
@@ -164,6 +183,113 @@ def _drop_pydantic_only_keys(node: JsonValue) -> JsonValue:
     if isinstance(node, list):
         return [_drop_pydantic_only_keys(item) for item in node]
     return node
+
+
+def _has_digital_twin_label(node: object) -> bool:
+    """True when a JGF node entry carries the DigitalTwin system label."""
+    metadata = node.get("metadata", {}) if isinstance(node, dict) else {}
+    system_labels = metadata.get("system_labels", []) if isinstance(metadata, dict) else []
+    return isinstance(system_labels, list) and any(
+        isinstance(entry, dict) and entry.get("name") == _DIGITAL_TWIN_LABEL for entry in system_labels
+    )
+
+
+def digital_twin_types(schema: dict[str, Any]) -> list[str]:
+    """The node types that may be subjects (system label DigitalTwin), minus the platform's own
+    `_`-prefixed bootstrap nodes (`_Application`), sorted - the one place this label walk lives,
+    shared by the schema summary and the golden eval loader.
+    """
+    nodes = _graph(schema).get("nodes", {})
+    if not isinstance(nodes, dict):
+        return []
+    return sorted(label for label, node in nodes.items() if not label.startswith("_") and _has_digital_twin_label(node))
+
+
+def _node_summary(label: str, node: object) -> str:
+    """One line for a node type: its label, whether it may be a subject, and its property names.
+    A `_`-prefixed type is the platform's own (`_Application`, the calling app) - it carries the
+    DigitalTwin label too but is never what a prompt is about, so it is flagged as internal
+    rather than as a Subject candidate.
+    """
+    metadata = node.get("metadata", {}) if isinstance(node, dict) else {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    digital_twin = _has_digital_twin_label(node)
+    properties = metadata.get("properties", {})
+    names = sorted(properties) if isinstance(properties, dict) else []
+    if label.startswith("_"):
+        kind = " (platform-internal, never a Subject or Resource)"
+    else:
+        kind = f" ({_DIGITAL_TWIN_LABEL})" if digital_twin else ""
+    return f"- {label}{kind}: {', '.join(names) if names else '(no properties)'}"
+
+
+def _edge_summaries(schema: dict[str, Any]) -> list[str]:
+    """One `source -RELATION-> target` line per distinct well-formed edge, sorted."""
+    edges = _graph(schema).get("edges", [])
+    if not isinstance(edges, list):
+        return []
+    lines = {
+        f"- {edge['source']} -{edge['relation']}-> {edge['target']}"
+        for edge in edges
+        if isinstance(edge, dict)
+        and all(isinstance(edge.get(key), str) and edge.get(key) for key in ("source", "relation", "target"))
+    }
+    return sorted(lines)
+
+
+def _policy_summaries(policies: list[dict[str, Any]] | None) -> list[str]:
+    """One `subject -ACTION-> resource` line per action a fetched policy grants, sorted - the
+    same {"policy": {subject, actions, resource}} entries _policy_action_names reads.
+    """
+    lines: set[str] = set()
+    for entry in policies or []:
+        policy = entry.get("policy") if isinstance(entry, dict) else None
+        if not isinstance(policy, dict):
+            continue
+        subject, resource, actions = policy.get("subject"), policy.get("resource"), policy.get("actions")
+        subject_type = subject.get("type") if isinstance(subject, dict) else None
+        resource_type = resource.get("type") if isinstance(resource, dict) else None
+        if not (isinstance(subject_type, str) and isinstance(resource_type, str) and isinstance(actions, list)):
+            continue
+        lines.update(
+            f"- {subject_type} -{name}-> {resource_type}" for name in actions if isinstance(name, str) and name
+        )
+    return sorted(lines)
+
+
+def render_schema_summary(schema: dict[str, Any], policies: list[dict[str, Any]] | None = None) -> str:
+    """The schema's vocabulary as the model needs it, a few KB instead of the raw JGF: every
+    node type with its subject eligibility and property names, every edge as
+    `source -RELATION-> target`, and - when the request has any - the actions its access
+    policies grant, in the same form, as a section of their own so the model knows they are
+    policy-derived. The raw document, pretty-printed, runs to tens of thousands of characters
+    for a real graph and used to be injected truncated mid-JSON at SCHEMA_PREVIEW_CHARS - the
+    model then either guessed or re-fetched the schema until the tool-call budget ran out. The
+    full JGF stays available through the get_data_schema tool.
+    """
+    policy_lines = _policy_summaries(policies)
+    policy_heading = (
+        "Policy actions (valid action names too - defined in access policies, always policy-derived), "
+        "as subject -ACTION-> resource:"
+    )
+    nodes = _graph(schema).get("nodes", {})
+    node_lines = (
+        [_node_summary(label, node) for label, node in sorted(nodes.items())] if isinstance(nodes, dict) else []
+    )
+    node_heading = (
+        "Node types (a type marked DigitalTwin may be a Subject; any type may be a Resource), with their properties:"
+    )
+    return "\n".join(
+        [
+            node_heading,
+            *(node_lines or ["- (none)"]),
+            "",
+            "Edges (valid action names), as source -ACTION-> target:",
+            *(_edge_summaries(schema) or ["- (none)"]),
+            *(["", policy_heading, *policy_lines] if policy_lines else []),
+        ]
+    )
 
 
 def build_input_schema(schema: dict[str, Any], policies: list[dict[str, Any]] | None = None) -> dict[str, Any]:

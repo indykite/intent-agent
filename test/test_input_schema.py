@@ -4,7 +4,7 @@ from typing import Any, get_args, get_origin
 
 import pytest
 
-from indykite.intent_agent.input_schema import _Context, build_input_schema
+from indykite.intent_agent.input_schema import _Context, build_input_schema, digital_twin_types, render_schema_summary
 from indykite.intent_agent.subject_binding import _CONTEXT_KEY_TYPES
 
 _SCHEMA_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mock_ikg_schema.json"
@@ -158,3 +158,109 @@ def test_build_input_schema_drops_pydantic_only_keys():
     serialized = json.dumps(build_input_schema(_load_schema_fixture()))
     assert '"title"' not in serialized
     assert '"default"' not in serialized
+
+
+def test_render_schema_summary_lists_node_types_with_properties_and_edges_sorted():
+    schema = {
+        "graph": {
+            "nodes": {
+                "Document": {
+                    "metadata": {
+                        "properties": {"title": {}, "external_id": {}},
+                        "system_labels": [{"name": "Resource"}],
+                    }
+                },
+                "User": {"metadata": {"properties": {"external_id": {}}, "system_labels": [{"name": "DigitalTwin"}]}},
+                "Ghost": {},
+            },
+            "edges": [
+                {"source": "User", "relation": "CAN_ACCESS", "target": "Document", "directed": True},
+                {"source": "User", "relation": "CAN_ACCESS", "target": "Document"},  # duplicate relation entry
+                {"source": "Document", "relation": "AUTHORED_BY", "target": "User"},
+                {"source": "User", "relation": 7, "target": "Document"},  # malformed, skipped
+                "not-an-edge",
+            ],
+        },
+    }
+
+    summary = render_schema_summary(schema)
+
+    assert summary.splitlines() == [
+        "Node types (a type marked DigitalTwin may be a Subject; any type may be a Resource), with their properties:",
+        "- Document: external_id, title",
+        "- Ghost: (no properties)",
+        "- User (DigitalTwin): external_id",
+        "",
+        "Edges (valid action names), as source -ACTION-> target:",
+        "- Document -AUTHORED_BY-> User",
+        "- User -CAN_ACCESS-> Document",
+    ]
+
+
+def test_render_schema_summary_tolerates_missing_or_malformed_graph_sections():
+    assert "- (none)" in render_schema_summary({})
+    summary = render_schema_summary({"graph": {"nodes": "?", "edges": "?"}})
+    assert summary.count("- (none)") == len(["nodes", "edges"])
+
+
+def test_graph_readers_tolerate_a_non_object_graph():
+    """A platform response whose `graph` isn't an object reads as an empty graph everywhere - the
+    summary, the enum derivation and the DigitalTwin walk - never an AttributeError on `.get`.
+    """
+    malformed = {"graph": "?"}
+    assert render_schema_summary(malformed).count("- (none)") == len(["nodes", "edges"])
+    assert "enum" not in _variant(build_input_schema(malformed)["$defs"]["_Action"]["properties"]["name"], "string")
+    assert digital_twin_types(malformed) == []
+
+
+def test_render_schema_summary_is_far_smaller_than_the_raw_document():
+    """The point of the summary: a real captured schema fits well inside SCHEMA_PREVIEW_CHARS."""
+    schema = json.loads((Path(__file__).parent / "fixtures" / "canbank_schema.json").read_text())
+    raw = json.dumps(schema, indent=2)
+    summary = render_schema_summary(schema)
+    assert len(summary) < len(raw) / 5
+    assert len(summary) < 12000  # noqa: PLR2004 - the Settings default for SCHEMA_PREVIEW_CHARS
+
+
+def test_render_schema_summary_flags_platform_internal_types_instead_of_marking_them_subjects():
+    """_Application carries the DigitalTwin label in a real schema but is never what a prompt is
+    about; seen live as a Subject Search candidate when it was listed as a DigitalTwin.
+    """
+    schema = {
+        "graph": {
+            "nodes": {"_Application": {"metadata": {"properties": {}, "system_labels": [{"name": "DigitalTwin"}]}}},
+            "edges": [],
+        },
+    }
+    assert "- _Application (platform-internal, never a Subject or Resource): (no properties)" in render_schema_summary(
+        schema
+    )
+    assert "_Application (DigitalTwin)" not in render_schema_summary(schema)
+
+
+def test_build_input_schema_requires_resource_id():
+    """A required field is what makes flash-lite fill the identifier in at all; "" is the
+    "many resources" value and subject_binding drops it again.
+    """
+    resource = build_input_schema(_load_schema_fixture())["$defs"]["_Resource"]
+    assert resource["required"] == ["id"]
+    assert resource["properties"]["id"]["type"] == "string"
+
+
+def test_render_schema_summary_lists_policy_actions_in_their_own_section_only_when_there_are_any():
+    schema = _load_schema_fixture()
+    policies = [
+        {"policy": {"subject": {"type": "Customer"}, "actions": ["CHECK_MEMBERSHIP"], "resource": {"type": "Car"}}},
+        {"policy": {"subject": {"type": "Company"}, "actions": ["CAN_AUDIT"], "resource": {"type": "Car"}}, "tags": []},
+        {"policy": "?"},
+    ]
+
+    with_policies = render_schema_summary(schema, policies)
+    without = render_schema_summary(schema)
+
+    assert with_policies.endswith(
+        "Policy actions (valid action names too - defined in access policies, always policy-derived), "
+        "as subject -ACTION-> resource:\n- Company -CAN_AUDIT-> Car\n- Customer -CHECK_MEMBERSHIP-> Car"
+    )
+    assert "Policy actions" not in without
+    assert with_policies.startswith(without)

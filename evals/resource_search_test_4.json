@@ -1,6 +1,7 @@
 {
   "prompt": "What customers can I access?",
   "jwt_sub": "leslie",
+  "subject_type": "User",
   "expected": {
     "prompt": "What customers can I access?",
     "evaluations": [

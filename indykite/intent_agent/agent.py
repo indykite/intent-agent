@@ -38,12 +38,13 @@ from indykite.intent_agent.errors import (
     subject_type_mismatch_error,
     validation_feedback_error,
 )
-from indykite.intent_agent.input_schema import build_input_schema
+from indykite.intent_agent.input_schema import build_input_schema, render_schema_summary
 from indykite.intent_agent.policy import PolicyClient, build_policy_cache
 from indykite.intent_agent.schema import SchemaClient, build_schema_cache
 from indykite.intent_agent.subject_binding import (
     PolicyContext,
     RequestSubject,
+    looks_like_evaluations,
     normalize_intent_response,
     schema_has_no_node_types,
     validate_subject_type,
@@ -65,6 +66,12 @@ class _Phase(StrEnum):
 
 
 _NO_RESPONSE_TEXT = "(No response generated)"
+_EXTRACT_INTENT = "extract-intent"
+_UNACTIVATED_EXTRACTION_NOTE = (
+    "That answer was produced without activating the extract-intent skill, so its rules were not "
+    "applied. The skill's instructions and the data schema follow; answer the original prompt "
+    'again with the {"evaluations"} JSON object.\n\n'
+)
 _SKILL_ALREADY_ACTIVE = (
     "Skill 'extract-intent' is already active in this conversation - its instructions and the "
     "data schema are in the earlier tool result. Do not call activate_skill again; answer now "
@@ -112,6 +119,9 @@ class _RequestContext:
 
     tools: list[StructuredTool]
     policy_context: PolicyContext
+    # The schema snapshot the tools, enum and validation were built from - what
+    # _activate_and_ask_again re-injects, so it can never differ from what the tools showed.
+    schema: dict[str, Any] = field(default_factory=dict)
 
 
 def _policy_audit_fields(policy_context: PolicyContext | None) -> tuple[str, bool | None]:
@@ -359,13 +369,14 @@ class IntentAgent:
 
         @tool
         def get_data_schema() -> str:
-            """Return the cached graph schema from the Indykite platform as minified
-            JSON Graph Format (JGF).
+            """Return the full cached graph schema from the Indykite platform as minified
+            JSON Graph Format (JGF), with per-property value types and counts.
 
-            Describes all Node types and Edge types with their properties. Node labels
-            are entity types. Edge labels can be Actions or context, never Resources. Any
-            node type can be a Resource. Nodes with system_labels containing DigitalTwin
-            can also be Subjects.
+            Not needed for intent extraction: activating the extract-intent skill already
+            provides every node type, property name and edge. Only call this afterwards, if a
+            property's value type matters for a filter. Node labels are entity types. Edge
+            labels can be Actions or context, never Resources. Any node type can be a Resource.
+            Nodes with system_labels containing DigitalTwin can also be Subjects.
             """
             return schema_json
 
@@ -427,6 +438,36 @@ class IntentAgent:
             if t
         ]
 
+    def _skill_content(self, name: str, schema: dict[str, Any], policies: list[dict[str, Any]] | None) -> str:
+        """The requested skill's activation content (what the activate_skill tool returns), or
+        an error line if the name is unknown. extract-intent gets this request's data schema
+        injected as render_schema_summary's compact node/edge/policy-action vocabulary - the
+        raw JGF is tens of thousands of characters for a real graph and used to be cut
+        mid-JSON at SCHEMA_PREVIEW_CHARS, which sent the model re-fetching it until the
+        tool-call budget was gone; the cap still bounds what one activation can inject - plus
+        the request's policies block.
+        """
+        name = name.strip()
+        if name not in self.skill_registry:
+            return f"Unknown skill: {name!r}. Valid skills: {', '.join(sorted(self.skill_registry))}."
+        logger.info("Activating skill: %s", name)
+        skill = self.skill_registry[name]
+        body = skill.get("body") or ""
+        location = skill.get("location", "")
+        skill_dir = str(Path(location).parent) if location else ""
+
+        if name == _EXTRACT_INTENT:
+            summary = render_schema_summary(schema, policies)[: self.settings.schema_preview_chars]
+            schema_block = (
+                "\n\n<data_schema>\n"
+                + summary
+                + "\n</data_schema>\n\nUse the above schema to map entity types and actions."
+            )
+            policy_block = _policy_block(policies, self.settings.policy_preview_chars)
+            body = f"{schema_block}{policy_block}\n\n{body}"
+
+        return f"<skill_content name={name!r}>\n{body}\n\nSkill directory: {skill_dir}\n</skill_content>"
+
     def _make_activate_skill_tool(
         self, schema: dict[str, Any], policies: list[dict[str, Any]] | None
     ) -> StructuredTool | None:
@@ -455,37 +496,9 @@ class IntentAgent:
             f"matches a skill's description. Valid names: {', '.join(valid_names)}."
         )
 
-        def _invoke(name: str) -> str:
-            """Return the requested skill's content, or an error if unknown."""
-            name = name.strip()
-            if name not in self.skill_registry:
-                return f"Unknown skill: {name!r}. Valid skills: {', '.join(valid_names)}."
-            logger.info("Activating skill: %s", name)
-            skill = self.skill_registry[name]
-            body = skill.get("body") or ""
-            location = skill.get("location", "")
-            skill_dir = str(Path(location).parent) if location else ""
-
-            if name == "extract-intent":
-                preview_chars = self.settings.schema_preview_chars
-                schema_json = json.dumps(schema, indent=2, ensure_ascii=False)
-                schema_block = (
-                    "\n\n<data_schema>\n"
-                    + schema_json[:preview_chars]
-                    + "\n</data_schema>\n\nUse the above schema to map entity types."
-                )
-                policy_block = _policy_block(policies, self.settings.policy_preview_chars)
-                return (
-                    f"<skill_content name={name!r}>\n"
-                    f"{schema_block}{policy_block}\n\n{body}\n\n"
-                    f"Skill directory: {skill_dir}\n</skill_content>"
-                )
-
-            return f"<skill_content name={name!r}>\n{body}\n\nSkill directory: {skill_dir}\n</skill_content>"
-
         def _call(**kwargs: str) -> str:
-            """Adapt the tool's keyword-argument call convention to _invoke."""
-            return _invoke(kwargs["name"])
+            """Adapt the tool's keyword-argument call convention to _skill_content."""
+            return self._skill_content(kwargs["name"], schema, policies)
 
         return StructuredTool(
             name="activate_skill",
@@ -719,7 +732,7 @@ class IntentAgent:
                     response_mime_type="application/json",
                     response_schema=build_input_schema(schema, policies),
                 )
-                request = _RequestContext(tools=tools, policy_context=policy_context)
+                request = _RequestContext(tools=tools, policy_context=policy_context, schema=schema)
                 phase = _Phase.LLM_INTERACTION
                 return await self._extract_with_retries(
                     llm_with_tools,
@@ -819,6 +832,30 @@ class IntentAgent:
                     extract_intent_active = True
         return None, extract_intent_active
 
+    async def _activate_and_ask_again(
+        self,
+        llm: Runnable[Any, BaseMessage],
+        messages: list[BaseMessage],
+        response: BaseMessage,
+        prompt: str,
+        request: _RequestContext,
+    ) -> tuple[BaseMessage | None, bool]:
+        """The model answered in the {evaluations} shape without ever activating extract-intent
+        - the bound structured output yields that shape regardless. Its rules weren't applied,
+        and the answer must not be passed through as "free text": it is unvalidated and carries
+        whatever subject the model chose (seen live with flash-lite on "what accounts do I
+        own?"). Inject the skill the way activate_skill would have, ask once more, and treat the
+        conversation as an extraction from here on - validated, bound, retried like any other.
+        """
+        logger.info(
+            "Answered without activating extract-intent; injecting the skill and asking again for prompt %r", prompt
+        )
+        content = _UNACTIVATED_EXTRACTION_NOTE + self._skill_content(
+            _EXTRACT_INTENT, request.schema, request.policy_context.policies
+        )
+        messages.extend((response, HumanMessage(content=content)))
+        return await self._run_tool_call_loop(llm, messages, request.tools, extract_intent_active=True)
+
     async def _extract_with_retries(
         self,
         llm: Runnable[Any, BaseMessage],
@@ -858,6 +895,17 @@ class IntentAgent:
                 request.tools,
                 extract_intent_active=activated_extract_intent,
             )
+            if response is not None and not activated_extract_intent:
+                final_text = self._response_text(response)
+                if not looks_like_evaluations(final_text):
+                    return ExtractionResult.free_text(
+                        final_text,
+                        schema_version=version,
+                        policy_context=request.policy_context,
+                    )
+                response, activated_extract_intent = await self._activate_and_ask_again(
+                    llm, messages, response, prompt, request
+                )
             if response is None:
                 if not activated_extract_intent:
                     return ExtractionResult.free_text("", schema_version=version, policy_context=request.policy_context)
@@ -874,12 +922,6 @@ class IntentAgent:
                     policy_context=request.policy_context,
                 )
             final_text = self._response_text(response)
-            if not activated_extract_intent:
-                return ExtractionResult.free_text(
-                    final_text,
-                    schema_version=version,
-                    policy_context=request.policy_context,
-                )
             try:
                 normalized = normalize_intent_response(
                     final_text,
