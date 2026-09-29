@@ -62,8 +62,13 @@ jobs:
         with:
           codecov-token: ${{ secrets.CODECOV_TOKEN }}
           python-version: 3.13
-          # release-please PRs only bump version/changelog files; nothing new to report to codecov
-          upload-coverage: ${{ github.head_ref != 'release-please--branches--master' }}
+          # release-please PRs only bump version/changelog files; nothing new to report to codecov.
+          # The branch name alone is user-controlled, so also require the PR to come from this
+          # repository and be authored by the release-please app.
+          upload-coverage: >-
+            ${{ !(startsWith(github.head_ref, 'release-please--branches--master')
+            && github.event.pull_request.head.repo.full_name == github.repository
+            && github.event.pull_request.user.login == 'ik-code-writer[bot]') }}
 
       - name: Add comment to PR
         uses: mshick/add-pr-comment@ec328af66588ab8f77cdeb2c264f14aba45bbf59 # v3.12.0 - https://github.com/mshick/add-pr-comment/releases
