@@ -24,7 +24,7 @@ jobs:
         uses: indykite/ops-common/.github/actions/git-checkout@master # actions/checkout with dynamic fetch-depth resolution
 
       - name: Comment Artifact URL on PR
-        uses: indykite/ops-common/.github/actions/artifact-to-comment@4c4cb34f01107182013dd8fe8a9de28ba7958153 # master
+        uses: indykite/ops-common/.github/actions/artifact-to-comment@10d0dd59013127705f0d5734530ce15bdd4706b9 # master
         with:
           artifact-name: code-coverage
           artifact-title: Code Coverage
