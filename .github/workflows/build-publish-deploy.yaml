@@ -71,7 +71,7 @@ jobs:
 
       - name: Install uv
         if: github.event_name == 'release'
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1 - https://github.com/astral-sh/setup-uv/releases
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0 - https://github.com/astral-sh/setup-uv/releases
 
       # Building project only for release to ensure it definitely passes quality gates before publishing image & chart
       - name: Build project using composite action
@@ -168,7 +168,7 @@ jobs:
           dockerhub-token: ${{ steps.registries.outputs.is-release-tag == 'true' && secrets.DOCKERHUB_TOKEN || '' }}
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0 - https://github.com/docker/build-push-action/releases
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0 - https://github.com/docker/build-push-action/releases
         with:
           cache-from: type=gha
           cache-to: type=gha,mode=max

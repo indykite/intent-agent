@@ -42,7 +42,7 @@ jobs:
         uses: indykite/ops-common/.github/actions/git-checkout@master # actions/checkout with dynamic fetch-depth resolution
 
       - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1 - https://github.com/astral-sh/setup-uv/releases
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0 - https://github.com/astral-sh/setup-uv/releases
 
       - name: Build project using composite action
         uses: indykite/ops-common/.github/actions/python-build@4c4cb34f01107182013dd8fe8a9de28ba7958153 # master
