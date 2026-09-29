@@ -261,8 +261,9 @@ under `evals/schema/`) + the runner package (`fixtures.py` load/validate, `runne
 `scoring.py` verdict/categories/gates, `report.py` text/Markdown/JSON, `__main__.py` CLI).
 Not shipped in the image, not under `test/` - it calls the real Gemini model, so it's
 `make evals` / `python -m evals`, never part of `make test`. Pass rule: response == `expected`,
-exactly (evaluation order included). Gates: correctness ≥85%, every fixture of every
-`adversarial ...` category passes (every such category must be present), no refusal fixture answered with evaluations; exit 1 on any.
+exactly (evaluation order included). Gates (TDD 7.1's four): correctness ≥85%, every fixture of every
+`adversarial ...` category passes (every such category must be present), no refusal fixture answered with evaluations,
+p95 of per-fixture wall time ≤10 s (retries included, nearest-rank; `--max-p95-latency` overrides it locally); exit 1 on any.
 `.github/workflows/eval-suite.yaml` runs it on PRs touching the service code (`indykite/**` - a
 directory glob, not a file list, so a refactor can't drop a module out of the trigger), the
 dependency pins (`pyproject.toml`, `uv.lock`) or `evals/**`, and on demand; needs the

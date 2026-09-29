@@ -5,10 +5,13 @@
     uv run python -m evals --markdown report.md --json report.json
 
 Settings come from the environment / `.env` like the service's own (GEMINI_API_KEY at minimum;
-GEMINI_MODEL, the timeouts and VALIDATION_MAX_RETRIES are what is under test, so they are read the
-same way rather than overridden here). The other required settings - introspection, platform URL,
-audit delivery - aren't used by the suite but Settings still needs them to construct; any
-placeholder value works (see .github/workflows/eval-suite.yaml).
+GEMINI_MODEL and VALIDATION_MAX_RETRIES are what is under test, so they are read the same way
+rather than overridden here). The two timeouts are the exception: the suite runs under its own,
+generous ones (--llm-timeout / --request-timeout, see runner.DEFAULT_*_TIMEOUT_SECONDS) so that a
+slow provider registers as latency - the p95 gate's job - rather than as a wrong answer. The other
+required settings - introspection, platform URL, audit delivery - aren't used by the suite but
+Settings still needs them to construct; any placeholder value works (see
+.github/workflows/eval-suite.yaml).
 
 Exit status: 0 when every gate passes, 1 when any gate fails, 2 for a usage or fixture error.
 """
@@ -18,6 +21,7 @@ import asyncio
 import fnmatch
 import json
 import logging
+import math
 import sys
 from pathlib import Path
 
@@ -25,8 +29,15 @@ from pydantic import ValidationError
 
 from evals.fixtures import FIXTURES_DIR, Fixture, FixtureError, load_fixtures
 from evals.report import build_report, render_markdown, render_text, to_json
-from evals.runner import DEFAULT_CONCURRENCY, DEFAULT_TIMEOUT_RETRIES, RunOptions, run_suite
-from evals.scoring import MIN_CORRECTNESS, FixtureResult
+from evals.runner import (
+    DEFAULT_CONCURRENCY,
+    DEFAULT_LLM_TIMEOUT_SECONDS,
+    DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    DEFAULT_TIMEOUT_RETRIES,
+    RunOptions,
+    run_suite,
+)
+from evals.scoring import MAX_P95_LATENCY_SECONDS, MIN_CORRECTNESS, FixtureResult
 from indykite.intent_agent.config import Settings
 
 EXIT_GATE_FAILED = 1
@@ -61,6 +72,24 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         default=MIN_CORRECTNESS,
         help="correctness gate threshold, 0-1 (default %(default)s)",
     )
+    parser.add_argument(
+        "--max-p95-latency",
+        type=float,
+        default=MAX_P95_LATENCY_SECONDS,
+        help="p95 latency gate ceiling in seconds per prompt, retries included (default %(default)s)",
+    )
+    parser.add_argument(
+        "--llm-timeout",
+        type=float,
+        default=DEFAULT_LLM_TIMEOUT_SECONDS,
+        help="LLM_TIMEOUT_SECONDS the pipeline runs under, per call (default %(default)s)",
+    )
+    parser.add_argument(
+        "--request-timeout",
+        type=float,
+        default=DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        help="REQUEST_TIMEOUT_SECONDS the pipeline runs under, per prompt (default %(default)s)",
+    )
     parser.add_argument("--markdown", type=Path, help="also write the report as Markdown to this file")
     parser.add_argument("--json", type=Path, help="also write the full results as JSON to this file")
     args = parser.parse_args(argv)
@@ -70,7 +99,19 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         parser.error("--timeout-retries must not be negative")
     if not 0.0 <= args.min_correctness <= 1.0:
         parser.error("--min-correctness must be between 0 and 1")
+    # Finite and positive: NaN compares false to everything, and `inf` would pass a `> 0` check
+    # while making `p95 <= limit` true for a timed-out fixture (or a timeout that never fires).
+    if not _finite_positive(args.max_p95_latency):
+        parser.error("--max-p95-latency must be a positive number")
+    if not (_finite_positive(args.llm_timeout) and _finite_positive(args.request_timeout)):
+        parser.error("--llm-timeout and --request-timeout must be positive numbers")
+    if args.llm_timeout > args.request_timeout:
+        parser.error("--llm-timeout must not exceed --request-timeout")
     return args
+
+
+def _finite_positive(value: float) -> bool:
+    return math.isfinite(value) and value > 0
 
 
 def _select(fixtures: list[Fixture], pattern: str | None) -> list[Fixture]:
@@ -103,7 +144,7 @@ def main(argv: list[str]) -> int:
     args = _parse_args(argv)
     try:
         fixtures = _select(load_fixtures(args.fixtures), args.only)
-        settings = Settings()
+        settings = Settings(llm_timeout_seconds=args.llm_timeout, request_timeout_seconds=args.request_timeout)
     except (FixtureError, ValidationError) as exc:
         logger.error("%s", exc)  # noqa: TRY400 - a configuration error, not a crash to trace
         return EXIT_USAGE
@@ -120,7 +161,11 @@ def main(argv: list[str]) -> int:
         ),
     )
     report = build_report(
-        results, model=settings.gemini_model, min_correctness=args.min_correctness, full_suite=args.only is None
+        results,
+        model=settings.gemini_model,
+        min_correctness=args.min_correctness,
+        max_p95_latency=args.max_p95_latency,
+        full_suite=args.only is None,
     )
 
     sys.stdout.write(render_text(report))

@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from evals.scoring import (
+    MAX_P95_LATENCY_SECONDS,
     CategorySummary,
     FixtureResult,
     Gate,
@@ -31,6 +32,7 @@ class Report:
     generated_at: str
     model: str
     min_correctness: float
+    max_p95_latency: float
     results: list[FixtureResult]
     categories: list[CategorySummary]
     gates: list[Gate]
@@ -47,7 +49,12 @@ class Report:
 
 
 def build_report(
-    results: list[FixtureResult], *, model: str, min_correctness: float, full_suite: bool = True
+    results: list[FixtureResult],
+    *,
+    model: str,
+    min_correctness: float,
+    max_p95_latency: float = MAX_P95_LATENCY_SECONDS,
+    full_suite: bool = True,
 ) -> Report:
     """Score a run: categories and gates over `results`. `full_suite` is False for a `--only`
     subset, where a missing adversarial category is the selection, not a gap in the suite.
@@ -56,9 +63,12 @@ def build_report(
         generated_at=datetime.now(UTC).isoformat(timespec="seconds"),
         model=model,
         min_correctness=min_correctness,
+        max_p95_latency=max_p95_latency,
         results=results,
         categories=summarize_by_category(results),
-        gates=evaluate_gates(results, min_correctness=min_correctness, full_suite=full_suite),
+        gates=evaluate_gates(
+            results, min_correctness=min_correctness, max_p95_latency=max_p95_latency, full_suite=full_suite
+        ),
     )
 
 
@@ -116,6 +126,18 @@ def _category_rows(report: Report) -> list[list[str]]:
 _CATEGORY_HEADERS = ["category", "fixtures", "passed", "failed", "forced matches", "exceptions", "pass rate"]
 
 
+def _gate_lines(report: Report) -> list[str]:
+    """One line per gate, and its offenders on the next when it has any - a slow fixture that
+    still matched its golden answer appears nowhere else in the report.
+    """
+    lines: list[str] = []
+    for gate in report.gates:
+        lines.append(f"  [{_STATUS[gate.passed]}] {gate.name}: {gate.observed} (required: {gate.required})")
+        if gate.offenders:
+            lines.append(f"    offenders: {', '.join(gate.offenders)}")
+    return lines
+
+
 def render_text(report: Report) -> str:
     """The terminal report: gates, categories, then each failure with its diff."""
     total = len(report.results)
@@ -126,10 +148,7 @@ def render_text(report: Report) -> str:
         *([f"({rerun} fixture(s) rerun after a timeout - see the JSON report's timeout_retries)"] if rerun else []),
         "",
         "Gates:",
-        *(
-            f"  [{_STATUS[gate.passed]}] {gate.name}: {gate.observed} (required: {gate.required})"
-            for gate in report.gates
-        ),
+        *_gate_lines(report),
         "",
         "Per category:",
         *(f"  {line}" for line in _table(_CATEGORY_HEADERS, _category_rows(report))),
@@ -148,6 +167,16 @@ def render_text(report: Report) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _markdown_offenders(report: Report) -> list[str]:
+    """A bullet per gate with offenders, `<code>`-wrapped since ids are fixture file stems."""
+    bullets = [
+        f"- **{gate.name}** offenders: {', '.join(f'`{html.escape(offender)}`' for offender in gate.offenders)}"
+        for gate in report.gates
+        if gate.offenders
+    ]
+    return ["", *bullets] if bullets else []
+
+
 def render_markdown(report: Report) -> str:
     """The GitHub job summary / PR comment: the same content as tables, failures collapsed."""
     total = len(report.results)
@@ -163,6 +192,9 @@ def render_markdown(report: Report) -> str:
             f"| {gate.name} | {gate.required} | {gate.observed} | {_MARK[gate.passed]} {_STATUS[gate.passed]} |"
             for gate in report.gates
         ),
+        # Offenders under the table rather than as a column: the ids are long, the list can be,
+        # and most gates have none on a green run.
+        *_markdown_offenders(report),
         "",
         "| Category | Fixtures | Passed | Failed | Forced matches | Exceptions | Pass rate |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
@@ -201,6 +233,7 @@ def to_json(report: Report) -> dict[str, Any]:
         "model": report.model,
         "passed": report.passed,
         "min_correctness": report.min_correctness,
+        "max_p95_latency": report.max_p95_latency,
         "gates": [
             {
                 "name": gate.name,

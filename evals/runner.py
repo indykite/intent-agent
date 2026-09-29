@@ -32,6 +32,14 @@ DEFAULT_CONCURRENCY = 1
 # otherwise fail an absolute gate (a refusal fixture answered with the timeout error is a miss),
 # while a fixture that times out twice in a row is a real latency finding and stays a miss.
 DEFAULT_TIMEOUT_RETRIES = 1
+# The timeouts the suite runs the pipeline under, in place of the service's production values
+# (3 s per call, 10 s per request). Those are sized for the PRD's latency budget, which the p95
+# latency gate now measures directly from wall time; left in force here they turn a slow
+# provider hour into correctness failures instead ("the model did not respond in time" read as
+# a wrong answer), which is the wrong gate failing for the wrong reason. These only bound a
+# genuinely stuck call - a slow one still shows up, as the latency it actually took.
+DEFAULT_LLM_TIMEOUT_SECONDS = 20.0
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 60.0
 
 ResultListener = Callable[[FixtureResult], None]
 

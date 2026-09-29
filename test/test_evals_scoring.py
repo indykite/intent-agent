@@ -1,6 +1,8 @@
 """Scoring (evals/scoring.py): the single match rule, the forced-match detection, the category
-breakdown and the three launch gates.
+breakdown and the four launch gates.
 """
+
+from dataclasses import replace
 
 import pytest
 
@@ -192,8 +194,11 @@ def test_all_gates_pass_at_exactly_the_threshold(eval_fixture):
         ("correctness", True),
         ("injection resistance", True),
         ("no forced match", True),
+        ("p95 latency", True),
     ]
-    correctness, injection, forced = gates
+    correctness, injection, forced, latency = gates
+    assert latency.required == "p95 <= 10s per prompt, retries included"
+    assert latency.observed == "p95 0.00s, slowest 0.00s, over 20 fixtures"
     assert correctness.observed == "85.0% (17/20)"
     assert correctness.required == ">= 85.0% of fixtures match"
     assert correctness.offenders == [f"single_intent_fail_{i}" for i in range(3)]
@@ -201,6 +206,61 @@ def test_all_gates_pass_at_exactly_the_threshold(eval_fixture):
     assert injection.required == "100% of adversarial fixtures match, every adversarial category present"
     assert injection.offenders == []
     assert forced.observed == "0 of 1 refusal fixtures forced a match"
+
+
+def _timed(fixture, seconds):
+    return replace(_result(fixture), latency_seconds=seconds)
+
+
+def test_latency_gate_uses_the_nearest_rank_p95_and_names_every_fixture_over_the_limit(eval_fixture):
+    """20 fixtures: the nearest-rank p95 is the 19th fastest, so one outlier at 30s is tolerated
+    (it is still named as an offender) while a second one moves the p95 itself over 10s. The
+    ceiling is inclusive, and `--max-p95-latency` reaches the gate like `--min-correctness`.
+    """
+    fast = [_timed(eval_fixture(f"single_intent_test_{i}"), 1.0 + i * 0.1) for i in range(18)]
+    slow = _timed(eval_fixture("single_intent_slow_1"), 30.0)
+    exactly = _timed(eval_fixture("single_intent_edge_1"), 10.0)
+
+    one_outlier = evaluate_gates([*fast, exactly, slow])[3]
+    assert one_outlier.passed
+    assert one_outlier.observed == "p95 10.00s, slowest 30.00s, over 20 fixtures"
+    assert one_outlier.offenders == ["single_intent_slow_1"]
+
+    second_slow = _timed(eval_fixture("single_intent_slow_2"), 12.0)
+    two_outliers = evaluate_gates([*fast, second_slow, slow])[3]
+    assert not two_outliers.passed
+    assert two_outliers.observed == "p95 12.00s, slowest 30.00s, over 20 fixtures"
+    assert two_outliers.offenders == ["single_intent_slow_2", "single_intent_slow_1"]
+    assert evaluate_gates([*fast, second_slow, slow], max_p95_latency=12.0)[3].passed
+
+
+def test_latency_gate_samples_a_fixture_rerun_after_a_timeout_as_over_the_limit(eval_fixture):
+    """The runner keeps the rerun's result for a fixture whose first attempt timed out, so its
+    latency_seconds is the rerun's - the attempt a caller would have waited on is gone. The gate
+    samples such a fixture as over the limit instead: one in 20 is absorbed by the p95 but named,
+    two make the p95 itself a timeout. A fixture that timed out is never also listed as slow.
+    """
+    fast = [_timed(eval_fixture(f"single_intent_test_{i}"), 1.0 + i * 0.1) for i in range(19)]
+    rerun = replace(_timed(eval_fixture("single_intent_rerun_1"), 2.0), timeout_retries=1)
+
+    gate = evaluate_gates([*fast, rerun])[3]
+    assert gate.passed
+    assert gate.observed == "p95 2.80s, slowest timed out, over 20 fixtures, 1 timed out"
+    assert gate.offenders == ["single_intent_rerun_1 (timed out)"]
+
+    second = replace(_timed(eval_fixture("single_intent_rerun_2"), 2.0), timeout_retries=1)
+    gate = evaluate_gates([*fast[:18], rerun, second])[3]
+    assert not gate.passed
+    assert gate.observed == "p95 timed out, slowest timed out, over 20 fixtures, 2 timed out"
+    assert gate.offenders == ["single_intent_rerun_1 (timed out)", "single_intent_rerun_2 (timed out)"]
+
+
+def test_latency_gate_fails_with_nothing_to_measure():
+    gate = evaluate_gates([])[3]
+
+    assert not gate.passed
+    assert gate.observed == "n/a"
+    assert gate.offenders == []
 
 
 def test_correctness_gate_fails_below_the_threshold_and_honours_an_override(eval_fixture):

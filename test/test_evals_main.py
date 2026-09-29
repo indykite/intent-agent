@@ -13,13 +13,14 @@ from evals.fixtures import ADVERSARIAL_CATEGORIES
 from evals.scoring import FixtureResult, Verdict
 
 
-def _results_for(fixtures, *, failing=()):
+def _results_for(fixtures, *, failing=(), latency=0.0):
     return [
         FixtureResult(
             fixture=fixture,
             actual=fixture.expected if fixture.id not in failing else {},
             outcome="success",
             verdict=Verdict(passed=fixture.id not in failing, forced_match=False, detail="scripted"),
+            latency_seconds=latency,
         )
         for fixture in fixtures
     ]
@@ -46,13 +47,14 @@ def suite(tmp_path, eval_fixture_file, baseline_env, monkeypatch, caplog):
 @pytest.fixture
 def run_suite(mocker):
     async def _run(fixtures, settings, *, options, on_result):
-        results = _results_for(fixtures, failing=run_suite.failing)
+        results = _results_for(fixtures, failing=run_suite.failing, latency=run_suite.latency)
         for result in results:
             on_result(result)
         return results
 
     run_suite = mocker.patch("evals.__main__.run_suite", new=AsyncMock(side_effect=_run))
     run_suite.failing = ()
+    run_suite.latency = 0.0
     return run_suite
 
 
@@ -79,6 +81,14 @@ def test_gate_failure_exits_one(suite, run_suite, capsys, caplog):
     assert status == EXIT_GATE_FAILED
     assert "[FAIL] correctness: 80.0% (4/5)" in capsys.readouterr().out
     assert "FAIL single_intent_test_1 [single intent] outcome=success" in caplog.text
+
+
+def test_latency_failure_exits_one(suite, run_suite, capsys):
+    """A p95 over the limit fails the run like any other gate: the PRD's 10 s is a release gate."""
+    run_suite.latency = 30.0
+
+    assert main(["--fixtures", str(suite)]) == EXIT_GATE_FAILED
+    assert "[FAIL] p95 latency: p95 30.00s" in capsys.readouterr().out
 
 
 def test_reports_are_written_where_asked_creating_parent_dirs(suite, run_suite, tmp_path):
@@ -118,6 +128,23 @@ def test_only_subset_with_an_adversarial_fixture_passes_without_the_other_catego
     assert "[PASS] injection resistance: 100.0% (1/1)" in capsys.readouterr().out
 
 
+def test_suite_runs_under_its_own_timeouts_not_the_services(suite, run_suite, monkeypatch):
+    """The pipeline's production timeouts (3 s / 10 s) would turn a slow provider into wrong
+    answers; the suite substitutes generous ones so slowness lands on the latency gate instead,
+    and the flags override them. `.env`-style values for the two are ignored either way.
+    """
+    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "3")
+    monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "10")
+
+    assert main(["--fixtures", str(suite)]) == 0
+    settings = run_suite.await_args.args[1]
+    assert (settings.llm_timeout_seconds, settings.request_timeout_seconds) == (20.0, 60.0)
+
+    assert main(["--fixtures", str(suite), "--llm-timeout", "5", "--request-timeout", "15"]) == 0
+    settings = run_suite.await_args.args[1]
+    assert (settings.llm_timeout_seconds, settings.request_timeout_seconds) == (5.0, 15.0)
+
+
 def test_min_correctness_override_reaches_the_gate(suite, run_suite, capsys):
     run_suite.failing = ("single_intent_test_1",)
 
@@ -149,7 +176,21 @@ def test_missing_settings_are_a_usage_error(suite, run_suite, monkeypatch, caplo
     run_suite.assert_not_awaited()
 
 
-@pytest.mark.parametrize("argv", [["--concurrency", "0"], ["--min-correctness", "1.5"], ["--min-correctness", "-0.1"]])
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--concurrency", "0"],
+        ["--min-correctness", "1.5"],
+        ["--min-correctness", "-0.1"],
+        ["--max-p95-latency", "0"],
+        ["--max-p95-latency", "nan"],
+        ["--max-p95-latency", "inf"],  # would make `p95 <= limit` true even for a timed-out sample
+        ["--llm-timeout", "0"],
+        ["--llm-timeout", "inf"],
+        ["--request-timeout", "nan"],
+        ["--llm-timeout", "30", "--request-timeout", "20"],
+    ],
+)
 def test_out_of_range_arguments_are_rejected_by_argparse(suite, run_suite, argv):
     with pytest.raises(SystemExit) as exc_info:
         main(["--fixtures", str(suite), *argv])
