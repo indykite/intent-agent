@@ -76,7 +76,7 @@ jobs:
       # Building project only for release to ensure it definitely passes quality gates before publishing image & chart
       - name: Build project using composite action
         if: github.event_name == 'release'
-        uses: indykite/ops-common/.github/actions/python-build@10d0dd59013127705f0d5734530ce15bdd4706b9 # master
+        uses: indykite/ops-common/.github/actions/python-build@24a0129d778a885b675f5d587ddc5255225a0c42 # master
         id: build_python
         with:
           codecov-token: ${{ secrets.CODECOV_TOKEN }}
@@ -158,7 +158,7 @@ jobs:
             type=raw,value=${{ needs.version.outputs.image-tag }},enable=${{ needs.version.outputs.image-tag != '' }}
 
       - name: Setup Docker
-        uses: indykite/ops-common/.github/actions/docker-setup@10d0dd59013127705f0d5734530ce15bdd4706b9 # master
+        uses: indykite/ops-common/.github/actions/docker-setup@24a0129d778a885b675f5d587ddc5255225a0c42 # master
         with:
           workload-identity-provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER_MGMT }}
           gcp-service-account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
@@ -227,7 +227,7 @@ jobs:
         run: helm dependency build chart/
 
       - name: Publish chart
-        uses: indykite/ops-common/.github/actions/chart-publish@10d0dd59013127705f0d5734530ce15bdd4706b9 # master
+        uses: indykite/ops-common/.github/actions/chart-publish@24a0129d778a885b675f5d587ddc5255225a0c42 # master
         with:
           workload-identity-provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER_MGMT }}
           gcp-service-account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
