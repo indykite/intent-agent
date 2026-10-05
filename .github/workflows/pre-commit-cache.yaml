@@ -33,7 +33,7 @@ jobs:
           repositories: ops-common
 
       - name: pre-commit
-        uses: indykite/ops-common/.github/actions/pre-commit@10d0dd59013127705f0d5734530ce15bdd4706b9 # master
+        uses: indykite/ops-common/.github/actions/pre-commit@24a0129d778a885b675f5d587ddc5255225a0c42 # master
         with:
           # shared workflow; required for 'ops-common/pre-commit-autoupdate' to do ssh://git@github.com... from another repos
           github_token: ${{ steps.code_reader_token.outputs.token }}
