@@ -21,6 +21,6 @@ maintainers:
 
 dependencies:
   - name: redis
-    version: "28.3.0"
+    version: "28.3.1"
     repository: "oci://registry-1.docker.io/bitnamicharts"
     condition: redis.enabled
