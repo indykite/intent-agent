@@ -1,37 +1,53 @@
-# PLEASE ENSURE YOU KNOW WHAT YOU'RE DOING
+# Pull request
 
-## ANY CHANGES TO SUPPORTED PYTHON VERSIONS MUST BE APPROVED BY MLOPS (github workflows, `Dockerfile`, `pyproject.toml`)
-
-## ANY CHANGES IN `Makefile`, `/.github/`, `.*ignore`, `Dockerfile` `*.toml` MUST BE APPROVED BY MLOPS
 <!--
-Thank you for your pull request. Please provide a description above and review
-the requirements below.
-Bug fixes and new features should include tests.
-Lines between these symbols are treated as comments, there is no need to remove them
+Thanks for opening a PR. Please fill in the sections below - reviewers use them
+to triage and to write the eventual changelog entry. Empty PRs without context
+get bounced.
+
+If anything here doesn't apply (e.g. doc-only change), say so explicitly rather
+than deleting the section.
 -->
 
-<!-- Please put the JIRA issue number below -->
-<!-- (note, simply add square brackets and GitHub <-> Jira integration will parse it automatically) -->
+## What this PR does
 
-## [ENG-XXXX]
+<!-- One sentence. Lead with the verb: "Add ...", "Fix ...", "Tighten ...".
+     Name the affected stage where relevant (skill, subject binding, schema client,
+     executor, audit). -->
 
-## Description of change
+## Effect on requests, responses and the audit record
 
-<!-- Please provide a description of the change here. -->
+<!-- Required for any change to the extraction pipeline. Which prompts or
+     evaluation shapes are affected, and how does the response change?
+     Call out explicitly:
+     - any change to the request or response shape, or to an error reason
+     - any change to the audit record's fields or values
+     - any new or renamed configuration (Settings field / environment variable) -->
 
-<!-- _Please make sure to review and check all of these items:_ -->
+## How it was tested
+
+<!-- Be specific. List the tests added or updated, and paste relevant output.
+     If the change touches the skill, the schema handling or the validation
+     loop, run the golden eval suite and paste its per-category summary:
+     `make evals` (needs a Gemini key). -->
+
+- [ ] `make fix` then `make build_integration` pass
+- [ ] Tests added/updated for the new behaviour (positive case + edge case)
+- [ ] Agent started locally and verified end-to-end (see [`CONTRIBUTING.md` § Running the agent locally](https://github.com/indykite/intent-agent/blob/master/CONTRIBUTING.md#running-the-agent-locally))
+- [ ] `make evals` run (if pipeline-affecting) - result:
+
+## Known gaps or follow-ups
+
+<!-- Anything intentionally out of scope: missing edge cases, unsupported
+     prompt forms, features deferred to a follow-up PR.
+     Better to surface than to surprise. -->
 
 ## Checklist
 
-<!--
-Remove items that do not apply. For completed items, change [ ] to [x].
-It is fine to have these items not completed if the intent is to draft the PR and discuss the approach w/o merging.
--->
-
-- [ ] any new libraries are specified as explicit dependencies in `pyproject.toml`
-- [ ] Agent was started locally and verified end-to-end
-- [ ] no commented code is added
-- [ ] no meaningless changes done by IDE (blank lines, whitespace alignment etc.)
-- [ ] commit message follows [commit guidelines](https://www.notion.so/indykite/Development-process-856542bbef034a4db489d5a975c9bbc1#3828edb468fb44948939bd14926cb96b)
-
-<!-- _NOTE: these things are not required to open a PR and can be done afterward / while the PR is open._ -->
+- [ ] One fix or feature per PR - no unrelated changes bundled in.
+- [ ] PR title follows the existing convention (e.g. `feat: accept policy-granted action names`, `fix: drop blank action instead of retrying`) - see [`CONTRIBUTING.md` § Pull requests](https://github.com/indykite/intent-agent/blob/master/CONTRIBUTING.md#pull-requests).
+- [ ] No new entries in `pyproject.toml` dependencies unless agreed in an issue first; if there are, `uv.lock` is updated.
+- [ ] Shared tooling and CI configuration untouched - see [`CONTRIBUTING.md` § Ground rules](https://github.com/indykite/intent-agent/blob/master/CONTRIBUTING.md#ground-rules); if one of those files genuinely needs to change, it was agreed with its owners first.
+- [ ] Breaking changes to the request/response shape, the audit record or configuration names are called out explicitly in the PR title and body.
+- [ ] No secrets, internal URLs, or personal data committed.
+- [ ] I have the right to contribute this content under the repo's [LICENSE](https://github.com/indykite/intent-agent/blob/master/LICENSE).

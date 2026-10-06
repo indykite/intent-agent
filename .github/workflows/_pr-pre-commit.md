@@ -2,5 +2,7 @@
 
 This file is for the reference only!
 
-The shared GitHub Workflow [ops-common//.github/workflows/pre-commit.yaml](https://github.com/indykite/ops-common/blob/master/.github/workflows/pre-commit.yaml) is used,
-defined and enforced via [ops//terraform/boundaries/github/github_organization_ruleset.default](https://github.com/indykite/ops/blob/master/terraform/boundaries/github/branch_protection.tf) Terraform resource.
+The shared GitHub Workflow [indykite/.github//.github/workflows/pre-commit.yaml](https://github.com/indykite/.github/blob/master/.github/workflows/pre-commit.yaml)
+runs on every pull request. It is not referenced from this repository: an IndyKite-wide repository ruleset makes it a
+required workflow for all repositories of the organisation, which is why there is no `pre-commit.yaml` under
+`.github/workflows/` here.

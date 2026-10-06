@@ -10,6 +10,36 @@ Makes no authorization decisions — downstream (IBAC Engine) job. Repo = struct
 `iag-demo/intent_agent` prototype into org's production repo template (package layout, CI/CD,
 strict linting, distroless Docker), not from-scratch rewrite of extraction pipeline.
 
+Internal references you will meet in this file, the code comments and the tests, none of which
+are publicly readable: "PRD" = the product requirements doc, "TDD x.y" = a section of the
+technical design doc (the source of the field lists, gates and timeouts quoted below), "ENG-nnnn"
+= an IndyKite Jira ticket, "RC" = IndyKite's internal release-candidate platform environment,
+`ml-argocd-applications` = IndyKite's private repo of deployment manifests (the workflows use the
+shared actions published in the public `indykite/.github` repo).
+The code and the golden fixtures under `evals/` are the readable spec;
+treat those references as provenance, not as something to go and look up.
+
+## Where things are documented
+
+This file is the agent-facing reading of rules that also exist for humans. Where both cover the
+same ground, the human doc is the source of truth; keep them in step when you change one.
+
+- `CONTRIBUTING.md` — prerequisites and setup, the make targets, running the agent locally (mock
+  introspection, Docker, the docker-compose multi-instance stack), the commit-message rules the
+  shared commitlint config enforces, the ground rules (`Settings` fields, `errors.py`, fixtures
+  are the spec, no silent `# noqa`) and the list of shared tooling/CI config files that are
+  ops-owned and never changed in a feature PR.
+- `docs/testing.md` — the golden eval suite in full (gates, fixture format, CI), and the hands-on
+  walkthroughs: audit log by hand, end-to-end against a real IndyKite environment, Subject Search.
+- `README.md` — the overview, quick start and the common configuration reference (required and
+  commonly tuned `Settings` fields, the audit record's fields and the `AUDIT_*` variables). The
+  complete list of fields with their defaults is `config.py` itself; `.env.example` lists every
+  variable.
+- `.github/PULL_REQUEST_TEMPLATE.md` — what a PR must state: effect on requests, responses and
+  the audit record, how it was tested, the checklist.
+- `SECURITY.md` / `responsible_disclosure.md` — a security-sensitive finding is never filed as a
+  public issue or described in a PR; it goes to the address in those files.
+
 ## Working here: keep changes cohesive across team
 
 Multiple people use Claude Code here. Goal: code reads like one team wrote it, diffs don't
@@ -19,13 +49,14 @@ clash. Concretely:
   Without this, nothing stops commit violating rules below — `ruff-format`, `ruff-check`,
   `uv-lock`, `gitleaks`, commit-message linting only run automatic once hooks installed;
   otherwise surface later, in CI, against someone else's PR.
-- **Definition of done for any change:** `make fix` then `make build`, both green, before calling
-  task finished. Shared bar — don't leave lint/test failures for CI or teammate to find.
+- **Definition of done for any change:** `make fix` then `make build_integration`, both green,
+  before calling task finished. Shared bar — don't leave lint/test failures for CI or teammate
+  to find.
 - **No direct commits to `dev`, `master`, or `main`** — pre-commit hook blocks it. Work on
   branch, merge via PR.
 - **Commit messages must follow Conventional Commits** (`commitlint --strict`, shared org config
-  via `ops-common` repo). Non-conforming message fails hook once commit-msg linting installed
-  (see setup above).
+  read from a checkout of the public `indykite/.github` repo at `../.github`). Non-conforming
+  message fails hook once commit-msg linting installed (see setup above).
 - **Commit type decides the release version.** release-please on `master` reads the
   [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) type of every commit
   (squash-merged PR title) to cut `vX.Y.Z`: `fix:` bumps Z, `feat:` bumps Y, `feat!:` bumps X,
@@ -64,20 +95,12 @@ clash. Concretely:
 
 ## Commands
 
-Dependency management: `uv` only (no pip/poetry). GNU Make must be `>3.81`; macOS Homebrew
-version installs as `gmake` — use that if `/usr/bin/make` stock 3.81.
-
-```sh
-make install_dev          # uv lock --check (verifies lockfile is current)
-make fix                  # ruff format + ruff check --fix
-make codestyle_check       # ruff check only (no autofix)
-make test                  # uv run --locked pytest test
-make test_coverage         # coverage across test/ + integration/
-make evals                 # golden eval suite against the real Gemini model (needs GEMINI_API_KEY)
-make build                 # the full gate: project_check + codestyle_check + test
-make build_docker_image    # docker buildx build --platform linux/amd64 ...
-make start_docker_app
-```
+Dependency management: `uv` only (no pip/poetry). Prerequisites, versions and a table of commonly
+used make targets are in `CONTRIBUTING.md` (Development setup); don't duplicate them here. The ones that
+matter for finishing a task: `make fix` (ruff format + autofix), `make build` (the CI gate, see
+below), `make evals` (golden eval suite against the real Gemini model, needs `GEMINI_API_KEY`),
+`make build_integration` (build + integration tests). `make install_dev` only runs
+`uv lock --check`; the first `uv run` creates `.venv` and installs the locked dependencies.
 
 Run single test, plain pytest node-id syntax (Makefile only wraps whole-directory runs):
 
@@ -88,7 +111,7 @@ uv run --locked pytest test/test_agent.py::test_discovers_extract_intent_skill
 Run locally without Docker:
 
 ```sh
-cp .env.example .env   # set GEMINI_API_KEY at minimum
+cp .env.example .env   # fill in GEMINI_API_KEY, INDYKITE_BASE_URL, IK_APP_AGENT_KEY, INTROSPECT_URL, INTROSPECT_CLIENT_ID, INTROSPECT_CLIENT_SECRET - Settings refuses to start with any blank
 uv run python -m indykite.intent_agent
 ```
 
@@ -272,8 +295,9 @@ exactly (evaluation order included). Gates (TDD 7.1's four): correctness ≥85%,
 p95 of per-fixture wall time ≤10 s (retries included, nearest-rank; `--max-p95-latency` overrides it locally); exit 1 on any.
 `.github/workflows/eval-suite.yaml` runs it on PRs touching the service code (`indykite/**` - a
 directory glob, not a file list, so a refactor can't drop a module out of the trigger), the
-dependency pins (`pyproject.toml`, `uv.lock`) or `evals/**`, and on demand; needs the
-`GEMINI_API_KEY` repo secret. Each data
+dependency pins (`pyproject.toml`, `uv.lock`) or `evals/**`, and on demand; takes
+`GEMINI_API_KEY` from the `evals` GitHub environment (each run waits for a reviewer's approval;
+a fork PR gets no key and fails the key check, so a maintainer runs it on a branch here). Each data
 model under `evals/schema/` has a `_schema.json` and, for policy-granted actions, a
 `_policies.json` in the platform listing shape. The loader round-trips every golden answer
 through `normalize_intent_response` as the fixture's caller and rejects one that comes back
@@ -310,12 +334,12 @@ Multi-stage `Dockerfile` builds `python-deps` stage then copies into
    invocation fails every single healthcheck, marks container permanently "unhealthy" regardless
    whether app actually fine.
 
-Build + smoke-test locally on Apple Silicon (base images pinned to `linux/amd64` digests, runs
-under emulation):
+Build + smoke-test locally on Apple Silicon (base images are multi-arch digests; forcing
+`linux/amd64` below means it runs under emulation there, drop `--platform` for native arm64):
 
 ```sh
 docker buildx build --platform linux/amd64 --load -t intent-agent:local .
-docker run --platform linux/amd64 -p 6003:6003 -p 8001:8001 --env-file .env intent-agent:local
+docker run --platform linux/amd64 -p 6003:6003 -p 8001:8001 --env-file .env -e AUDIT_FILE_STORAGE_PATH=/tmp/audit intent-agent:local   # /app isn't writable by the image's non-root user
 ```
 
 ## Pre-merge validation: full multi-instance stack
@@ -324,7 +348,8 @@ Before merging anything touching `schema.py`, cache/TTL behavior, or `agent.py`'
 run the real `docker-compose` stack (`intent-agent-1` + `intent-agent-2` + `redis` +
 nginx `load-balancer`) - a single `uv run` process never exercises the actual multi-instance
 concerns this service is deployed under (shared schema cache, no per-instance refresh collisions,
-real load-balanced traffic). `make test`/`make build` alone don't cover this.
+real load-balanced traffic). `make test`/`make build` alone don't cover this. The same steps are
+in `CONTRIBUTING.md` (Multi-instance, with docker-compose); keep the two in step.
 
 ```sh
 docker compose up --build -d

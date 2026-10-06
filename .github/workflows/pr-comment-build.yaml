@@ -21,10 +21,10 @@ jobs:
     runs-on: ubuntu-slim
     steps:
       - name: actions/checkout
-        uses: indykite/ops-common/.github/actions/git-checkout@master # actions/checkout with dynamic fetch-depth resolution
+        uses: indykite/.github/.github/actions/git-checkout@db523df1024e797b232faefcb9835954734d1331 # master
 
       - name: Comment Artifact URL on PR
-        uses: indykite/ops-common/.github/actions/artifact-to-comment@24a0129d778a885b675f5d587ddc5255225a0c42 # master
+        uses: indykite/.github/.github/actions/artifact-to-comment@db523df1024e797b232faefcb9835954734d1331 # master
         with:
           artifact-name: code-coverage
           artifact-title: Code Coverage
