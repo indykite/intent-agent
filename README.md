@@ -171,7 +171,7 @@ is needed to build, run or contribute to the agent.
 ## Contributing
 
 Contributions are welcome. [`CONTRIBUTING.md`](./CONTRIBUTING.md) describes the workflow (fork,
-branch off `master`, Conventional Commits, `make fix` then `make build`), the ground rules for
+branch off `master`, Conventional Commits, `make fix` then `make build_integration`), the ground rules for
 changes to the pipeline, and which shared configuration files are kept identical across IndyKite
 repos and should not be changed in a feature PR. Everyone participating is expected to follow the
 [Code of Conduct](./CODE_OF_CONDUCT.md).

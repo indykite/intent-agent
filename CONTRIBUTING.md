@@ -46,6 +46,7 @@ Pre-requisites:
 
 - Python 3.13 (`brew install python@3.13`)
 - [uv](https://docs.astral.sh/uv/getting-started/installation/) (`brew install uv`)
+- [pre-commit](https://pre-commit.com/#install) (`brew install pre-commit`)
 - GNU make `> 3.81` (`brew install make` on macOS)
     - **Warning: version that is included with macOS by default is too old (`GNU Make 3.81`)**
     - Check your version by running `/usr/bin/make --version`

@@ -89,9 +89,9 @@ repos:
         name: codecov-validate-config
         files: codecov.yml
         entry: >-
-          bash -c '
-          curl -s -o - -w "\n%{http_code}\n" --data-binary @codecov.yml https://codecov.io/validate
-          | awk '"'"'{l[NR]=$0} END{for(i=1;i<NR;i++)print l[i]; if($0<200||$0>299)exit $0}'"'"''
+          bash -o pipefail -c '
+          curl -sS -o - -w "\n%{http_code}\n" --data-binary @codecov.yml https://codecov.io/validate
+          | awk '"'"'{l[NR]=$0} END{for(i=1;i<NR;i++)print l[i]; if($0<200||$0>299)exit 1}'"'"''
         language: system
         pass_filenames: false
 
