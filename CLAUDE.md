@@ -26,6 +26,12 @@ clash. Concretely:
 - **Commit messages must follow Conventional Commits** (`commitlint --strict`, shared org config
   via `ops-common` repo). Non-conforming message fails hook once commit-msg linting installed
   (see setup above).
+- **Commit type decides the release version.** release-please on `master` reads the
+  [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) type of every commit
+  (squash-merged PR title) to cut `vX.Y.Z`: `fix:` bumps Z, `feat:` bumps Y, `feat!:` bumps X,
+  `ci:`/`chore:` bump nothing and trigger no release. Pick the type by its release effect, not
+  just its content. **No `feat!:` (or `BREAKING CHANGE:` footer) until the team deliberately
+  releases 1.0.**
 - **Stay inside scope of your task.** `ruff`'s `select = ["ALL"]` (see below) surfaces
   pre-existing issues in files you touch incidentally, not just lines you meant to change.
   Fix what task requires; don't drive-by-refactor teammate's file cause linter found something
