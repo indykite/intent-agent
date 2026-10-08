@@ -40,7 +40,7 @@
       }
     ]
   },
-  "confidence": "high",
+  "confidence": "low",
   "category": "multi intent",
   "data_model": "user_model"
 }

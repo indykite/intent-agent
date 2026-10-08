@@ -23,7 +23,7 @@
       }
     ]
   },
-  "confidence": "medium",
+  "confidence": "low",
   "category": "resource search",
   "data_model": "user_model"
 }

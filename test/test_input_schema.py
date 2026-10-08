@@ -128,10 +128,10 @@ def test_build_input_schema_context_has_exactly_the_tdd_keys():
 
 def test_build_input_schema_top_level_is_explanation_evaluations_confidence():
     schema = build_input_schema(_load_schema_fixture())
-    assert schema["required"] == ["explanation", "evaluations", "confidence"]
+    assert schema["required"] == ["evaluations"]
     assert list(schema["properties"]) == ["explanation", "evaluations", "confidence"]
-    assert schema["properties"]["explanation"]["type"] == "string"
-    assert schema["properties"]["confidence"]["enum"] == ["high", "medium", "low"]
+    assert {"type": "string"} in schema["properties"]["explanation"]["anyOf"]
+    assert {"type": "string", "enum": ["high", "medium", "low"]} in schema["properties"]["confidence"]["anyOf"]
 
 
 def test_context_shape_check_covers_every_structured_output_context_key():

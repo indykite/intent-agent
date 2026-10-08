@@ -346,10 +346,11 @@ def normalize_intent_response(
     _mark_second_subjects_dependent(data)
     _bind_subject(data, subject_id=subject.id, subject_type=subject.type)
     _normalize_contexts(data)
+    # Marked before the drops, so they compare evaluations in their final shape.
+    _mark_policy_based(data)
     _drop_duplicate_evaluations(data)
     _drop_repeated_hops(data)
     _drop_first_dependency(data)
-    _mark_policy_based(data)
     _set_policy_fetch_failed(data, fetch_failed=policy_context.fetch_failed)
     # The model's rating is only logged (see rating()), never returned.
     data = {key: value for key, value in data.items() if key not in _RATING_KEYS}

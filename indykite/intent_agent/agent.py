@@ -93,15 +93,23 @@ def _dump(payload: dict[str, Any]) -> str:
 
 
 def _policy_block(policies: list[dict[str, Any]] | None, preview_chars: int) -> str:
-    """The <policies> block for extract-intent's activation: the raw policies, so the model can
-    read each one's condition.cypher. Empty without policies.
+    """The <policies> block for extract-intent's activation: one whole policy per line (never cut
+    mid-condition) up to `preview_chars`, then a pointer to get_policies. Empty without policies.
     """
     if not policies:
         return ""
-    policies_json = json.dumps(policies, indent=2, ensure_ascii=False)
+    lines: list[str] = []
+    for entry in policies:
+        line = json.dumps(entry, separators=(",", ":"), ensure_ascii=False)
+        if lines and sum(map(len, lines)) + len(line) > preview_chars:
+            break
+        lines.append(line)
+    omitted = len(policies) - len(lines)
+    more = f"\n({omitted} more policies not shown - call get_policies for all of them.)" if omitted else ""
     return (
         "\n\n<policies>\n"
-        + policies_json[:preview_chars]
+        + "\n".join(lines)
+        + more
         + "\n</policies>\n\nEvery evaluation must use one subject -ACTION-> resource combination these "
         "policies grant. Read each policy's condition.cypher to choose between them: it shows how the "
         "policy is applied to the graph, and so what a prompt asking for it is about."

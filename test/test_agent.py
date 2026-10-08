@@ -12,7 +12,7 @@ from dogpile.cache.backends.redis import RedisBackend
 from langchain_core.messages import HumanMessage, ToolMessage
 from starlette.testclient import TestClient
 
-from indykite.intent_agent.agent import IntentAgent, RequestSubject
+from indykite.intent_agent.agent import IntentAgent, RequestSubject, _policy_block
 from indykite.intent_agent.app import build_app
 from indykite.intent_agent.audit.message import Outcome, schema_version
 from indykite.intent_agent.config import Settings
@@ -1550,6 +1550,24 @@ def test_run_extraction_short_circuits_repeat_skill_activation(monkeypatch, mock
     assert caplog.text.count("Activating skill: extract-intent") == 1
 
 
+@pytest.mark.parametrize(
+    ("preview_chars", "shown", "note"),
+    [
+        pytest.param(100_000, 3, "", id="all_fit"),
+        pytest.param(150, 1, "(2 more policies not shown - call get_policies for all of them.)", id="cut_at_a_policy"),
+        pytest.param(1, 1, "(2 more policies not shown - call get_policies for all of them.)", id="first_always_whole"),
+    ],
+)
+def test_policy_block_keeps_every_policy_whole(preview_chars, shown, note):
+    policies = [_policy("Customer", action, "Car") for action in ("RENT", "OWN", "INSURE")]
+    for entry in policies:
+        entry["policy"]["condition"] = {"cypher": "MATCH (subject:Customer)-[:OWN]->(resource:Car)"}
+    block = _policy_block(policies, preview_chars)
+    listed = block.split("<policies>\n", 1)[1].split("\n</policies>", 1)[0].split("\n")
+    assert [json.loads(line) for line in listed if line.startswith("{")] == policies[:shown]
+    assert (note in block) if note else ("more policies" not in block)
+
+
 def test_run_extraction_policies_block_injection_on_skill_activation(monkeypatch, mocker):
     cypher = "MATCH (subject:Customer)-[:OWN]->(resource:Car) WHERE resource.model = 'refundable'"
     refund_policy = _policy("Customer", "APPROVE_REFUND", "Car")
@@ -2172,16 +2190,15 @@ def test_activate_skill_caps_the_injected_summary_at_schema_preview_chars(monkey
 
 
 def test_normalize_intent_response_drops_literal_duplicate_evaluations_only():
-    """An evaluation repeated verbatim (seen live) is kept once, in its first position; two
-    evaluations that differ in any key - here the context - are both kept, in order.
-    """
+    """Duplicates are compared in their final shape, so a model-written marker doesn't keep one."""
     same = {"action": {"name": "RENT"}, "resource": {"type": "Car", "id": "kitt"}, "context": {}}
     different = {
         "action": {"name": "RENT"},
         "resource": {"type": "Car", "id": "kitt"},
         "context": {"parameters": {"x": 1}},
     }
-    llm_text = json.dumps({"evaluations": [same, different, same]})
+    same_with_marker = {**same, "context": {"parameters": {"action_derivation_rule": "relationship"}}}
+    llm_text = json.dumps({"evaluations": [same, different, same, same_with_marker]})
     data = json.loads(_normalize(llm_text, "can I rent kitt?"))
     caller = {"type": "Customer", "id": "user-1"}
     assert data["evaluations"] == [

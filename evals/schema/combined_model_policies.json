@@ -79,6 +79,26 @@
         }
       },
       "tags": []
+    },
+    {
+      "policy": {
+        "meta": {
+          "policy_version": "2.0-kbac"
+        },
+        "subject": {
+          "type": "Customer"
+        },
+        "actions": [
+          "CAN_ACCESS"
+        ],
+        "resource": {
+          "type": "Customer"
+        },
+        "condition": {
+          "cypher": "MATCH (subject:Customer) MATCH (resource:Customer)"
+        }
+      },
+      "tags": []
     }
   ]
 }

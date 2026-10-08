@@ -146,14 +146,18 @@ class _IntentInput(BaseModel):
     before writing the evaluations.
     """
 
-    explanation: str = Field(
+    # Optional so a refusal (empty evaluations) can leave them out; subject_binding requires both
+    # on an answer with evaluations.
+    explanation: str | None = Field(
+        default=None,
         description=(
             "Written first, before the evaluations. One short, plain sentence: the policy you will "
             "use and, if any, what part of the prompt no policy covers."
         ),
     )
     evaluations: list[_Evaluation]
-    confidence: Confidence = Field(
+    confidence: Confidence | None = Field(
+        default=None,
         description=(
             "high: the prompt matches the policies exactly. medium: it matches only through a synonym "
             "- a policy's resource type or action stands in for the one asked. low: only part of the "

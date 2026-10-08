@@ -228,7 +228,7 @@ cache, and real Gemini calls:
    and check the caller's access policies
    (`GET {INDYKITE_BASE_URL}/access/v1/policies?subject_type=...`) for what they grant: a
    prompt no policy covers comes back as the no-intent error, and a `subject_type` with no
-   policies at all as the "Access policies unavailable" error.
+   policies at all as the "Access policies for the supplied subject type are unavailable" error.
 
 ### With scripts
 

@@ -60,7 +60,7 @@ def policy_unavailable_error(prompt: str) -> dict[str, str]:
     """Build the 4.7 error shape for when no access policy exists for the caller's subject type."""
     return error_response(
         prompt,
-        "Access policies unavailable - no policy defines what the supplied subject type may do.",
+        "Access policies for the supplied subject type are unavailable.",
         "Retry once access policies are available, or contact the administrator.",
     )
 
