@@ -17,7 +17,11 @@ permissions:
 jobs:
   pull-request-comment:
     timeout-minutes: 5
-    if: github.event.workflow_run.conclusion == 'success'
+    # Same-repository PRs only: for a fork PR, GitHub leaves workflow_run.pull_requests empty, so
+    # there is no PR to comment on.
+    if: >-
+      github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-slim
     steps:
       - name: actions/checkout

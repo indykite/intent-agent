@@ -191,10 +191,13 @@ pre-commit install -t commit-msg
    ```
 
 5. If your change touches `evals/`, the skill, or the pipeline modules, run `make evals` if you
-   have a Gemini key, and paste the per-category summary in the PR. Without a key, say so. GitHub
-   never exposes repository secrets to a pull request from a fork, so the eval-suite workflow
-   cannot run against the real model on your PR; a maintainer runs it on a branch in this
-   repository before merging and posts the result.
+   have a Gemini key, and paste the per-category summary in the PR. Without a key, say so. The
+   eval-suite workflow needs the project's Gemini key, which is never given to code from a fork,
+   so its check is skipped on your PR (skipped counts as passing) and the suite runs on `master`
+   once the change is merged. For pull requests from branches of this repository the suite is a
+   required check whenever the PR touches the service code, the dependency pins or `evals/`. For
+   a change that is likely to move the results, a maintainer may copy your reviewed commit to a
+   branch of this repository to run the suite before merging, and post the result.
 
 ## Pull requests
 
@@ -206,10 +209,9 @@ pre-commit install -t commit-msg
   `style`, `test`; a subject of at most 50 characters (72 for the whole header and for each body
   line) with no trailing full stop; no quotes or backticks anywhere in the message; and, if a scope
   is used, one of `api`, `authn`, `authz`, `deps`, `docs`, `schema`, `test` (plus a few
-  IndyKite-internal ones). A Jira ticket is not required from external contributors: the
-  `ENG-nnnn` reference IndyKite maintainers put in the commit body shows up as a failed but
-  non-required commitlint check on the PR and never blocks a merge (the maintainers' local hook
-  runs in strict mode and does fail on it, which is why they include one).
+  IndyKite-internal ones). No ticket reference is needed in the commit message: link the issue
+  your PR addresses in its description (`Fixes #123`). IndyKite maintainers reference their
+  internal ticket in the branch name instead (`ENG-1234-short-description`).
 - The body should answer: what does this change do, why is it needed, and how was it tested?
 - Breaking changes to the request or response shape, the audit record, or configuration names must
   be called out explicitly in the PR title and body.
