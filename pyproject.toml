@@ -1,6 +1,7 @@
 [project]
 name = "intent-agent"
 description = "Intent Agent"
+license = "Apache-2.0"
 requires-python = "==3.13.*"
 # Dynamic version is required to avoid writing the package version to uv.lock file
 # otherwise uv lock --check fails on a new release, because the version is bumped and doesn't match.

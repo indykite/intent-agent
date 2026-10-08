@@ -7,7 +7,7 @@ type: application
 # extra-files) and always match the container image version for a real release. PR/master
 # builds don't touch this file - the build-publish-deploy workflow suffixes the packaged version
 # at publish time instead (see .github/workflows/build-publish-deploy.yaml).
-version: 0.3.0
+version: 0.3.1
 appVersion: "0.3.0"
 
 keywords:
@@ -18,6 +18,9 @@ keywords:
 maintainers:
   - name: IndyKite
     email: engineering@indykite.com
+
+annotations:
+  artifacthub.io/license: Apache-2.0
 
 dependencies:
   - name: redis

@@ -5,8 +5,8 @@
 #   pre-commit install -t post-checkout -t commit-msg
 #
 # Prerequisites:
-#   ! hard dependency on 'ops-common' repo being in the same root folder, so shareable commitlint config can be used!
-#   ! keep the below line updated! It's parsed and used for dependency installation by shared GitHub Workflow: ops-common//.github/workflows/pre-commit.yaml
+#   ! hard dependency on the public 'indykite/.github' repo being cloned in the same root folder (../.github), so shareable commitlint config can be used!
+#   ! keep the below line updated! It's parsed and used for dependency installation by shared workflow: indykite/.github//.github/workflows/pre-commit.yaml
 #   brew install yamlfmt yamllint actionlint markdownlint-cli2 shellcheck shfmt checkov trivy hadolint uv helm kubeconform
 #
 # Update hooks and their dependencies regularly via:
@@ -32,7 +32,7 @@ repos:
       - id: check-useless-excludes
         name: pre-commit/check-useless-excludes
 
-  # Must run before the 'ops-common' Helm hooks below (helm-kubeconform, and helmlint further
+  # Must run before the Helm hooks below (helm-kubeconform, and helmlint further
   # down) - chart/charts/ isn't committed (see chart/Chart.lock and .gitignore), so
   # `helm template`/`helm lint` would otherwise hard-fail with "found in Chart.yaml, but missing
   # in charts/ directory". `helm dependency build` (not `update`) resolves strictly from
@@ -46,34 +46,91 @@ repos:
         files: ^chart/
         pass_filenames: false
 
-  - repo: ssh://git@github.com/indykite/ops-common
-    rev: "e9c7030b9fcd363f165a6ad358b3bfd68c466495" # using a branch name (or HEAD) is not supported
+  # Hooks shared across IndyKite repositories, defined here rather than pulled from a private
+  # repository, so the config initialises without any credentials (fork PRs included).
+  - repo: local
     hooks:
       # NON-DEFAULT stage, install explicitly with: pre-commit install -t post-checkout
       - id: git-pull
+        name: git pull
+        entry: bash -c '[[ $(git branch --show-current) =~ ^(dev|develop|main|master)$ ]] && git pull --all || true'
+        language: system
+        stages: [post-checkout]
+        verbose: true
+        always_run: true
+        pass_filenames: false
       - id: git-branch-delete-stale
+        name: Delete stale committed branches
+        entry: >-
+          bash -c '[[ $(git branch --show-current) =~ ^(dev|develop|main|master)$ ]] \
+            && (git fetch -p && git branch -vv | grep ":\ gone]" | awk "{ print \$1 }" | xargs git branch -D) \
+            || true'
+        language: system
+        stages: [post-checkout]
+        verbose: true
+        always_run: true
+        pass_filenames: false
 
       # pre-commit validations
-      # - id: pre-commit-autoupdate # done via 'renovate'; left for reference and possible options
-      #   args: [--freeze] # store hashes in 'rev' instead of tag names
       - id: pre-commit-validate-config
+        name: pre-commit/validate-config
+        files: .pre-commit-config.yaml
+        entry: pre-commit validate-config
+        language: system
+        pass_filenames: false
       - id: pre-commit-validate-manifest
+        name: pre-commit/validate-manifest
+        files: .pre-commit-config.yaml
+        entry: pre-commit validate-manifest
+        language: system
+        pass_filenames: false
 
       - id: codecov-validate-config
+        name: codecov-validate-config
+        files: codecov.yml
+        entry: >-
+          bash -o pipefail -c '
+          curl -sS -o - -w "\n%{http_code}\n" --data-binary @codecov.yml https://codecov.io/validate
+          | awk '"'"'{l[NR]=$0} END{for(i=1;i<NR;i++)print l[i]; if($0<200||$0>299)exit 1}'"'"''
+        language: system
+        pass_filenames: false
 
       # SAST
       - id: trivy
+        name: trivy
+        entry: trivy filesystem --disable-telemetry --skip-version-check --exit-code=1 --config .trivy.yaml .
+        language: system
+        pass_filenames: false
 
       # Shellcheck
       - id: shfmt
+        name: shfmt
+        types: [shell]
+        exclude_types: [csh, tcsh, zsh]
+        entry: shfmt
+        args: [--list, --write, --diff, --indent, "4"]
+        language: system
+        pass_filenames: true
       - id: shellcheck
+        name: shellcheck
+        files: .*\.sh$
+        entry: shellcheck -S style -o all
+        language: system
+        pass_filenames: true
 
       # Helm
       - id: helm-kubeconform
+        name: helm-kubeconform
+        entry: .github/scripts/pre-commit-kubeconform-helm.sh
+        language: script
         files: ^chart/
-
+        pass_filenames: false
       - id: helm-chart-version
+        name: helm-chart-version
+        entry: .github/scripts/pre-commit-check-helm-version.sh
+        language: script
         files: ^chart/
+        pass_filenames: false
 
   #
   # Renovate
@@ -93,7 +150,7 @@ repos:
         stages: [commit-msg]
         # using shareable config across the org
         # 'strict' equals to 'failOnWarnings' in Github Action setting
-        args: ["--strict", "--config", "../ops-common/.github/actions/commitlint/.commitlintrc.mjs"]
+        args: ["--strict", "--config", "../.github/.github/actions/commitlint/.commitlintrc.mjs"]
         additional_dependencies:
           - "@commitlint/config-conventional"
           - commitlint-plugin-function-rules

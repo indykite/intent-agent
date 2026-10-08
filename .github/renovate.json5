@@ -1,8 +1,8 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    // org shared config - https://github.com/indykite/ops-common/blob/master/.github/renovate.json
-    "github>indykite/ops-common//.github/renovate.json"
+    // org shared config (public) - https://github.com/indykite/.github/blob/master/.github/renovate.json5
+    "github>indykite/.github//.github/renovate.json5"
   ],
   "enabledManagers": [
     "github-actions",

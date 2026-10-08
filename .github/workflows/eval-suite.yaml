@@ -52,7 +52,7 @@ jobs:
 
     steps:
       - name: actions/checkout
-        uses: indykite/ops-common/.github/actions/git-checkout@24a0129d778a885b675f5d587ddc5255225a0c42 # master
+        uses: indykite/.github/.github/actions/git-checkout@db523df1024e797b232faefcb9835954734d1331 # master
 
       - name: Install uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0 - https://github.com/astral-sh/setup-uv/releases
