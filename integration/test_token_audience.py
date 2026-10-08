@@ -13,7 +13,7 @@ from starlette.testclient import TestClient
 
 from indykite.intent_agent.app import build_app
 from indykite.intent_agent.config import Settings
-from integration.schema_fixtures import schema_with_stocks
+from integration.schema_fixtures import RATING, STOCK_POLICIES, schema_with_stocks
 
 
 def _set_baseline_env(monkeypatch, tmp_path):
@@ -48,7 +48,8 @@ def _fake_schema_and_policy_clients(mocker):
         get_cached=mocker.Mock(return_value=schema_with_stocks()),
     )
     fake_policy_client = mocker.Mock(
-        peek_cached=mocker.Mock(return_value=(False, None)), get_cached=mocker.Mock(return_value=([], False))
+        peek_cached=mocker.Mock(return_value=(False, None)),
+        get_cached=mocker.Mock(return_value=(STOCK_POLICIES, False)),
     )
     return fake_schema_client, fake_policy_client
 
@@ -108,7 +109,8 @@ def test_accepts_token_scoped_to_this_agent_end_to_end(monkeypatch, mocker, tmp_
         content=(
             '{"evaluations": '
             '[{"action": {"name": "buy"}, "resource": {"type": "Stock", "id": "AAPL"}, '
-            '"context": {"parameters": {"amount": 50}, "filters": null, "qualifiers": null}}]}'
+            '"context": {"parameters": {"amount": 50}, "filters": null, "qualifiers": null}}], '
+            f"{RATING}}}"
         ),
         tool_calls=[],
     )

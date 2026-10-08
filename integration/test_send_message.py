@@ -7,7 +7,7 @@ from starlette.testclient import TestClient
 
 from indykite.intent_agent.app import build_app
 from indykite.intent_agent.config import Settings
-from integration.schema_fixtures import schema_with_stocks
+from integration.schema_fixtures import RATING, STOCK_POLICIES, schema_with_stocks
 
 
 def test_gemini_send_message_end_to_end(monkeypatch, mocker, tmp_path):
@@ -33,11 +33,10 @@ def test_gemini_send_message_end_to_end(monkeypatch, mocker, tmp_path):
         peek_cached=mocker.Mock(return_value=None),
         get_cached=mocker.Mock(return_value=schema_with_stocks()),
     )
-    # No policies (a successful fetch that found none) - this test is about the end-to-end
-    # request path, not ENG-9671, and a real PolicyClient would otherwise hit the network
-    # against this fake settings' base_url.
+    # A fake client: a real PolicyClient would hit the network against this fake base_url.
     fake_policy_client = mocker.Mock(
-        peek_cached=mocker.Mock(return_value=(False, None)), get_cached=mocker.Mock(return_value=([], False))
+        peek_cached=mocker.Mock(return_value=(False, None)),
+        get_cached=mocker.Mock(return_value=(STOCK_POLICIES, False)),
     )
 
     tool_call_response = AIMessage(
@@ -57,7 +56,8 @@ def test_gemini_send_message_end_to_end(monkeypatch, mocker, tmp_path):
         content=(
             '{"evaluations": '
             '[{"action": {"name": "buy"}, "resource": {"type": "Stock", "id": "AAPL"}, '
-            '"context": {"parameters": {"amount": 50}, "filters": null, "qualifiers": null}}]}'
+            '"context": {"parameters": {"amount": 50}, "filters": null, "qualifiers": null}}], '
+            f"{RATING}}}"
         ),
         tool_calls=[],
     )
@@ -101,7 +101,9 @@ def test_gemini_send_message_end_to_end(monkeypatch, mocker, tmp_path):
     assert list(result_data) == ["prompt", "evaluations"]
     assert result_data["prompt"] == "Can I buy 50 shares of AAPL?"
     assert result_data["evaluations"][0]["subject"] == {"type": "Customer", "id": "test-subject"}
-    assert result_data["evaluations"][0]["context"] == {"parameters": {"amount": 50}}
+    assert result_data["evaluations"][0]["context"] == {
+        "parameters": {"amount": 50, "action_derivation_rule": "policy_based"}
+    }
 
     audit_files = list((tmp_path / "audit").glob("audit-intent_agent-*.json"))
     assert len(audit_files) == 1
