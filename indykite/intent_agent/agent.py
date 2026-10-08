@@ -152,7 +152,8 @@ class ExtractionResult:
     """What one extraction produced: `text` is the A2A response body; the rest feeds the audit
     record (TDD 4.9) so the executor never has to parse its own output to classify it.
     `message` follows the IAG's rule for its `reason`: the same text the caller received.
-    `confidence`/`explanation` are the model's rating, logged at DEBUG only (empty without one).
+    `confidence`/`explanation` are the model's rating, logged at DEBUG only; a refusal has only an
+    explanation, a system-built error neither.
     """
 
     text: str
@@ -201,8 +202,8 @@ class ExtractionResult:
         policy_context: PolicyContext,
     ) -> "ExtractionResult":
         """Classify normalize_intent_response()'s output: bound evaluations are a success, the
-        4.7 no-intent shape (the LLM's own empty evaluations list) is `unmatched`. A success
-        carries the model's rating, read from `llm_text` (the answer normalize accepted).
+        4.7 no-intent shape (the LLM's own empty evaluations list) is `unmatched`. Both carry the
+        model's rating, read from `llm_text` (a refusal has an explanation only).
         """
         policy_ver, policy_failed = _policy_audit_fields(policy_context)
         data = json.loads(text)
@@ -230,6 +231,7 @@ class ExtractionResult:
             validation_retries=validation_retries,
             policy_version=policy_ver,
             policy_fetch_failed=policy_failed,
+            explanation=rating(llm_text)[1],
         )
 
     @classmethod
@@ -976,10 +978,9 @@ class IntentAgent:
                     validation_retries=retries,
                     policy_context=request.policy_context,
                 )
-                if result.confidence:
-                    logger.debug(
-                        "Extraction confidence %s for prompt %r: %s", result.confidence, prompt, result.explanation
-                    )
+                if result.explanation:
+                    verdict = f"confidence {result.confidence}" if result.confidence else "refused"
+                    logger.debug("Extraction %s for prompt %r: %s", verdict, prompt, result.explanation)
                 return result
         logger.error("Extraction still off-schema after %d retries; giving up on prompt %r", max_retries, prompt)
         return ExtractionResult.failed(

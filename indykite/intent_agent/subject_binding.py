@@ -361,9 +361,15 @@ _RATING_KEYS = frozenset({"confidence", "explanation"})
 
 
 def rating(llm_text: str) -> tuple[str, str]:
-    """(confidence, explanation) of an answer normalize_intent_response accepted with evaluations."""
+    """(confidence, explanation) the model gave an accepted answer - "" for any it left out (a refusal)."""
     data = _parse_llm_json(llm_text)
-    return data["confidence"], data["explanation"].strip()
+    if not isinstance(data, dict):
+        return "", ""
+    confidence, explanation = data.get("confidence"), data.get("explanation")
+    return (
+        confidence if isinstance(confidence, str) else "",
+        explanation.strip() if isinstance(explanation, str) else "",
+    )
 
 
 def _rating_errors(data: dict[str, Any]) -> list[str]:

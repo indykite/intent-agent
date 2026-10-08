@@ -94,7 +94,7 @@ def response_diff(result: FixtureResult) -> str:
 
 def _rating(result: FixtureResult) -> str:
     """The model's rating of its answer next to the golden one, with its explanation."""
-    return f"confidence: {result.confidence} (golden {result.fixture.confidence or '-'}) - {result.explanation}"
+    return f"confidence: {result.confidence or '-'} (golden {result.fixture.confidence or '-'}) - {result.explanation}"
 
 
 def _fence(content: str, info: str = "") -> list[str]:
@@ -166,7 +166,7 @@ def render_text(report: Report) -> str:
                 "",
                 f"  {result.fixture.id} [{result.fixture.category}] outcome={result.outcome} - {result.verdict.detail}",
                 f"    prompt: {result.fixture.prompt}",
-                *([f"    {_rating(result)}"] if result.confidence else []),
+                *([f"    {_rating(result)}"] if result.explanation else []),
                 *(f"    {line}" for line in response_diff(result).splitlines()),
             ]
     lines += ["", f"Result: {_STATUS[report.passed]}"]
@@ -225,7 +225,7 @@ def render_markdown(report: Report) -> str:
                 "",
                 *_fence(result.fixture.prompt, "text"),
                 "",
-                *([*_fence(_rating(result), "text"), ""] if result.confidence else []),
+                *([*_fence(_rating(result), "text"), ""] if result.explanation else []),
                 *_fence(response_diff(result), "diff"),
                 "",
                 "</details>",

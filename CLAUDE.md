@@ -271,8 +271,9 @@ dicts or strings elsewhere.
 `explanation` (one short, plain sentence: the policy used, and what no policy covered) and
 `confidence` - `high` (the prompt matches the policies exactly), `medium` (it matches only
 through a synonym: a policy's resource type or action standing in for the one asked), `low` (only
-part of the prompt matched a policy).
-`normalize_intent_response` requires both (missing/invalid is fed back like any other error) and
+part of the prompt matched a policy). A refusal (empty evaluations) carries only the `explanation`
+(why no policy fits).
+`normalize_intent_response` requires both on an answer with evaluations (missing/invalid is fed back like any other error) and
 strips them: they are **logged (at DEBUG), never returned or audited** - `subject_binding.rating`
 reads them back onto `ExtractionResult.confidence`/`.explanation`, and the eval suite reports `confidence` next to
 each fixture's own optional `confidence` (taken as written, not validated) - a fixture passes on

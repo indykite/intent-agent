@@ -608,8 +608,8 @@ Return a JSON object with three keys, in this order:
 Write `explanation` **first** - **one short, plain sentence**: the policy you will use and, if
 any, what no policy covers - then the `evaluations`, which must use exactly the policy and
 resource type the explanation names, then `confidence` (see Confidence below). The system adds the
-original prompt to the response itself; don't repeat it. A refusal (empty `evaluations`) needs
-no rating.
+original prompt to the response itself; don't repeat it. A refusal (empty `evaluations`) still
+gets an `explanation` - why no policy fits - but no `confidence`.
 
 ## Confidence
 
@@ -621,7 +621,8 @@ Rate how well the policies you chose cover the prompt:
 | `medium`     | The prompt matches only through a synonym - a policy's resource type or action stands in for it |
 | `low`        | Only part of the prompt matched a policy; the rest matched none and was left out                |
 
-Nothing matched at all, not even through a synonym, is no rating but an empty `evaluations` array.
+Nothing matched at all, not even through a synonym, is no confidence but an empty `evaluations` array
+with an `explanation` of why.
 
 User prompt: *"Does alison own any account that has the tier tier_1"* (a Customer caller; policies
 `Customer -CAN_ACCESS-> Customer` and `Customer -CAN_ACCESS-> AccountTier`) - the gate on alison
@@ -702,7 +703,7 @@ documents part is left out:
 
 ## When no coherent intent can be extracted
 
-If no policy covers what the prompt asks, not even through a synonym, or it is too unclear to map to a Subject/Action/Resource, return an empty `evaluations` array - do not force a match. The system builds the error response itself; you don't need to (and can't - your output shape is constrained to `evaluations` only).
+If no policy covers what the prompt asks, not even through a synonym, or it is too unclear to map to a Subject/Action/Resource, return an empty `evaluations` array - do not force a match - with an `explanation` of why no policy fits. The system builds the error response itself; you don't need to (and can't - your output shape is constrained to `evaluations` only).
 
 ## Edge cases
 

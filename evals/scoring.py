@@ -73,7 +73,7 @@ class FixtureResult:
     # Reruns the runner spent because the only outcome was a per-call/request timeout - a platform
     # or provider latency spike, not a judgement of the model's answer (see runner.run_fixture).
     timeout_retries: int = 0
-    # The model's rating of an answer with evaluations (ExtractionResult), empty otherwise.
+    # The model's rating (ExtractionResult); a refusal has only an explanation.
     confidence: str = ""
     explanation: str = ""
 

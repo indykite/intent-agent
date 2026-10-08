@@ -146,13 +146,14 @@ class _IntentInput(BaseModel):
     before writing the evaluations.
     """
 
-    # Optional so a refusal (empty evaluations) can leave them out; subject_binding requires both
-    # on an answer with evaluations.
+    # Optional: a refusal (empty evaluations) gives only an explanation; subject_binding requires
+    # both on an answer with evaluations.
     explanation: str | None = Field(
         default=None,
         description=(
-            "Written first, before the evaluations. One short, plain sentence: the policy you will "
-            "use and, if any, what part of the prompt no policy covers."
+            "Written first, before the evaluations, always. One short, plain sentence: the policy you "
+            "will use and, if any, what part of the prompt no policy covers - or, when you return no "
+            "evaluations, why no policy fits."
         ),
     )
     evaluations: list[_Evaluation]

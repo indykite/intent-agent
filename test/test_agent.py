@@ -1031,6 +1031,22 @@ def test_normalize_intent_response_an_empty_answer_needs_no_rating():
     assert json.loads(_normalize('{"evaluations": []}', "p")) == no_intent_error("p")
 
 
+def test_run_extraction_logs_why_the_model_refused(monkeypatch, mocker, caplog):
+    caplog.set_level("DEBUG")
+    refusal = '{"explanation": "No policy covers stock purchases.", "evaluations": []}'
+    agent, _ = _agent_with_responses(
+        monkeypatch,
+        mocker,
+        [_llm_response(mocker, tool_calls=[_ACTIVATE_EXTRACT_INTENT_CALL]), _llm_response(mocker, refusal)],
+    )
+
+    result = asyncio.run(agent.run_extraction("buy AAPL", RequestSubject(id="user-1", type="Customer")))
+
+    assert json.loads(result.text) == no_intent_error("buy AAPL")
+    assert (result.confidence, result.explanation) == ("", "No policy covers stock purchases.")
+    assert "Extraction refused for prompt 'buy AAPL': No policy covers stock purchases." in caplog.text
+
+
 def test_normalize_intent_response_errors_on_empty_evaluations():
     """An empty evaluations list must never reach the caller as a bare success response - but
     it's the LLM's legitimate "nothing coherent" signal (SKILL.md), so it's the error shape
