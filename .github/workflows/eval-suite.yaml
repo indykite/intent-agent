@@ -1,10 +1,16 @@
 ---
 # Golden eval suite (TDD 7.1 / 7.2): runs evals/ against the real Gemini model and fails on any
 # launch-gate regression - correctness >= 85%, injection resistance 100%, no forced match on a
-# refusal fixture. Triggered by every PR touching the service code (skill content, the
+# refusal fixture. Runs for every PR that touches the service code (skill content, the
 # input_schema derivation, the LLM version/provider config, the schema loader, the pipeline
-# modules around them - a directory glob, not a file list, so a refactor can't silently drop a
-# module out of the trigger), the dependency pins, or the suite itself, and on demand.
+# modules around them - a directory prefix, not a file list, so a refactor can't silently drop a
+# module out of the check), the dependency pins, or the suite itself, and on demand.
+# `golden-evals` is meant to be a required check: every PR reports it (no `paths:` filter on the
+# PR trigger, which would leave it "Pending" forever on unrelated PRs), and the job is skipped -
+# which counts as passing - when the PR changes none of those files.
+# The Gemini key is never given to code from a fork: a fork PR skips the suite, which then runs on
+# master once the change is merged (or earlier, if a maintainer copies the reviewed commit to a
+# branch of this repository).
 name: Golden eval suite
 
 on: # yamllint disable-line rule:truthy
@@ -16,20 +22,25 @@ on: # yamllint disable-line rule:truthy
       - reopened
       - synchronize
       - ready_for_review
+  # After merge: covers the changes that came from forks and were skipped on their PR.
+  push:
+    branches:
+      - master
     paths:
-      # the service code: skill content, the input_schema derivation, the post-processing that
-      # decides the response, the LLM/provider config, the schema and policy loaders
       - indykite/**
-      # the provider SDK pin and the model default's dependencies
+      # release-please's version bump alone doesn't change what the suite measures
+      - '!indykite/intent_agent/version.py'
       - pyproject.toml
       - uv.lock
-      # the suite itself
       - evals/**
       - .github/workflows/eval-suite.yaml
   workflow_dispatch: {}
 
 concurrency:
-  group: eval-suite-${{ github.event.pull_request.number || github.ref }}
+  # A newer push to the same PR replaces its run. Runs on master and manual runs each get their own
+  # group: a shared one would cancel a pending run when the next merge is queued, leaving that merge
+  # unevaluated.
+  group: eval-suite-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 #
@@ -40,8 +51,53 @@ permissions:
   pull-requests: write # required by mshick/add-pr-comment
 
 jobs:
+  changes:
+    # Same-repository, non-draft PRs only: decides whether the PR touches anything the suite covers.
+    # No checkout and no secrets; the file list comes from the GitHub API.
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.draft == false
+      && github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      pull-requests: read # required to list the PR's files
+    timeout-minutes: 5
+    runs-on: ubuntu-slim
+    outputs:
+      relevant: ${{ steps.files.outputs.relevant }}
+    steps:
+      - name: List the files the PR changes
+        id: files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # the service code: skill content, the input_schema derivation, the post-processing that
+          # decides the response, the LLM/provider config, the schema and policy loaders; the
+          # provider SDK pin and the model default's dependencies; the suite itself
+          pattern='^(indykite/|evals/)|^(pyproject\.toml|uv\.lock|\.github/workflows/eval-suite\.yaml)$'
+          # a renamed file counts by its old path too, so moving a module out of indykite/ still runs the suite
+          files=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --jq '.[] | .filename, (.previous_filename // empty)')
+          # release-please's version bump alone doesn't change what the suite measures
+          files=$(grep -vxF 'indykite/intent_agent/version.py' <<<"${files}" || true)
+          if grep -qE "${pattern}" <<<"${files}"; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
   golden-evals:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    needs: [changes]
+    # PRs: same-repository, non-draft PRs that touch the covered files (or when the file check
+    # failed, so a broken check can't wave a PR through). Otherwise skipped, which counts as
+    # passing for a required check. A fork PR is always skipped, so it never runs with the key;
+    # its change is evaluated on master after merge. Pushes to master and manual runs always run.
+    if: >-
+      !cancelled()
+      && (github.event_name != 'pull_request'
+      || (github.event.pull_request.draft == false
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && (needs.changes.result != 'success' || needs.changes.outputs.relevant == 'true')))
     # Holds GEMINI_API_KEY: a reviewer approves each run before the PR's code is given the key.
     environment: evals
     timeout-minutes: 15

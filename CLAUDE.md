@@ -293,11 +293,15 @@ Not shipped in the image, not under `test/` - it calls the real Gemini model, so
 exactly (evaluation order included). Gates (TDD 7.1's four): correctness ≥85%, every fixture of every
 `adversarial ...` category passes (every such category must be present), no refusal fixture answered with evaluations,
 p95 of per-fixture wall time ≤10 s (retries included, nearest-rank; `--max-p95-latency` overrides it locally); exit 1 on any.
-`.github/workflows/eval-suite.yaml` runs it on PRs touching the service code (`indykite/**` - a
-directory glob, not a file list, so a refactor can't drop a module out of the trigger), the
-dependency pins (`pyproject.toml`, `uv.lock`) or `evals/**`, and on demand; takes
-`GEMINI_API_KEY` from the `evals` GitHub environment (each run waits for a reviewer's approval;
-a fork PR gets no key and fails the key check, so a maintainer runs it on a branch here). Each data
+`.github/workflows/eval-suite.yaml` runs it on PRs touching the service code (`indykite/` - a
+directory prefix, not a file list, so a refactor can't drop a module out of the check), the
+dependency pins (`pyproject.toml`, `uv.lock`) or `evals/` (decided by its `changes` job, not a
+`paths:` filter, so the `golden-evals` check can be required: unrelated PRs skip it, which counts
+as passing), on pushes to `master` touching the same paths (both ignore release-please's
+`indykite/intent_agent/version.py` bump), and on demand; takes `GEMINI_API_KEY` from the `evals`
+GitHub environment (each run waits for a reviewer's approval; a fork PR skips the job so its code
+never gets the key, and is evaluated on `master` after merge or on a branch here a maintainer
+copies it to). Each data
 model under `evals/schema/` has a `_schema.json` and, for policy-granted actions, a
 `_policies.json` in the platform listing shape. The loader round-trips every golden answer
 through `normalize_intent_response` as the fixture's caller and rejects one that comes back

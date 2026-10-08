@@ -89,12 +89,17 @@ fixtures) and an expected/actual diff for every failure.
 **In CI**, `.github/workflows/eval-suite.yaml` runs the suite on every PR that touches the
 service code (`indykite/`: skill content, the `input_schema` derivation, the LLM model/provider
 config, the schema and policy loaders, the pipeline modules), the dependency pins
-(`pyproject.toml`, `uv.lock`) or `evals/` itself, and on demand (`workflow_dispatch`). It takes
-`GEMINI_API_KEY` from the `evals` GitHub environment, so each run waits for a reviewer's approval
-before it gets the key; GitHub never exposes it to a pull request from a fork, so for fork PRs a
-maintainer runs the suite on a branch in this repository. The
-per-category breakdown goes to the job summary and a PR comment, and the full JSON report is
-uploaded as the `eval-report` artifact.
+(`pyproject.toml`, `uv.lock`) or `evals/` itself, on every push to `master` touching the same
+paths, and on demand (`workflow_dispatch`). Release-please's version bump in
+`indykite/intent_agent/version.py` alone doesn't count, on PRs or on `master`. Its `golden-evals`
+check is meant to be required: every PR reports it, and a small `changes` job skips the suite
+(skipped counts as passing) when the PR touches none of those files, so unrelated PRs make no
+Gemini calls and are not blocked. It takes `GEMINI_API_KEY` from the `evals` GitHub environment,
+so each run waits for a reviewer's approval before it gets the key. The key is never given to code
+from a fork: a fork PR skips the suite (the check shows as skipped, not failed), and its change is
+evaluated by the run on `master` after merge, or earlier if a maintainer copies the reviewed commit
+to a branch of this repository. The per-category breakdown goes to the job summary and a PR
+comment, and the full JSON report is uploaded as the `eval-report` artifact.
 
 ## Trying the audit log by hand
 

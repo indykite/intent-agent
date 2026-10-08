@@ -72,5 +72,8 @@ jobs:
 
       - name: Add comment to PR
         uses: mshick/add-pr-comment@ec328af66588ab8f77cdeb2c264f14aba45bbf59 # v3.12.0 - https://github.com/mshick/add-pr-comment/releases
+        # Same-repository PRs only: a fork PR's token is read-only, so the comment would fail a
+        # build whose tests passed. Forks keep the coverage artifact.
+        if: github.event.pull_request.head.repo.full_name == github.repository
         with:
           message: ${{ steps.build_python.outputs.coverage }}
