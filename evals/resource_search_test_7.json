@@ -1,0 +1,29 @@
+{
+  "prompt": "What accounts do I own?",
+  "jwt_sub": "leslie",
+  "expected": {
+    "prompt": "What accounts do I own?",
+    "evaluations": [
+      {
+        "action": {
+          "name": "AFFECTED"
+        },
+        "resource": {
+          "type": "Account"
+        },
+        "context": {
+          "parameters": {
+            "action_derivation_rule": "policy_based"
+          }
+        },
+        "subject": {
+          "type": "User",
+          "id": "leslie"
+        }
+      }
+    ]
+  },
+  "confidence": "medium",
+  "category": "resource search",
+  "data_model": "user_model"
+}

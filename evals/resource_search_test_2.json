@@ -6,19 +6,6 @@
     "evaluations": [
       {
         "action": {
-          "name": "OWNS"
-        },
-        "resource": {
-          "type": "Account"
-        },
-        "context": {},
-        "subject": {
-          "type": "Customer",
-          "id": "bob"
-        }
-      },
-      {
-        "action": {
           "name": "CAN_ACCESS"
         },
         "resource": {
@@ -26,7 +13,6 @@
         },
         "context": {
           "parameters": {
-            "depends_on_previous_evaluations": true,
             "action_derivation_rule": "policy_based"
           }
         },
@@ -37,6 +23,7 @@
       }
     ]
   },
+  "confidence": "high",
   "category": "resource search",
   "data_model": "customer_model"
 }

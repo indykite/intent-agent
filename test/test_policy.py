@@ -363,7 +363,7 @@ def test_get_cached_does_not_delete_a_concurrently_recovered_entry(mocker):
 def test_get_cached_treats_a_cache_backend_failure_as_an_unresolved_fetch(mocker):
     """A cache backend failure (e.g. CACHE_BACKEND=redis genuinely unreachable, not just a
     miss) must be treated the same as a policy fetch failure rather than escape as an
-    unhandled exception (review) - run_extraction proceeds schema-only either way.
+    unhandled exception (review) - run_extraction answers policy_unavailable_error either way.
     """
     cache = mocker.Mock(get=mocker.Mock(side_effect=ConnectionError("redis unreachable")))
     client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
@@ -500,8 +500,8 @@ def test_get_cached_falls_back_to_stale_policies_when_refresh_fails(mocker, capl
     """Per the same TDD 4.4 principle schema.py already follows (review): a refresh that fails
     for an entry with a still-cached, only-just-expired value must keep serving it rather than
     discarding it for a failure marker - the request currently in flight, and every other one
-    during the platform outage, still get a genuinely usable policy set instead of degrading
-    to schema-only derivation for no reason. The specific failure reason must still be logged.
+    during the platform outage, still get a genuinely usable policy set instead of being refused
+    (policy_unavailable_error) for no reason. The specific failure reason must still be logged.
 
     fetch_failed must be True here even though policies is the real, non-None stale list
     (review, High) - this call's own live fetch genuinely failed, so the caller-facing marker

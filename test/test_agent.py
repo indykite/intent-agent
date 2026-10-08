@@ -17,6 +17,7 @@ from indykite.intent_agent.app import build_app
 from indykite.intent_agent.audit.message import Outcome, schema_version
 from indykite.intent_agent.config import Settings
 from indykite.intent_agent.errors import (
+    POLICY_MEMBERSHIP_SUFFIX,
     SCHEMA_BLANK_SUFFIX,
     SCHEMA_MEMBERSHIP_SUFFIX,
     SCHEMA_RELATIONSHIP_SUFFIX,
@@ -24,6 +25,7 @@ from indykite.intent_agent.errors import (
     SubjectTypeMismatchError,
     llm_timeout_error,
     no_intent_error,
+    policy_unavailable_error,
     request_timeout_error,
     schema_not_populated_error,
     schema_unavailable_error,
@@ -40,13 +42,13 @@ from indykite.intent_agent.subject_binding import (
     _vocabulary_reason,
     looks_like_evaluations,
     normalize_intent_response,
+    rating,
     schema_has_no_node_types,
     validate_evaluations,
     validate_subject_type,
 )
 
 _MIN_EXPECTED_ROUTES = 2
-_EXPECTED_BARE_ARRAY_EVALUATION_COUNT = 2
 _REDIS_PORT = 6379
 # Every LLM call run_extraction makes for one prompt: one that activates extract-intent, one
 # final answer per attempt.
@@ -67,6 +69,22 @@ _OFF_SCHEMA_ANSWER = (
     '{"prompt": "buy AAPL", "evaluations": [{"action": {"name": "BUY"}, "resource": {"type": "Stock", "id": "AAPL"}}]}'
 )
 _SCHEMA_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mock_ikg_schema.json"
+
+
+def _policy(subject_type, action, resource_type):
+    """One `GET /access/v1/policies` entry granting subject_type `action` on resource_type."""
+    return {
+        "policy": {"subject": {"type": subject_type}, "actions": [action], "resource": {"type": resource_type}},
+        "tags": [],
+    }
+
+
+# The test caller's (Customer) policies over the fixture schema, one per Customer edge.
+_MOCK_POLICIES = [
+    _policy("Customer", "RENT", "Car"),
+    _policy("Customer", "OWN", "Car"),
+    _policy("Customer", "WORKS_AT", "Company"),
+]
 _EMPTY_SCHEMA_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mock_ikg_schema_empty.json"
 
 # A real (unsigned, alg=none) JWT - Settings requires IK_APP_AGENT_KEY to be set, and
@@ -464,7 +482,7 @@ def test_bind_subject_search_marker_without_a_searched_type_falls_back_to_overri
         ),
         pytest.param(
             {"action": {"name": "BUY"}, "resource": {"type": "Car"}},
-            ["action.name 'BUY' is not defined in the data schema"],
+            ["action.name 'BUY' is not named by any access policy"],
             id="off_schema_action_name",
         ),
         pytest.param(
@@ -487,7 +505,7 @@ def test_bind_subject_search_marker_without_a_searched_type_falls_back_to_overri
             {"subject": {"type": "Admin"}, "action": {"name": "BUY"}, "resource": {"type": "Stock"}},
             [
                 "resource.type 'Stock' is not defined in the data schema",
-                "action.name 'BUY' is not defined in the data schema",
+                "action.name 'BUY' is not named by any access policy",
                 "subject.type 'Admin' is not defined in the data schema",
             ],
             id="every_field_off_schema_reports_all",
@@ -554,17 +572,8 @@ def test_bind_subject_search_marker_without_a_searched_type_falls_back_to_overri
     ],
 )
 def test_validate_evaluations(evaluation, expected_errors):
-    """resource.type is core to every evaluation kind (PRD) - never legitimately omitted, so
-    its absence always flags. action/subject are only checked when their key is present at
-    all: an entirely missing key is a legitimate per-evaluation-kind omission (Action Search
-    omits `action`; everything but Subject Search omits `subject` - SKILL.md), while a key
-    present with an empty or off-schema type/name means the LLM tried and failed to
-    correlate it (TDD 4.8 schema-membership check). context has no vocabulary, only the
-    PRD's shape (TDD 3.2): filters a string, parameters/qualifiers objects, each optional
-    (absent or null), any other key passed through. Every problem is reported, not just
-    the first, so one retry can fix them all.
-    """
-    errors = validate_evaluations(_load_schema_fixture(), [evaluation])
+    """Each part is checked against the schema and policies; context only for its shape."""
+    errors = validate_evaluations(_load_schema_fixture(), [evaluation], _MOCK_POLICIES)
     assert errors == [f"evaluations[0]: {error}" for error in expected_errors]
 
 
@@ -574,135 +583,83 @@ def test_validate_evaluations_indexes_each_evaluation():
         {"action": {"name": "RENT"}, "resource": {"type": "Car"}},
         {"action": {"name": "BUY"}, "resource": {"type": "Car"}},
     ]
-    assert validate_evaluations(_load_schema_fixture(), evaluations) == [
-        "evaluations[1]: action.name 'BUY' is not defined in the data schema",
+    assert validate_evaluations(_load_schema_fixture(), evaluations, _MOCK_POLICIES) == [
+        "evaluations[1]: action.name 'BUY' is not named by any access policy",
     ]
 
 
-def test_validate_evaluations_skips_action_membership_when_schema_has_no_edges():
-    """A schema with nodes but no edges yet leaves action.name unconstrained in the structured
-    output (input_schema._constrain_to_enum no-op) - the post-assembly check must mirror that,
-    or every request with an action would fail against such a schema.
-    """
-    schema = _load_schema_fixture()
-    schema["graph"]["edges"] = []
-    evaluations = [{"action": {"name": "ANYTHING"}, "resource": {"type": "Car"}}]
-    assert validate_evaluations(schema, evaluations) == []
+_MALFORMED_POLICIES = [
+    "oops",
+    {"policy": "oops"},
+    {"policy": {"subject": {"type": "Customer"}, "actions": [123, " "], "resource": {"type": "Car"}}},
+    _policy("Customer", "RENT", "Car"),
+]
+_NOT_NAMED = "is not named by any access policy"
+
+
+@pytest.mark.parametrize(
+    ("policies", "action", "resource_type", "expected_errors"),
+    [
+        pytest.param(_MOCK_POLICIES, "RENT", "Car", [], id="granted"),
+        pytest.param(_MOCK_POLICIES, "WORKS_AT", "Company", [], id="other_granted"),
+        pytest.param(
+            _MOCK_POLICIES,
+            "RENT",
+            "Company",
+            ["Customer -RENT-> Company is not a combination any access policy grants"],
+            id="parts_valid_alone_but_not_together",
+        ),
+        pytest.param(
+            [_policy("Customer", "OWN", "Car")],
+            "RENT",
+            "Car",
+            [f"action.name 'RENT' {_NOT_NAMED}"],
+            id="graph_edge_is_no_action",
+        ),
+        pytest.param(
+            None,
+            "RENT",
+            "Car",
+            [f"resource.type 'Car' {_NOT_NAMED}", f"action.name 'RENT' {_NOT_NAMED}"],
+            id="no_policies_fetched",
+        ),
+        pytest.param(
+            [],
+            "RENT",
+            "Car",
+            [f"resource.type 'Car' {_NOT_NAMED}", f"action.name 'RENT' {_NOT_NAMED}"],
+            id="empty_policies",
+        ),
+        pytest.param(_MALFORMED_POLICIES, "RENT", "Car", [], id="malformed_entries_skipped"),
+        pytest.param(
+            _MALFORMED_POLICIES, "123", "Car", [f"action.name '123' {_NOT_NAMED}"], id="malformed_action_grants_nothing"
+        ),
+        pytest.param(
+            [_policy("Customer", "APPROVE_REFUND", "Stock")],
+            "APPROVE_REFUND",
+            "Stock",
+            [
+                "resource.type 'Stock' is not defined in the data schema",
+                f"action.name 'APPROVE_REFUND' {_NOT_NAMED}",
+            ],
+            id="policy_over_type_the_schema_lacks",
+        ),
+    ],
+)
+def test_validate_evaluations_against_policies(policies, action, resource_type, expected_errors):
+    evaluations = [{"action": {"name": action}, "resource": {"type": resource_type}}]
+    errors = validate_evaluations(_load_schema_fixture(), evaluations, policies, caller_type="Customer")
+    assert errors == [f"evaluations[0]: {error}" for error in expected_errors]
 
 
 def test_validate_evaluations_tolerates_malformed_schema_sections():
-    """Non-dict nodes / non-list edges must read as an empty vocabulary (no membership check),
-    not crash - same tolerance as input_schema.build_input_schema.
-    """
+    """A malformed graph reads as an empty schema, not a crash."""
     schema = {"graph": {"nodes": "oops", "edges": {"also": "oops"}}}
     evaluations = [{"action": {"name": "RENT"}, "resource": {"type": "Car"}}]
-    assert validate_evaluations(schema, evaluations) == []
-
-
-def test_validate_evaluations_ignores_non_string_relations():
-    """A malformed relation (a number, an empty string) is not part of the action vocabulary -
-    the same rule input_schema applies when building the enum, so the two never disagree.
-    """
-    schema = _load_schema_fixture()
-    schema["graph"]["edges"] = [{"relation": 123}, {"relation": ""}, {"relation": "RENT"}]
-    evaluations = [
-        {"action": {"name": "RENT"}, "resource": {"type": "Car"}},
-        {"action": {"name": "123"}, "resource": {"type": "Car"}},
+    assert validate_evaluations(schema, evaluations, _MOCK_POLICIES) == [
+        "evaluations[0]: resource.type 'Car' is not defined in the data schema",
+        "evaluations[0]: action.name 'RENT' is not named by any access policy",
     ]
-    assert validate_evaluations(schema, evaluations) == [
-        "evaluations[1]: action.name '123' is not defined in the data schema",
-    ]
-
-
-_CAR_POLICY = [{"policy": {"actions": ["APPROVE_REFUND"], "resource": {"type": "Car"}}}]
-
-
-_POLICY_ACTION_ERROR = "evaluations[0]: action.name 'APPROVE_REFUND' is not defined in the data schema"
-
-
-@pytest.mark.parametrize(
-    ("resource_type", "marked", "expected_errors"),
-    [
-        pytest.param("Car", True, [], id="marked_matching_resource_accepted"),
-        pytest.param("Car", False, [_POLICY_ACTION_ERROR], id="unmarked_rejected_like_any_off_schema_value"),
-        pytest.param("Company", True, [_POLICY_ACTION_ERROR], id="marked_but_wrong_resource_type_rejected"),
-    ],
-)
-def test_validate_evaluations_policy_derived_action(resource_type, marked, expected_errors):
-    """A policy-only action name (not a schema edge relation, ENG-9671) is valid only when the
-    evaluation carries context.parameters.action_derivation_rule = "policy_based" *and* the
-    policy's resource.type matches this evaluation's resource.type - either condition missing
-    falls back to the same off-schema rejection as any other unrecognized action.name.
-    """
-    evaluation = {"action": {"name": "APPROVE_REFUND"}, "resource": {"type": resource_type}}
-    if marked:
-        evaluation["context"] = {"parameters": {"action_derivation_rule": "policy_based"}}
-    assert validate_evaluations(_load_schema_fixture(), [evaluation], _CAR_POLICY) == expected_errors
-
-
-def test_validate_evaluations_still_accepts_schema_edges_when_policies_are_present():
-    """A schema edge relation is valid whether marked or not, exactly as before ENG-9671 -
-    fetched policies only ever widen the vocabulary, never narrow the existing one.
-    """
-    evaluations = [{"action": {"name": "RENT"}, "resource": {"type": "Car"}}]
-    assert validate_evaluations(_load_schema_fixture(), evaluations, _CAR_POLICY) == []
-
-
-_EMPTY_SCHEMA_POLICY = [{"policy": {"actions": ["APPROVE_REFUND"], "resource": {"type": "_Application"}}}]
-_EMPTY_SCHEMA_POLICY_WRONG_RESOURCE = [
-    {"policy": {"actions": ["APPROVE_REFUND"], "resource": {"type": "OtherResource"}}}
-]
-_EMPTY_SCHEMA_POLICY_ACTION_ERROR = "evaluations[0]: action.name 'APPROVE_REFUND' is not defined in the data schema"
-
-
-@pytest.mark.parametrize(
-    ("policies", "marked", "expected_errors"),
-    [
-        pytest.param(_EMPTY_SCHEMA_POLICY, True, [], id="marked_matching_resource_accepted"),
-        pytest.param(
-            _EMPTY_SCHEMA_POLICY,
-            False,
-            [_EMPTY_SCHEMA_POLICY_ACTION_ERROR],
-            id="unmarked_rejected_even_with_no_schema_edges",
-        ),
-        pytest.param(
-            _EMPTY_SCHEMA_POLICY_WRONG_RESOURCE,
-            True,
-            [_EMPTY_SCHEMA_POLICY_ACTION_ERROR],
-            id="marked_but_wrong_resource_type_rejected",
-        ),
-        pytest.param(None, False, [], id="no_policies_at_all_stays_unconstrained"),
-        pytest.param([], False, [], id="empty_policies_list_stays_unconstrained"),
-    ],
-)
-def test_validate_evaluations_empty_edges_still_enforces_policy_membership(policies, marked, expected_errors):
-    """A schema with no edges at all (a real IndyKite environment with no data model yet - see
-    _load_empty_schema_fixture) used to leave action.name entirely unconstrained: _vocabulary_
-    reason's own "nothing to check against" rule for an empty edge_relations set returned None
-    for any non-blank name, bypassing the policy/marker check below it. Once policies are
-    fetched, that carve-out must not apply any more - an unmarked (or wrong-resource) policy
-    action must still be rejected exactly like it would be against a schema that does have
-    edges (test_validate_evaluations_policy_derived_action). The last two cases prove the
-    pre-ENG-9671 behavior survives intact when there is truly no vocabulary to check against
-    (no policies at all, fetched or not): the carve-out this fix narrows is "nothing to check
-    against", not "policies happen to be absent". resource.type is fixed to the one real node
-    type this fixture has (_Application) throughout, so only the policy's own scoping - not the
-    unrelated resource.type-vocabulary check - varies between cases.
-    """
-    evaluation = {"action": {"name": "APPROVE_REFUND"}, "resource": {"type": "_Application"}}
-    if marked:
-        evaluation["context"] = {"parameters": {"action_derivation_rule": "policy_based"}}
-    assert validate_evaluations(_load_empty_schema_fixture(), [evaluation], policies) == expected_errors
-
-
-@pytest.mark.parametrize("policies", [None, []], ids=["fetch_failed", "no_policies"])
-def test_validate_evaluations_skips_the_relationship_check_without_any_relationship_vocabulary(policies):
-    """With no edges and no policies the action is legitimately unconstrained (the carve-out
-    above), so the caller-relationship check must not run and fail every caller-bound action -
-    that would turn a nodes-only schema, or a policy fetch outage on one, into a refusal.
-    """
-    evaluation = {"action": {"name": "APPROVE_REFUND"}, "resource": {"type": "_Application"}}
-    assert validate_evaluations(_load_empty_schema_fixture(), [evaluation], policies, caller_type="_Application") == []
 
 
 def test_validation_feedback_error_lists_every_error_in_fixed_shape():
@@ -728,19 +685,22 @@ def test_validation_feedback_error_separates_schema_and_shape_problems():
     shape_error = "evaluations[0]: context.filters is not a string"
     reason = validation_feedback_error("buy AAPL", [shape_error, schema_error, blank_error])["reason"]
     assert (
-        reason.index("Values not matched to the data schema:") < reason.index(schema_error) < reason.index(blank_error)
+        reason.index("Values not matched to the data schema or access policies:")
+        < reason.index(schema_error)
+        < reason.index(blank_error)
     )
     assert reason.index(blank_error) < reason.index("Malformed shape:") < reason.index(shape_error)
 
     only_shape = validation_feedback_error("buy AAPL", [shape_error])["reason"]
-    assert "Values not matched to the data schema:" not in only_shape
+    assert "Values not matched to the data schema or access policies:" not in only_shape
     assert "Malformed shape:" in only_shape
 
 
 @pytest.mark.parametrize(
     ("value", "suffix"),
     [
-        pytest.param("BUY", SCHEMA_MEMBERSHIP_SUFFIX, id="off_schema"),
+        pytest.param("Stock", SCHEMA_MEMBERSHIP_SUFFIX, id="off_schema"),
+        pytest.param("Company", POLICY_MEMBERSHIP_SUFFIX, id="off_policy"),
         pytest.param("", SCHEMA_BLANK_SUFFIX, id="blank"),
         pytest.param("   ", SCHEMA_BLANK_SUFFIX, id="whitespace"),
         pytest.param(None, SCHEMA_BLANK_SUFFIX, id="missing"),
@@ -751,24 +711,40 @@ def test_vocabulary_reason_ends_with_the_shared_schema_suffix(value, suffix):
     the producer must keep emitting exactly the shared constants - this pins that contract
     from the producer side, where a rewording would otherwise slip past the grouping test.
     """
-    reason = _vocabulary_reason("action.name", value, {"RENT"})
+    reason = _vocabulary_reason("resource.type", value, {"Car", "Company"}, {"Car"})
     assert reason is not None
     assert reason.endswith(suffix)
-    assert _vocabulary_reason("action.name", "RENT", {"RENT"}) is None
+    assert _vocabulary_reason("resource.type", "Car", {"Car", "Company"}, {"Car"}) is None
+
+
+_RATING = {"explanation": "RENT on Car is the caller's policy for renting.", "confidence": "high"}
+
+
+def _rated(llm_text):
+    """`llm_text` with _RATING added to an unrated {evaluations} answer; anything else unchanged."""
+    try:
+        data = json.loads(llm_text)
+    except (TypeError, json.JSONDecodeError):
+        return llm_text
+    if not isinstance(data, dict) or "evaluations" not in data or not _RATING.keys().isdisjoint(data):
+        return llm_text
+    return json.dumps({**data, **_RATING})
 
 
 def _normalize(llm_text, prompt="rent kitt", *, subject=None, policy_context=None):
-    """normalize_intent_response against the fixture schema with the usual test subject and,
-    by default, no policies fetched at all (as opposed to a fetch that failed - see
-    PolicyContext.fetch_failed) - most tests here don't care about ENG-9671 at all.
-    """
+    """normalize_intent_response against the fixture schema, the usual caller and _MOCK_POLICIES."""
     return normalize_intent_response(
-        llm_text,
+        _rated(llm_text),
         prompt,
         schema=_load_schema_fixture(),
         subject=subject or RequestSubject(id="user-1", type="Customer"),
-        policy_context=policy_context or PolicyContext(policies=None, fetch_failed=False),
+        policy_context=policy_context or PolicyContext(policies=_MOCK_POLICIES, fetch_failed=False),
     )
+
+
+def _stamped(context):
+    """`context` with the policy_based marker the system adds to every evaluation."""
+    return {**context, "parameters": {**context.get("parameters", {}), "action_derivation_rule": "policy_based"}}
 
 
 def test_normalize_intent_response_raises_when_resource_type_unresolved():
@@ -789,7 +765,7 @@ def test_normalize_intent_response_raises_when_values_off_schema():
         _normalize(_OFF_SCHEMA_ANSWER, "buy AAPL")
     assert excinfo.value.errors == [
         "evaluations[0]: resource.type 'Stock' is not defined in the data schema",
-        "evaluations[0]: action.name 'BUY' is not defined in the data schema",
+        "evaluations[0]: action.name 'BUY' is not named by any access policy",
     ]
 
 
@@ -835,19 +811,14 @@ def test_normalize_intent_response_binds_subject_end_to_end():
 
 
 def test_normalize_intent_response_keeps_subject_search_type_end_to_end():
-    """A Subject Search comes out of the whole pipeline with the LLM's subject.type kept and no
-    id, although the caller (_normalize's "user-1") has one, and without the marker: it is the
-    model's instruction to the binding, consumed there, and a `parameters` it leaves empty goes
-    with it (the golden answer for a search is a plain `{}` context).
-    """
-    llm_text = json.dumps({"evaluations": [_subject_search_evaluation({"type": "Company"})]})
+    llm_text = json.dumps({"evaluations": [_subject_search_evaluation({"type": "Customer"})]})
     data = json.loads(_normalize(llm_text, "who can rent kitt?"))
     assert data["evaluations"] == [
         {
-            "subject": {"type": "Company"},
+            "subject": {"type": "Customer"},
             "action": {"name": "RENT"},
             "resource": {"type": "Car", "id": "kitt"},
-            "context": {},
+            "context": _stamped({}),
         },
     ]
 
@@ -862,23 +833,15 @@ def test_normalize_intent_response_still_validates_a_subject_search_type_against
     assert excinfo.value.errors == ["evaluations[0]: subject.type 'Martian' is not defined in the data schema"]
 
 
-def test_normalize_intent_response_accepts_a_marked_policy_derived_action_end_to_end():
-    """A policy-only action, marked action_derivation_rule="policy_based", passes validation
-    and the marker survives in the response's context.parameters unchanged (ENG-9671) - the
-    same passthrough treatment as every other context.parameters entry.
-    """
+def test_normalize_intent_response_accepts_a_policy_action_end_to_end():
     llm_text = json.dumps(
         {
             "evaluations": [
-                {
-                    "action": {"name": "APPROVE_REFUND"},
-                    "resource": {"type": "Car", "id": "kitt"},
-                    "context": {"parameters": {"action_derivation_rule": "policy_based"}},
-                },
+                {"action": {"name": "APPROVE_REFUND"}, "resource": {"type": "Car", "id": "kitt"}},
             ],
         },
     )
-    policy_context = PolicyContext(policies=_CAR_POLICY, fetch_failed=False)
+    policy_context = PolicyContext(policies=[_policy("Customer", "APPROVE_REFUND", "Car")], fetch_failed=False)
     data = json.loads(_normalize(llm_text, "approve a refund for kitt", policy_context=policy_context))
     assert data["evaluations"][0]["action"] == {"name": "APPROVE_REFUND"}
     assert data["evaluations"][0]["context"]["parameters"]["action_derivation_rule"] == "policy_based"
@@ -907,7 +870,7 @@ def test_normalize_intent_response_policy_fetch_failed_marker(fetch_failed, llm_
     if parameters:
         evaluation["context"] = {"parameters": parameters}
     llm_text = json.dumps({"evaluations": [evaluation]})
-    policy_context = PolicyContext(policies=None, fetch_failed=fetch_failed)
+    policy_context = PolicyContext(policies=_MOCK_POLICIES, fetch_failed=fetch_failed)
     data = json.loads(_normalize(llm_text, policy_context=policy_context))
     result_parameters = data["evaluations"][0].get("context", {}).get("parameters", {})
     if expected_marker is None:
@@ -941,11 +904,13 @@ def test_normalize_intent_response_passes_context_through_verbatim():
         },
     )
     data = json.loads(_normalize(llm_text, "decisions about refunds"))
-    assert data["evaluations"][0]["context"] == {
-        "parameters": {"attribute": "current_price"},
-        "filters": filters,
-        "qualifiers": {"time": "this afternoon", "location": "London office"},
-    }
+    assert data["evaluations"][0]["context"] == _stamped(
+        {
+            "parameters": {"attribute": "current_price"},
+            "filters": filters,
+            "qualifiers": {"time": "this afternoon", "location": "London office"},
+        }
+    )
 
 
 @pytest.mark.parametrize(
@@ -976,7 +941,7 @@ def test_normalize_intent_response_settles_context_into_prd_shape(context_json, 
     evaluation = '{"action": {"name": "RENT"}, "resource": {"type": "Car", "id": "kitt"}'
     evaluation += "}" if context_json is None else f', "context": {context_json}}}'
     data = json.loads(_normalize(f'{{"prompt": "rent kitt", "evaluations": [{evaluation}]}}'))
-    assert data["evaluations"][0]["context"] == expected_context
+    assert data["evaluations"][0]["context"] == _stamped(expected_context)
 
 
 def test_extract_intent_skill_documents_every_context_sub_shape():
@@ -1021,22 +986,49 @@ def test_normalize_intent_response_echoes_original_prompt_verbatim():
 
 def test_normalize_intent_response_strips_json_code_fence():
     """A ```json-fenced LLM response must be unwrapped before parsing."""
-    data = json.loads(_normalize(f"```json\n{_ON_SCHEMA_ANSWER}\n```"))
+    data = json.loads(_normalize(f"```json\n{_rated(_ON_SCHEMA_ANSWER)}\n```"))
     assert data["evaluations"][0]["subject"] == {"type": "Customer", "id": "user-1"}
 
 
-def test_normalize_intent_response_handles_bare_evaluations_array():
-    """A bare JSON array (LLM forgot the {"prompt", "evaluations"} wrapper) must be used as the
-    evaluations list directly, not nested as a single non-dict evaluation that gets dropped.
-    """
-    llm_text = (
-        '[{"action": {"name": "RENT"}, "resource": {"type": "Car", "id": "kitt"}}, '
-        '{"action": {"name": "OWN"}, "resource": {"type": "Car", "id": "kitt"}}]'
+_RENT_KITT = {"action": {"name": "RENT"}, "resource": {"type": "Car", "id": "kitt"}}
+_NO_CONFIDENCE = "confidence is missing or not one of high, medium, low"
+_NO_EXPLANATION = "explanation is missing or blank"
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected_errors"),
+    [
+        pytest.param({"evaluations": [_RENT_KITT], "explanation": "x"}, [_NO_CONFIDENCE], id="no_confidence"),
+        pytest.param(
+            {"evaluations": [_RENT_KITT], "explanation": "x", "confidence": "certain"},
+            [_NO_CONFIDENCE],
+            id="confidence_off_vocabulary",
+        ),
+        pytest.param({"evaluations": [_RENT_KITT], "confidence": "high"}, [_NO_EXPLANATION], id="no_explanation"),
+        pytest.param(
+            {"evaluations": [_RENT_KITT], "confidence": "low", "explanation": "  "},
+            [_NO_EXPLANATION],
+            id="blank_explanation",
+        ),
+        pytest.param([_RENT_KITT], [_NO_CONFIDENCE, _NO_EXPLANATION], id="bare_evaluations_array"),
+    ],
+)
+def test_normalize_intent_response_requires_the_models_rating(answer, expected_errors):
+    with pytest.raises(IntentValidationError) as excinfo:
+        _normalize(json.dumps(answer))
+    assert excinfo.value.errors == expected_errors
+
+
+def test_normalize_intent_response_never_returns_the_rating():
+    llm_text = json.dumps(
+        {"evaluations": [_RENT_KITT], "explanation": "  RENT on Car stands in for hire.  ", "confidence": "medium"}
     )
-    data = json.loads(_normalize(llm_text, "rent or own kitt"))
-    assert data["prompt"] == "rent or own kitt"
-    assert len(data["evaluations"]) == _EXPECTED_BARE_ARRAY_EVALUATION_COUNT
-    assert all(e["subject"] == {"type": "Customer", "id": "user-1"} for e in data["evaluations"])
+    assert list(json.loads(_normalize(llm_text, "hire kitt"))) == ["prompt", "evaluations"]
+    assert rating(llm_text) == ("medium", "RENT on Car stands in for hire.")
+
+
+def test_normalize_intent_response_an_empty_answer_needs_no_rating():
+    assert json.loads(_normalize('{"evaluations": []}', "p")) == no_intent_error("p")
 
 
 def test_normalize_intent_response_errors_on_empty_evaluations():
@@ -1199,7 +1191,7 @@ def test_run_extraction_binds_structured_output_schema_derived_from_current_sche
     mock_bind_tools = mocker.Mock(return_value=fake_bound_llm)
     fake_llm = mocker.Mock(bind_tools=mock_bind_tools)
     fake_schema_client = _fake_schema_client(mocker, get_cached=mocker.Mock(return_value=schema))
-    fake_policy_client = _fake_policy_client(mocker, get_cached=mocker.Mock(return_value=([], False)))
+    fake_policy_client = _fake_policy_client(mocker, get_cached=mocker.Mock(return_value=(_MOCK_POLICIES, False)))
     agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client, policy_client=fake_policy_client)
 
     asyncio.run(agent.run_extraction("buy AAPL", RequestSubject(id="user-1", type="Customer")))
@@ -1209,20 +1201,17 @@ def test_run_extraction_binds_structured_output_schema_derived_from_current_sche
     assert {t.name for t in call.args[0]} == {"activate_skill", "get_data_schema", "get_policies"}
     assert call.kwargs == {
         "response_mime_type": "application/json",
-        "response_schema": build_input_schema(schema, []),
+        "response_schema": build_input_schema(schema, _MOCK_POLICIES),
     }
 
 
 def test_run_extraction_rebuilds_schema_when_cached_schema_changes_between_requests(monkeypatch, mocker):
-    """TDD 4.6: the structured-output schema must be derived "each time it reloads" - not
-    fixed once (e.g. at __init__ or on the first request). Proven here by having get_cached()
-    return a DIFFERENT schema on the second call and checking bind_tools' second call reflects
-    it; a schema fixed at construction time would bind the first schema both times.
-    """
+    """The response schema is rebuilt from each request's schema (TDD 4.6), not fixed at startup."""
     settings = _full_settings(monkeypatch)
     schema_v1 = _load_schema_fixture()
     schema_v2 = json.loads(json.dumps(schema_v1))  # deep copy, safe to mutate independently
     schema_v2["graph"]["nodes"]["Boat"] = schema_v2["graph"]["nodes"]["Car"]
+    policies = [*_MOCK_POLICIES, _policy("Customer", "RENT", "Boat")]
 
     fake_response = mocker.Mock(text="ok", content="ok", tool_calls=[])
     mock_ainvoke = mocker.AsyncMock(return_value=fake_response)
@@ -1230,7 +1219,7 @@ def test_run_extraction_rebuilds_schema_when_cached_schema_changes_between_reque
     mock_bind_tools = mocker.Mock(return_value=fake_bound_llm)
     fake_llm = mocker.Mock(bind_tools=mock_bind_tools)
     fake_schema_client = _fake_schema_client(mocker, get_cached=mocker.Mock(side_effect=[schema_v1, schema_v2]))
-    fake_policy_client = _fake_policy_client(mocker, get_cached=mocker.Mock(return_value=([], False)))
+    fake_policy_client = _fake_policy_client(mocker, get_cached=mocker.Mock(return_value=(policies, False)))
     agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client, policy_client=fake_policy_client)
 
     asyncio.run(agent.run_extraction("buy AAPL", RequestSubject(id="user-1", type="Customer")))
@@ -1238,8 +1227,8 @@ def test_run_extraction_rebuilds_schema_when_cached_schema_changes_between_reque
 
     first_call_schema = mock_bind_tools.call_args_list[0].kwargs["response_schema"]
     second_call_schema = mock_bind_tools.call_args_list[1].kwargs["response_schema"]
-    assert first_call_schema == build_input_schema(schema_v1)
-    assert second_call_schema == build_input_schema(schema_v2)
+    assert first_call_schema == build_input_schema(schema_v1, policies)
+    assert second_call_schema == build_input_schema(schema_v2, policies)
     assert first_call_schema != second_call_schema
 
 
@@ -1291,8 +1280,37 @@ def test_run_extraction_fails_before_any_llm_call(monkeypatch, mocker, caplog, c
         assert log_detail not in result.text
 
 
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(
+            (None, True, "Policy fetch failed for subject_type 'Customer' and no policies"), id="fetch_failed"
+        ),
+        pytest.param(([], False, "No access policies exist for subject_type 'Customer'"), id="none_exist"),
+    ],
+)
+def test_run_extraction_refuses_without_usable_policies(monkeypatch, mocker, caplog, case):
+    fetched, fetch_failed, log_detail = case
+    caplog.set_level("WARNING")
+    settings = _full_settings(monkeypatch)
+    mock_ainvoke = mocker.AsyncMock()
+    fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mock_ainvoke)))
+    fake_schema_client = _fake_schema_client(mocker, get_cached=mocker.Mock(return_value=_load_schema_fixture()))
+    fake_policy_client = _fake_policy_client(mocker, get_cached=mocker.Mock(return_value=(fetched, fetch_failed)))
+    agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client, policy_client=fake_policy_client)
+
+    result = asyncio.run(agent.run_extraction("rent kitt", RequestSubject(id="user-1", type="Customer")))
+
+    assert json.loads(result.text) == policy_unavailable_error("rent kitt")
+    assert result.outcome == Outcome.ERROR
+    assert result.policy_fetch_failed is fetch_failed
+    mock_ainvoke.assert_not_called()
+    assert any(record.levelname == "WARNING" and log_detail in record.getMessage() for record in caplog.records)
+
+
 def _llm_response(mocker, text="", tool_calls=()):
-    """A fake LLM response: plain text, optionally with tool calls to dispatch first."""
+    """A fake LLM response; an {evaluations} answer gets _RATING."""
+    text = _rated(text)
     return mocker.Mock(text=text, content=text, tool_calls=list(tool_calls))
 
 
@@ -1308,19 +1326,17 @@ def _agent_with_responses(monkeypatch, mocker, responses, **env):
     mock_ainvoke = mocker.AsyncMock(side_effect=responses)
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mock_ainvoke)))
     fake_schema_client = _fake_schema_client(mocker, get_cached=mocker.Mock(return_value=_load_schema_fixture()))
-    # No policies by default (a successful fetch that found none, not a failure) - a real
-    # PolicyClient would otherwise hit the real network against the fake base_url on every
-    # run_extraction-level test here, and incidentally tag every evaluation
-    # policy_fetch_failed=True, which is its own dedicated test's concern, not this fixture's.
-    fake_policy_client = _fake_policy_client(mocker, get_cached=mocker.Mock(return_value=([], False)))
+    # A fake client, so no real network call; without policies every request would be refused.
+    fake_policy_client = _fake_policy_client(mocker, get_cached=mocker.Mock(return_value=(_MOCK_POLICIES, False)))
     return (
         IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client, policy_client=fake_policy_client),
         mock_ainvoke,
     )
 
 
-def test_run_extraction_returns_bound_evaluations_when_first_answer_is_on_schema(monkeypatch, mocker):
-    """The happy path: skill activation, one on-schema answer, subject bound - no retry spent."""
+def test_run_extraction_returns_bound_evaluations_when_first_answer_is_on_schema(monkeypatch, mocker, caplog):
+    """The happy path: one answer, subject bound, rating logged but not returned."""
+    caplog.set_level("DEBUG")
     agent, mock_ainvoke = _agent_with_responses(
         monkeypatch,
         mocker,
@@ -1338,6 +1354,9 @@ def test_run_extraction_returns_bound_evaluations_when_first_answer_is_on_schema
     assert result.validation_retries == 0
     assert result.schema_version == schema_version(_load_schema_fixture())
     assert result.message == ""
+    assert (result.confidence, result.explanation) == (_RATING["confidence"], _RATING["explanation"])
+    assert "confidence" not in data
+    assert f"Extraction confidence high for prompt 'rent kitt': {_RATING['explanation']}" in caplog.text
 
 
 def test_run_extraction_retries_with_feedback_when_answer_is_off_schema(monkeypatch, mocker, caplog):
@@ -1363,7 +1382,7 @@ def test_run_extraction_retries_with_feedback_when_answer_is_off_schema(monkeypa
         "action": {"name": "RENT"},
         "resource": {"type": "Car", "id": "kitt"},
         "subject": {"type": "Customer", "id": "user-1"},
-        "context": {},
+        "context": _stamped({}),
     }
     assert result.outcome == Outcome.SUCCESS
     assert result.validation_retries == 1
@@ -1375,7 +1394,7 @@ def test_run_extraction_retries_with_feedback_when_answer_is_off_schema(monkeypa
         "buy AAPL",
         [
             "evaluations[0]: resource.type 'Stock' is not defined in the data schema",
-            "evaluations[0]: action.name 'BUY' is not defined in the data schema",
+            "evaluations[0]: action.name 'BUY' is not named by any access policy",
         ],
     )
     assert "attempt 1/2 failed validation" in caplog.text
@@ -1531,25 +1550,11 @@ def test_run_extraction_short_circuits_repeat_skill_activation(monkeypatch, mock
     assert caplog.text.count("Activating skill: extract-intent") == 1
 
 
-@pytest.mark.parametrize(
-    ("cached_policies", "expect_block"),
-    [
-        pytest.param(
-            [{"policy": {"actions": ["APPROVE_REFUND"], "resource": {"type": "Car"}}, "tags": []}],
-            True,
-            id="policies_fetched_injects_the_block",
-        ),
-        pytest.param([], False, id="none_fetched_omits_the_block"),
-    ],
-)
-def test_run_extraction_policies_block_injection_on_skill_activation(
-    monkeypatch, mocker, cached_policies, expect_block
-):
-    """extract-intent's activation must inject a <policies> block alongside <data_schema> when
-    policies were fetched for this request (ENG-9671) - the LLM's other source for action.name -
-    and must not inject an empty/misleading block when none were fetched (a failed fetch or a
-    project with none at all), falling back to schema-only action derivation as before ENG-9671.
-    """
+def test_run_extraction_policies_block_injection_on_skill_activation(monkeypatch, mocker):
+    cypher = "MATCH (subject:Customer)-[:OWN]->(resource:Car) WHERE resource.model = 'refundable'"
+    refund_policy = _policy("Customer", "APPROVE_REFUND", "Car")
+    refund_policy["policy"]["condition"] = {"cypher": cypher}
+    cached_policies = [*_MOCK_POLICIES, refund_policy]
     settings = _full_settings(monkeypatch)
     mock_ainvoke = mocker.AsyncMock(
         side_effect=[
@@ -1571,11 +1576,10 @@ def test_run_extraction_policies_block_injection_on_skill_activation(
 
     messages = mock_ainvoke.call_args_list[-1].args[0]
     tool_results = [m.content for m in messages if isinstance(m, ToolMessage)]
-    if expect_block:
-        assert any("<policies>" in result and "APPROVE_REFUND" in result for result in tool_results)
-        assert any("policy_based" in result for result in tool_results)
-    else:
-        assert not any("</policies>" in result for result in tool_results)
+    activation = next(result for result in tool_results if "<policies>" in result)
+    assert "- Customer -APPROVE_REFUND-> Car" in activation
+    assert json.dumps(cypher)[1:-1] in activation
+    assert "condition.cypher" in activation
 
 
 def test_run_extraction_marks_policy_fetch_failed_when_serving_stale_policies(monkeypatch, mocker):
@@ -1588,7 +1592,7 @@ def test_run_extraction_marks_policy_fetch_failed_when_serving_stale_policies(mo
     on both, driven by the explicit flag PolicyClient.get_cached() returns instead.
     """
     settings = _full_settings(monkeypatch)
-    stale_policies = [{"policy": {"actions": ["APPROVE_REFUND"], "resource": {"type": "Car"}}, "tags": []}]
+    stale_policies = _MOCK_POLICIES
     mock_ainvoke = mocker.AsyncMock(
         side_effect=[
             _llm_response(mocker, tool_calls=[_ACTIVATE_EXTRACT_INTENT_CALL]),
@@ -1627,8 +1631,8 @@ def test_run_extraction_reuses_one_policy_snapshot_for_the_whole_request(monkeyp
     )
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mock_ainvoke)))
     fake_schema_client = _fake_schema_client(mocker, get_cached=mocker.Mock(return_value=_load_schema_fixture()))
-    first_fetch_policies = [{"policy": {"actions": ["APPROVE_REFUND"], "resource": {"type": "Car"}}, "tags": []}]
-    second_fetch_policies = [{"policy": {"actions": ["ESCALATE"], "resource": {"type": "Car"}}, "tags": []}]
+    first_fetch_policies = [*_MOCK_POLICIES, _policy("Customer", "APPROVE_REFUND", "Car")]
+    second_fetch_policies = [*_MOCK_POLICIES, _policy("Customer", "ESCALATE", "Car")]
     fake_policy_client = _fake_policy_client(
         mocker, get_cached=mocker.Mock(side_effect=[(first_fetch_policies, False), (second_fetch_policies, False)])
     )
@@ -1672,7 +1676,7 @@ def test_run_extraction_reuses_one_schema_snapshot_for_the_whole_request(monkeyp
     fake_schema_client = _fake_schema_client(
         mocker, get_cached=mocker.Mock(side_effect=[first_fetch_schema, second_fetch_schema])
     )
-    fake_policy_client = _fake_policy_client(mocker, get_cached=mocker.Mock(return_value=([], False)))
+    fake_policy_client = _fake_policy_client(mocker, get_cached=mocker.Mock(return_value=(_MOCK_POLICIES, False)))
     agent = IntentAgent(settings, llm=fake_llm, schema_client=fake_schema_client, policy_client=fake_policy_client)
 
     asyncio.run(agent.run_extraction("rent kitt", RequestSubject(id="user-1", type="Customer")))
@@ -2026,7 +2030,7 @@ def test_normalize_intent_response_lifts_a_pure_external_id_filter_into_the_reso
     )
     data = json.loads(_normalize(llm_text, "can I rent kitt?"))
     assert data["evaluations"][0]["resource"] == {"type": "Car", "id": "kitt"}
-    assert data["evaluations"][0]["context"] == {}
+    assert data["evaluations"][0]["context"] == _stamped({})
 
 
 @pytest.mark.parametrize(
@@ -2055,7 +2059,7 @@ def test_normalize_intent_response_lifts_an_identifier_hedged_across_properties(
     )
     data = json.loads(_normalize(llm_text, "can I rent kitt?"))
     assert data["evaluations"][0]["resource"] == {"type": "Car", "id": "kitt"}
-    assert data["evaluations"][0]["context"] == {}
+    assert data["evaluations"][0]["context"] == _stamped({})
 
 
 def test_normalize_intent_response_rejects_a_filter_reading_a_property_the_type_lacks():
@@ -2098,7 +2102,7 @@ def test_normalize_intent_response_allows_a_filter_on_the_authzen_resource_field
         },
     )
     data = json.loads(_normalize(llm_text, "can I rent kitt?"))
-    assert data["evaluations"][0]["context"] == {"filters": "resource.type == 'Car' && resource.year > 1960"}
+    assert data["evaluations"][0]["context"] == _stamped({"filters": "resource.type == 'Car' && resource.year > 1960"})
 
 
 @pytest.mark.parametrize(
@@ -2126,7 +2130,7 @@ def test_normalize_intent_response_leaves_every_other_filter_alone(resource, fil
     )
     data = json.loads(_normalize(llm_text, "cars"))
     assert data["evaluations"][0]["resource"] == resource
-    assert data["evaluations"][0]["context"] == {"filters": filters}
+    assert data["evaluations"][0]["context"] == _stamped({"filters": filters})
 
 
 def test_activate_skill_injects_the_schema_vocabulary_summary_not_the_raw_jgf(monkeypatch, mocker, baseline_env):
@@ -2179,8 +2183,11 @@ def test_normalize_intent_response_drops_literal_duplicate_evaluations_only():
     }
     llm_text = json.dumps({"evaluations": [same, different, same]})
     data = json.loads(_normalize(llm_text, "can I rent kitt?"))
-    bound = {**same, "subject": {"type": "Customer", "id": "user-1"}}
-    assert data["evaluations"] == [bound, {**different, "subject": {"type": "Customer", "id": "user-1"}}]
+    caller = {"type": "Customer", "id": "user-1"}
+    assert data["evaluations"] == [
+        {**same, "subject": caller, "context": _stamped(same["context"])},
+        {**different, "subject": caller, "context": _stamped(different["context"])},
+    ]
 
 
 @pytest.mark.parametrize("blank", ["", "   ", None])
@@ -2323,27 +2330,54 @@ def test_run_extraction_injects_the_skill_for_an_unactivated_bare_array_answer(m
     assert mock_ainvoke.call_count == _LLM_CALLS_TO_FIRST_ANSWER
 
 
+_ACCESS_CUSTOMERS = [*_MOCK_POLICIES, _policy("Customer", "CAN_ACCESS", "Customer")]
+
+
 def test_normalize_intent_response_completes_a_second_subjects_type_from_the_gate():
-    """The model writes the second subject as an id alone; the gate at evaluations[0] already
-    names that identity with its type, so the type is completed from it and the marked
-    evaluation keeps its subject - instead of failing validation on a blank subject.type.
-    """
+    """A second subject given only an id gets its type from the gate."""
     llm_text = json.dumps(
         {
             "evaluations": [
-                {"action": {"name": "WORKS_AT"}, "resource": {"type": "Company", "id": "acme"}, "context": {}},
+                {"action": {"name": "CAN_ACCESS"}, "resource": {"type": "Customer", "id": "alison"}, "context": {}},
                 {
-                    "subject": {"id": "acme"},
-                    "action": {"name": "OWN"},  # Company -OWN-> Car: the second subject's own edge
+                    "subject": {"id": "alison"},
+                    "action": {"name": "RENT"},
                     "resource": {"type": "Car", "id": "kitt"},
                     "context": {"parameters": {"subject_source": "prompt"}},
                 },
             ],
         },
     )
-    data = json.loads(_normalize(llm_text, "does acme own kitt?"))
+    policy_context = PolicyContext(policies=_ACCESS_CUSTOMERS, fetch_failed=False)
+    data = json.loads(_normalize(llm_text, "can alison rent kitt?", policy_context=policy_context))
     assert data["evaluations"][0]["subject"] == {"type": "Customer", "id": "user-1"}
-    assert data["evaluations"][1]["subject"] == {"type": "Company", "id": "acme"}
+    assert data["evaluations"][1]["subject"] == {"type": "Customer", "id": "alison"}
+    assert data["evaluations"][1]["context"] == _stamped({"parameters": {"depends_on_previous_evaluations": True}})
+
+
+@pytest.mark.parametrize(
+    ("parameters", "expected_context"),
+    [
+        pytest.param({"depends_on_previous_evaluations": True}, {}, id="marker_alone"),
+        pytest.param({"depends_on_previous_evaluations": True, "k": 1}, {"parameters": {"k": 1}}, id="with_others"),
+    ],
+)
+def test_normalize_intent_response_drops_the_dependency_marker_on_the_first_evaluation(parameters, expected_context):
+    first = {"action": {"name": "RENT"}, "resource": {"type": "Car"}, "context": {"parameters": parameters}}
+    later = {**first, "action": {"name": "OWN"}}
+    data = json.loads(_normalize(json.dumps({"evaluations": [first, later]}), "cars"))
+    assert [evaluation["context"] for evaluation in data["evaluations"]] == [
+        _stamped(expected_context),
+        _stamped({"parameters": parameters}),
+    ]
+
+
+def test_normalize_intent_response_drops_a_dependent_hop_that_repeats_the_one_before():
+    folder = {"action": {"name": "RENT"}, "resource": {"type": "Car"}, "context": {}}
+    repeat = {**folder, "context": {"parameters": {"depends_on_previous_evaluations": True}}}
+    narrower = {**repeat, "action": {"name": "OWN"}}
+    data = json.loads(_normalize(json.dumps({"evaluations": [folder, repeat, narrower]}), "cars"))
+    assert [evaluation["action"]["name"] for evaluation in data["evaluations"]] == ["RENT", "OWN"]
 
 
 def test_normalize_intent_response_does_not_complete_a_subject_the_gate_does_not_name():
@@ -2407,21 +2441,17 @@ def test_normalize_intent_response_only_blank_actions_is_the_no_intent_error():
 
 
 def test_normalize_intent_response_drops_a_subject_search_over_a_non_digital_twin_type():
-    """Only DigitalTwin types are Subject Search candidates (SKILL.md): a search over a
-    resource-only type (Car) asks for subjects of a kind that can't be one and is left out, the
-    search over a DigitalTwin type (Company) next to it is answered - seen live as a spurious
-    second candidate next to the right one. The order of what stays is kept.
-    """
+    """Only DigitalTwin types are Subject Search candidates."""
     llm_text = json.dumps(
         {
             "evaluations": [
-                _subject_search_evaluation({"type": "Company"}),
+                _subject_search_evaluation({"type": "Customer"}),
                 _subject_search_evaluation({"type": "Car"}),
             ],
         },
     )
     data = json.loads(_normalize(llm_text, "who can rent kitt?"))
-    assert [evaluation["subject"] for evaluation in data["evaluations"]] == [{"type": "Company"}]
+    assert [evaluation["subject"] for evaluation in data["evaluations"]] == [{"type": "Customer"}]
 
 
 def test_normalize_intent_response_only_off_twin_subject_searches_is_the_no_intent_error():
@@ -2455,26 +2485,23 @@ def test_normalize_intent_response_still_feeds_back_an_off_schema_subject_search
 
 
 def test_normalize_intent_response_keeps_every_subject_search_when_the_schema_marks_no_digital_twin():
-    """A schema without any DigitalTwin label gives nothing to judge the candidates against, so
-    no search is dropped for its type (the schema membership check still applies).
-    """
     schema = {
         "graph": {
             "nodes": {"Car": {"metadata": {}}, "Company": {"metadata": {}}},
             "edges": [{"source": "Company", "relation": "RENT", "target": "Car"}],
         },
     }
-    llm_text = json.dumps({"evaluations": [_subject_search_evaluation({"type": "Car"})]})
+    llm_text = json.dumps({"evaluations": [_subject_search_evaluation({"type": "Company"})]})
     data = json.loads(
         normalize_intent_response(
-            llm_text,
+            _rated(llm_text),
             "who can rent kitt?",
             schema=schema,
             subject=RequestSubject(id="user-1", type="Company"),
-            policy_context=PolicyContext(policies=None, fetch_failed=False),
+            policy_context=PolicyContext(policies=[_policy("Company", "RENT", "Car")], fetch_failed=False),
         ),
     )
-    assert data["evaluations"][0]["subject"] == {"type": "Car"}
+    assert data["evaluations"][0]["subject"] == {"type": "Company"}
 
 
 @pytest.mark.parametrize(
@@ -2490,19 +2517,24 @@ def test_normalize_intent_response_binds_a_caller_marked_resource(caller_id, exp
         {
             "evaluations": [
                 {
-                    "subject": {"type": "Company"},
-                    "action": {"name": "RENT"},
+                    "subject": {"type": "Customer"},
+                    "action": {"name": "CAN_ACCESS"},
                     "resource": {"type": "", "id": "guessed"},
                     "context": {"parameters": {"subject_source": "search", "resource_source": "caller", "k": 1}},
                 },
             ],
         },
     )
-    text = _normalize(llm_text, "who can rent me?", subject=RequestSubject(id=caller_id, type="Customer"))
+    text = _normalize(
+        llm_text,
+        "who can access me?",
+        subject=RequestSubject(id=caller_id, type="Customer"),
+        policy_context=PolicyContext(policies=_ACCESS_CUSTOMERS, fetch_failed=False),
+    )
     evaluation = json.loads(text)["evaluations"][0]
     assert evaluation["resource"] == expected_resource
-    assert evaluation["subject"] == {"type": "Company"}
-    assert evaluation["context"] == {"parameters": {"k": 1}}
+    assert evaluation["subject"] == {"type": "Customer"}
+    assert evaluation["context"] == _stamped({"parameters": {"k": 1}})
 
 
 def test_normalize_intent_response_ignores_a_resource_marker_with_another_value():
@@ -2519,35 +2551,98 @@ def test_normalize_intent_response_ignores_a_resource_marker_with_another_value(
     )
     evaluation = json.loads(_normalize(llm_text, "can I rent kitt?"))["evaluations"][0]
     assert evaluation["resource"] == {"type": "Car", "id": "kitt"}
-    assert evaluation["context"] == {}
+    assert evaluation["context"] == _stamped({})
 
 
-def test_normalize_intent_response_rejects_a_relationship_the_caller_type_cannot_hold():
-    """`OWN` exists in the schema, but only as `Company -OWN-> Car`; for a Customer caller it is
-    not a relationship the schema gives them, so it is fed back (under the schema-values
-    heading) instead of reaching the caller as a forced match.
-    """
-    llm_text = json.dumps(
-        {"evaluations": [{"action": {"name": "WORKS_AT"}, "resource": {"type": "Car"}, "context": {}}]}
-    )
+_ME = {"type": "Customer", "id": "user-1"}
+_ACME = {"type": "Company", "id": "acme"}
+
+
+def _second_subject(subject, action, resource, **extra_parameters):
+    """An evaluation about `subject`, marked as the second subject identified in the prompt."""
+    parameters = {"subject_source": "prompt", **extra_parameters}
+    return {"subject": subject, "action": {"name": action}, "resource": resource, "context": {"parameters": parameters}}
+
+
+@pytest.mark.parametrize(
+    ("evaluations", "policies", "expected_errors"),
+    [
+        pytest.param(
+            [{"action": {"name": "WORKS_AT"}, "resource": {"type": "Car"}}],
+            _MOCK_POLICIES,
+            [f"evaluations[0]: Customer -WORKS_AT-> Car {SCHEMA_RELATIONSHIP_SUFFIX}"],
+            id="combination_no_policy_grants",
+        ),
+        pytest.param(
+            [{"action": {"name": "APPROVE_REFUND"}, "resource": {"type": "Company"}}],
+            [*_MOCK_POLICIES, _policy("Customer", "APPROVE_REFUND", "Car")],
+            [f"evaluations[0]: Customer -APPROVE_REFUND-> Company {SCHEMA_RELATIONSHIP_SUFFIX}"],
+            id="policy_action_on_another_resource_type",
+        ),
+        pytest.param(
+            [{"action": {"name": "CAN_DRIVE"}, "resource": {"type": "Car"}}],
+            _MOCK_POLICIES,
+            ["evaluations[0]: action.name 'CAN_DRIVE' is not named by any access policy"],
+            id="action_no_policy_names",
+        ),
+        pytest.param(
+            [
+                {"action": {"name": "WORKS_AT"}, "resource": {"type": "Company"}},
+                {
+                    "action": {"name": "SPONSORS"},
+                    "resource": {"type": "Car"},
+                    "context": {"parameters": {"depends_on_previous_evaluations": True}},
+                },
+            ],
+            _MOCK_POLICIES,
+            ["evaluations[1]: action.name 'SPONSORS' is not named by any access policy"],
+            id="dependent_hop_without_its_own_policy",
+        ),
+        pytest.param(
+            [_subject_search_evaluation({"type": "Company"})],
+            _MOCK_POLICIES,
+            ["evaluations[0]: subject.type 'Company' is not named by any access policy"],
+            id="subject_search_over_another_type",
+        ),
+        pytest.param(
+            [{"action": {"name": "WORKS_AT"}, "resource": _ACME}, _second_subject(_ACME, "RENT", {"type": "Car"})],
+            _MOCK_POLICIES,
+            ["evaluations[1]: subject.type 'Company' is not named by any access policy"],
+            id="second_subject_of_another_type",
+        ),
+        pytest.param(
+            [
+                {"action": {"name": "WORKS_AT"}, "resource": _ACME},
+                _second_subject(_ACME, "RENT", {"type": "Car"}, action_derivation_rule="policy_based"),
+            ],
+            _MOCK_POLICIES,
+            ["evaluations[1]: subject.type 'Company' is not named by any access policy"],
+            id="second_subject_claiming_policy_based",
+        ),
+        pytest.param(
+            [{"action": {"name": "CAN_ACCESS"}, "resource": _ME}, _second_subject(_ME, "OWN", {"type": "Company"})],
+            _ACCESS_CUSTOMERS,
+            [f"evaluations[1]: Customer -OWN-> Company {SCHEMA_RELATIONSHIP_SUFFIX}"],
+            id="caller_as_second_subject",
+        ),
+    ],
+)
+def test_normalize_intent_response_rejects_what_no_policy_grants(evaluations, policies, expected_errors):
     with pytest.raises(IntentValidationError) as excinfo:
-        _normalize(llm_text, "what cars do I work at?")
-    expected_error = (
-        "evaluations[0]: action.name 'WORKS_AT' for subject type 'Customer' on resource type 'Car' "
-        "is not a relationship the data schema or a policy gives the caller's subject type"
-    )
-    assert excinfo.value.errors == [expected_error]
-    feedback = validation_feedback_error("p", excinfo.value.errors)
-    assert "Values not matched to the data schema:" in feedback["reason"]
+        _normalize(
+            json.dumps({"evaluations": evaluations}),
+            policy_context=PolicyContext(policies=policies, fetch_failed=False),
+        )
+    assert excinfo.value.errors == expected_errors
 
 
 @pytest.mark.parametrize(
     "evaluations",
     [
-        pytest.param([{"action": {"name": "RENT"}, "resource": {"type": "Car"}, "context": {}}], id="callers_own_edge"),
+        pytest.param([{"action": {"name": "RENT"}, "resource": {"type": "Car"}, "context": {}}], id="granted"),
         pytest.param(
             [{"action": {"name": "CAN_DRIVE"}, "resource": {"type": "Car"}, "context": {}}],
-            id="permission_granted_by_policy_for_the_resource",
+            id="permission_label_also_an_edge_of_another_type",
         ),
         pytest.param(
             [
@@ -2558,134 +2653,23 @@ def test_normalize_intent_response_rejects_a_relationship_the_caller_type_cannot
                     "context": {"parameters": {"depends_on_previous_evaluations": True}},
                 },
             ],
-            id="dependent_hop_via_previous_resource_type",
+            id="dependent_hop_with_its_own_policy",
         ),
-        pytest.param(
-            [
-                {
-                    "action": {"name": "AUDIT"},
-                    "resource": {"type": "Car"},
-                    "context": {"parameters": {"action_derivation_rule": "policy_based"}},
-                },
-            ],
-            id="policy_granted_to_caller_type",
-        ),
-        pytest.param(
-            [
-                {
-                    "subject": {"type": "Company"},
-                    "action": {"name": "OWN"},
-                    "resource": {"type": "Car", "id": "kitt"},
-                    "context": {"parameters": {"subject_source": "search"}},
-                },
-            ],
-            id="subject_search_is_not_bound_to_the_caller",
-        ),
+        pytest.param([_subject_search_evaluation({"type": "Customer"})], id="subject_search_over_the_callers_type"),
     ],
 )
-def test_normalize_intent_response_accepts_relationships_the_caller_can_hold(evaluations):
-    """The three ways a caller-bound action is grounded - the caller's own edge, a dependent hop
-    through a grounded previous hop's resource type, an action a policy grants for the resource
-    type (permission labels included: the policy listing, already scoped to the caller's type,
-    is what says who may hold CAN_DRIVE, not the Company -CAN_DRIVE-> Car edge) - plus the
-    exemption for an evaluation that carries its own subject.
-    """
+def test_normalize_intent_response_accepts_combinations_a_policy_grants(evaluations):
     schema = _load_schema_fixture()
     schema["graph"]["edges"].append({"source": "Company", "relation": "CAN_DRIVE", "target": "Car", "directed": True})
-    policies = [
-        {"policy": {"subject": {"type": "Customer"}, "actions": ["AUDIT", "CAN_DRIVE"], "resource": {"type": "Car"}}},
-    ]
+    policies = [*_MOCK_POLICIES, _policy("Customer", "CAN_DRIVE", "Car")]
     text = normalize_intent_response(
-        json.dumps({"evaluations": evaluations}),
+        _rated(json.dumps({"evaluations": evaluations})),
         "p",
         schema=schema,
         subject=RequestSubject(id="user-1", type="Customer"),
         policy_context=PolicyContext(policies=policies, fetch_failed=False),
     )
     assert len(json.loads(text)["evaluations"]) == len(evaluations)
-
-
-def test_normalize_intent_response_does_not_exempt_a_permission_label_held_by_another_type():
-    """`CAN_DRIVE` exists only as `Company -CAN_DRIVE-> Car` and no policy grants it to the
-    caller's type: a permission-looking name is no carve-out, the pair is rejected like any
-    other relationship the caller can't hold.
-    """
-    schema = _load_schema_fixture()
-    schema["graph"]["edges"].append({"source": "Company", "relation": "CAN_DRIVE", "target": "Car", "directed": True})
-    llm_text = json.dumps(
-        {"evaluations": [{"action": {"name": "CAN_DRIVE"}, "resource": {"type": "Car"}, "context": {}}]}
-    )
-    with pytest.raises(IntentValidationError) as excinfo:
-        normalize_intent_response(
-            llm_text,
-            "can I drive a car?",
-            schema=schema,
-            subject=RequestSubject(id="user-1", type="Customer"),
-            policy_context=PolicyContext(policies=[], fetch_failed=False),
-        )
-    assert "action.name 'CAN_DRIVE' for subject type 'Customer' on resource type 'Car'" in excinfo.value.errors[0]
-
-
-def test_normalize_intent_response_dependent_hop_needs_a_grounded_previous_hop():
-    """The dependency marker is the model's own, so it can't vouch for a hop by itself: a
-    second hop through the previous resource type is accepted only when that previous hop was
-    itself a relationship the caller holds. Here hop 1 (`OWN Company`) is not - so both hops
-    are reported, not just the first.
-    """
-    schema = _load_schema_fixture()
-    schema["graph"]["edges"].append({"source": "Company", "relation": "SPONSORS", "target": "Car", "directed": True})
-    llm_text = json.dumps(
-        {
-            "evaluations": [
-                {"action": {"name": "OWN"}, "resource": {"type": "Company"}, "context": {}},
-                {
-                    "action": {"name": "SPONSORS"},
-                    "resource": {"type": "Car"},
-                    "context": {"parameters": {"depends_on_previous_evaluations": True}},
-                },
-            ],
-        },
-    )
-    with pytest.raises(IntentValidationError) as excinfo:
-        normalize_intent_response(
-            llm_text,
-            "cars sponsored by my companies",
-            schema=schema,
-            subject=RequestSubject(id="user-1", type="Customer"),
-            policy_context=PolicyContext(policies=[], fetch_failed=False),
-        )
-    assert [error.split(":")[0] for error in excinfo.value.errors] == ["evaluations[0]", "evaluations[1]"]
-
-
-def test_normalize_intent_response_action_search_does_not_ground_a_dependent_hop():
-    """An Action Search ("what can I do with companies?") names no action, so it checks no
-    relationship of the caller's and can't be the grounded previous hop a dependent hop builds
-    on - otherwise `Company -SPONSORS-> Car` would pass for a caller who holds no such edge.
-    """
-    schema = _load_schema_fixture()
-    schema["graph"]["edges"].append({"source": "Company", "relation": "SPONSORS", "target": "Car", "directed": True})
-    llm_text = json.dumps(
-        {
-            "evaluations": [
-                {"resource": {"type": "Company"}, "context": {}},
-                {
-                    "action": {"name": "SPONSORS"},
-                    "resource": {"type": "Car"},
-                    "context": {"parameters": {"depends_on_previous_evaluations": True}},
-                },
-            ],
-        },
-    )
-    with pytest.raises(IntentValidationError) as excinfo:
-        normalize_intent_response(
-            llm_text,
-            "cars sponsored by companies I can act on",
-            schema=schema,
-            subject=RequestSubject(id="user-1", type="Customer"),
-            policy_context=PolicyContext(policies=[], fetch_failed=False),
-        )
-    assert [error.split(":")[0] for error in excinfo.value.errors] == ["evaluations[1]"]
-    assert excinfo.value.errors[0].endswith(SCHEMA_RELATIONSHIP_SUFFIX)
 
 
 def _gated_second_subject(gate_resource, second, *, marker="prompt", extra_parameters=None):
@@ -2706,88 +2690,6 @@ def _gated_second_subject(gate_resource, second, *, marker="prompt", extra_param
     )
 
 
-def test_normalize_intent_response_checks_a_second_subjects_relationship_against_its_own_type():
-    """A trusted second subject's action must be an edge from *its* type: `Company -RENT-> Car`
-    is not one (`Customer -RENT-> Car` is), so an unmarked RENT about the company acme is the
-    forced match the relationship check exists to block. Marked policy_based it passes - the
-    golden answers claim permissions about third parties that no edge or caller policy grounds
-    (adversarial_subject_spoof_test_2), and that claim is IBAC's to decide.
-    """
-    gate = {"type": "Company", "id": "acme"}
-    with pytest.raises(IntentValidationError) as excinfo:
-        _normalize(_gated_second_subject(gate, gate), "can acme rent cars?")
-    assert excinfo.value.errors == [
-        (
-            "evaluations[1]: action.name 'RENT' for subject type 'Company' on resource type 'Car' "
-            f"{SCHEMA_RELATIONSHIP_SUFFIX}"
-        )
-    ]
-
-    marked = _gated_second_subject(gate, gate, extra_parameters={"action_derivation_rule": "policy_based"})
-    data = json.loads(_normalize(marked, "can acme rent cars?"))
-    assert data["evaluations"][1]["subject"] == gate
-
-
-def test_validate_evaluations_does_not_ground_a_second_subject_on_the_callers_policies():
-    """The fetched policies belong to the caller's subject type. `CAN_DRIVE` is the caller's own
-    edge and a caller policy grants it on Car, but `Company` holds no such edge: an unmarked
-    second-subject evaluation naming it is rejected by the relationship check itself, not
-    grounded on the caller's policy; marked policy_based it passes as the explicit claim it is.
-    """
-    policies = [{"policy": {"subject": {"type": "Customer"}, "actions": ["CAN_DRIVE"], "resource": {"type": "Car"}}}]
-    gate = {"action": {"name": "WORKS_AT"}, "resource": {"type": "Company", "id": "acme"}, "context": {}}
-    second = {
-        "subject": {"type": "Company", "id": "acme"},
-        "action": {"name": "CAN_DRIVE"},
-        "resource": {"type": "Car"},
-        "context": {"parameters": {"subject_source": "prompt"}},
-    }
-    schema = _load_schema_fixture()
-    schema["graph"]["edges"].append({"source": "Customer", "relation": "CAN_DRIVE", "target": "Car", "directed": True})
-
-    errors = validate_evaluations(schema, [gate, second], policies, caller_type="Customer", caller_id="user-1")
-    assert errors == [
-        (
-            "evaluations[1]: action.name 'CAN_DRIVE' for subject type 'Company' on resource type 'Car' "
-            f"{SCHEMA_RELATIONSHIP_SUFFIX}"
-        )
-    ]
-    second["context"]["parameters"]["action_derivation_rule"] = "policy_based"
-    assert validate_evaluations(schema, [gate, second], policies, caller_type="Customer", caller_id="user-1") == []
-
-
-def test_normalize_intent_response_never_exempts_the_caller_as_a_second_subject():
-    """A "second subject" that is the caller's own identity is the caller: the marker must not
-    let an action the caller's type can't hold (`Customer -OWN-> Company` is no edge) through
-    a check the same evaluation fails without the marker.
-    """
-    policies = [
-        {"policy": {"subject": {"type": "Customer"}, "actions": ["CAN_ACCESS"], "resource": {"type": "Customer"}}}
-    ]
-    me = {"type": "Customer", "id": "user-1"}
-    llm_text = json.dumps(
-        {
-            "evaluations": [
-                {"action": {"name": "CAN_ACCESS"}, "resource": me, "context": {}},
-                {
-                    "subject": me,
-                    "action": {"name": "OWN"},
-                    "resource": {"type": "Company"},
-                    "context": {"parameters": {"subject_source": "prompt"}},
-                },
-            ],
-        },
-    )
-    with pytest.raises(IntentValidationError) as excinfo:
-        _normalize(llm_text, "do I own companies?", policy_context=PolicyContext(policies=policies, fetch_failed=False))
-    assert excinfo.value.errors == [
-        (
-            "evaluations[1]: action.name 'OWN' for subject type 'Customer' on resource type 'Company' "
-            f"{SCHEMA_RELATIONSHIP_SUFFIX}"
-        )
-    ]
-
-
 def test_normalize_intent_response_does_not_lift_a_blank_external_id():
     """`resource.external_id == '   '` names nothing: it stays the filter it is (valid CEL) and
     the blank id is dropped, rather than a whitespace id reaching the caller.
@@ -2805,7 +2707,7 @@ def test_normalize_intent_response_does_not_lift_a_blank_external_id():
     )
     data = json.loads(_normalize(llm_text, "cars"))
     assert data["evaluations"][0]["resource"] == {"type": "Car"}
-    assert data["evaluations"][0]["context"] == {"filters": "resource.external_id == '   '"}
+    assert data["evaluations"][0]["context"] == _stamped({"filters": "resource.external_id == '   '"})
 
 
 @pytest.mark.parametrize(
@@ -2844,10 +2746,7 @@ def test_normalize_intent_response_caller_resource_marker_does_not_repair_a_malf
 
 
 def test_normalize_intent_response_keeps_a_duplicate_that_a_dependent_hop_builds_on():
-    """Dropping the repeated `OWN Car` would leave the dependent hop reading as if it followed
-    `RENT Car` - a chain the relationship check never saw. The repeat stays; a repeat nothing
-    depends on still goes.
-    """
+    """A repeated evaluation that a dependent hop builds on is kept."""
     schema = _load_schema_fixture()
     schema["graph"]["edges"].append({"source": "Car", "relation": "PARKED_AT", "target": "Company", "directed": True})
     own = {"action": {"name": "OWN"}, "resource": {"type": "Car"}, "context": {}}
@@ -2860,11 +2759,13 @@ def test_normalize_intent_response_keeps_a_duplicate_that_a_dependent_hop_builds
     llm_text = json.dumps({"evaluations": [own, rent, own, hop, rent]})
     data = json.loads(
         normalize_intent_response(
-            llm_text,
+            _rated(llm_text),
             "where are my cars parked?",
             schema=schema,
             subject=RequestSubject(id="user-1", type="Customer"),
-            policy_context=PolicyContext(policies=None, fetch_failed=False),
+            policy_context=PolicyContext(
+                policies=[*_MOCK_POLICIES, _policy("Customer", "PARKED_AT", "Company")], fetch_failed=False
+            ),
         ),
     )
     assert [evaluation["action"]["name"] for evaluation in data["evaluations"]] == ["OWN", "RENT", "OWN", "PARKED_AT"]
@@ -2883,15 +2784,6 @@ def test_normalize_intent_response_completes_a_blank_second_subject_type_only_fo
 
 
 def test_normalize_intent_response_reports_a_search_marker_without_a_subject_object():
-    """Seen live on subject_search_test_1: the model marks a Subject Search but leaves the
-    `subject` object out, mixing up SKILL.md's "omit subject" rule for the other kinds with the
-    Subject Search exception. With several DigitalTwin types (the fixture schema has Company and
-    Customer) the marker alone can't say which type to search for, so this is reported as exactly
-    that - before the fix the marker was ignored, the caller was bound, and the caller's own
-    relationship check failed instead, which sent the retry after the action name and got an
-    empty evaluations array back. With exactly one DigitalTwin type the type is completed
-    instead (see ..._completes_a_subject_search_type_from_the_single_digital_twin).
-    """
     llm_text = json.dumps(
         {
             "evaluations": [
@@ -2914,202 +2806,49 @@ def test_normalize_intent_response_reports_a_search_marker_without_a_subject_obj
 
 
 def test_normalize_intent_response_reads_the_gate_from_a_lifted_external_id_filter():
-    """A gate the model wrote as `resource.external_id == 'acme'` names the same single resource
-    as `resource.id`; the lift runs before the gate is read, so the marked second subject is
-    trusted rather than silently rebound to the caller.
-    """
     llm_text = json.dumps(
         {
             "evaluations": [
                 {
-                    "action": {"name": "WORKS_AT"},
-                    "resource": {"type": "Company", "id": ""},
-                    "context": {"filters": "resource.external_id == 'acme'"},
+                    "action": {"name": "CAN_ACCESS"},
+                    "resource": {"type": "Customer", "id": ""},
+                    "context": {"filters": "resource.external_id == 'alison'"},
                 },
-                {
-                    "subject": {"type": "Company", "id": "acme"},
-                    "action": {"name": "OWN"},
-                    "resource": {"type": "Car", "id": "kitt"},
-                    "context": {"parameters": {"subject_source": "prompt"}},
-                },
-            ],
-        },
-    )
-    data = json.loads(_normalize(llm_text, "does acme own kitt?"))
-    assert data["evaluations"][0]["resource"] == {"type": "Company", "id": "acme"}
-    assert data["evaluations"][0]["context"] == {}
-    assert data["evaluations"][1]["subject"] == {"type": "Company", "id": "acme"}
-
-
-def test_normalize_intent_response_marks_an_unmarked_policy_action_instead_of_rejecting_it():
-    """A name that is no edge but is granted by a policy for the resource type can only have
-    come from that policy: the marker is completed as a fact, the evaluation is accepted, and
-    the caller sees it marked policy_based. validate_evaluations on its own still rejects the
-    unmarked form (test_validate_evaluations_policy_derived_action) - the completion is the
-    normaliser's, not a relaxation of the check.
-    """
-    llm_text = json.dumps(
-        {"evaluations": [{"action": {"name": "APPROVE_REFUND"}, "resource": {"type": "Car"}, "context": {}}]}
-    )
-    data = json.loads(
-        _normalize(llm_text, "refund my car", policy_context=PolicyContext(policies=_CAR_POLICY, fetch_failed=False))
-    )
-    assert data["evaluations"][0]["action"] == {"name": "APPROVE_REFUND"}
-    assert data["evaluations"][0]["context"] == {"parameters": {"action_derivation_rule": "policy_based"}}
-
-
-def test_normalize_intent_response_does_not_mark_an_action_no_policy_grants_for_the_resource():
-    llm_text = json.dumps(
-        {"evaluations": [{"action": {"name": "APPROVE_REFUND"}, "resource": {"type": "Company"}, "context": {}}]}
-    )
-    with pytest.raises(IntentValidationError) as excinfo:
-        _normalize(
-            llm_text, "refund my company", policy_context=PolicyContext(policies=_CAR_POLICY, fetch_failed=False)
-        )
-    assert excinfo.value.errors == ["evaluations[0]: action.name 'APPROVE_REFUND' is not defined in the data schema"]
-
-
-def test_normalize_intent_response_marks_a_dependent_hop_off_the_subjects_type_as_policy_based():
-    """A dependent hop whose action is not an edge from the evaluation's own subject type is
-    policy-derived by SKILL.md's rule (every golden dependent hop carries the marker); the
-    normaliser completes it when the model forgets, and leaves a dependent hop that *is* the
-    subject's own edge unmarked.
-    """
-    schema = _load_schema_fixture()
-    schema["graph"]["edges"].append({"source": "Company", "relation": "SPONSORS", "target": "Car", "directed": True})
-    llm_text = json.dumps(
-        {
-            "evaluations": [
-                {"action": {"name": "WORKS_AT"}, "resource": {"type": "Company"}, "context": {}},
-                {
-                    "action": {"name": "SPONSORS"},
-                    "resource": {"type": "Car"},
-                    "context": {"parameters": {"depends_on_previous_evaluations": True}},
-                },
-                {
-                    "action": {"name": "RENT"},
-                    "resource": {"type": "Car"},
-                    "context": {"parameters": {"depends_on_previous_evaluations": True}},
-                },
-            ],
-        },
-    )
-    data = json.loads(
-        normalize_intent_response(
-            llm_text,
-            "cars sponsored by my company that I rent",
-            schema=schema,
-            subject=RequestSubject(id="user-1", type="Customer"),
-            policy_context=PolicyContext(policies=[], fetch_failed=False),
-        ),
-    )
-    contexts = [evaluation["context"] for evaluation in data["evaluations"]]
-    assert contexts == [
-        {},
-        {"parameters": {"depends_on_previous_evaluations": True, "action_derivation_rule": "policy_based"}},
-        {"parameters": {"depends_on_previous_evaluations": True}},
-    ]
-
-
-def test_normalize_intent_response_does_not_mark_a_second_subject_of_another_type_from_the_callers_policies():
-    """The fetched policies are the caller's subject type's, so they say nothing about what
-    another type may do. Completing the marker for a second subject of a different type would
-    hand _caller_relationship_errors the policy_based claim it clears its reason on - which it
-    refuses to read off the caller's policies on purpose - and ground `Company -RENT-> Car` on a
-    policy granting RENT to `Customer`. The claim has to come from the model instead.
-    """
-    policies = [{"policy": {"actions": ["RENT"], "resource": {"type": "Car"}}}]
-    llm_text = json.dumps(
-        {
-            "evaluations": [
-                {"action": {"name": "WORKS_AT"}, "resource": {"type": "Company", "id": "acme"}, "context": {}},
-                {
-                    "subject": {"type": "Company", "id": "acme"},
-                    "action": {"name": "RENT"},
-                    "resource": {"type": "Car", "id": "kitt"},
-                    "context": {"parameters": {"subject_source": "prompt"}},
-                },
-            ],
-        },
-    )
-    with pytest.raises(IntentValidationError) as excinfo:
-        _normalize(
-            llm_text,
-            "does acme rent kitt?",
-            policy_context=PolicyContext(policies=policies, fetch_failed=False),
-        )
-    assert excinfo.value.errors == [
-        (
-            "evaluations[1]: action.name 'RENT' for subject type 'Company' on resource type 'Car' "
-            "is not a relationship the data schema or a policy gives the caller's subject type"
-        )
-    ]
-
-
-def test_normalize_intent_response_marks_a_second_subject_of_the_callers_own_type():
-    """The counterpart: a second subject that shares the caller's type is exactly who the fetched
-    listing speaks for, so the marker is still completed as a fact there (the shape
-    evals/adversarial_subject_spoof_test_1.json depends on - one Customer gated on another).
-    """
-    schema = _load_schema_fixture()
-    schema["graph"]["edges"].append({"source": "Customer", "relation": "KNOWS", "target": "Customer"})
-    llm_text = json.dumps(
-        {
-            "evaluations": [
-                {"action": {"name": "KNOWS"}, "resource": {"type": "Customer", "id": "alison"}, "context": {}},
                 {
                     "subject": {"type": "Customer", "id": "alison"},
-                    "action": {"name": "APPROVE_REFUND"},
+                    "action": {"name": "RENT"},
                     "resource": {"type": "Car", "id": "kitt"},
                     "context": {"parameters": {"subject_source": "prompt"}},
                 },
             ],
         },
     )
-    data = json.loads(
-        normalize_intent_response(
-            llm_text,
-            "can alison approve a refund on kitt?",
-            schema=schema,
-            subject=RequestSubject(id="user-1", type="Customer"),
-            policy_context=PolicyContext(policies=_CAR_POLICY, fetch_failed=False),
-        ),
-    )
+    policy_context = PolicyContext(policies=_ACCESS_CUSTOMERS, fetch_failed=False)
+    data = json.loads(_normalize(llm_text, "can alison rent kitt?", policy_context=policy_context))
+    assert data["evaluations"][0]["resource"] == {"type": "Customer", "id": "alison"}
+    assert data["evaluations"][0]["context"] == _stamped({})
     assert data["evaluations"][1]["subject"] == {"type": "Customer", "id": "alison"}
-    assert data["evaluations"][1]["context"] == {"parameters": {"action_derivation_rule": "policy_based"}}
 
 
-def test_normalize_intent_response_marks_a_policy_action_that_shares_a_label_with_an_unrelated_edge():
-    """`CAN_DRIVE` exists as `Company -CAN_DRIVE-> Car` and a policy grants it to the caller's type
-    on Car: the caller holds it through the policy, not through an edge of their own, so it is
-    marked policy_based even though the label is also an edge label elsewhere. The same label held
-    as the caller's own edge (`Customer -RENT-> Car`) stays unmarked even when a policy grants it too.
-    """
-    schema = _load_schema_fixture()
-    schema["graph"]["edges"].append({"source": "Company", "relation": "CAN_DRIVE", "target": "Car", "directed": True})
-    policies = [
-        {"policy": {"subject": {"type": "Customer"}, "actions": ["CAN_DRIVE", "RENT"], "resource": {"type": "Car"}}}
-    ]
+def test_normalize_intent_response_marks_every_evaluation_policy_based():
     llm_text = json.dumps(
         {
             "evaluations": [
-                {"action": {"name": "CAN_DRIVE"}, "resource": {"type": "Car"}, "context": {}},
-                {"action": {"name": "RENT"}, "resource": {"type": "Car"}, "context": {}},
+                {"action": {"name": "RENT"}, "resource": {"type": "Car", "id": "kitt"}},
+                {
+                    "action": {"name": "OWN"},
+                    "resource": {"type": "Car"},
+                    "context": {"parameters": {"action_derivation_rule": "relationship", "k": 1}},
+                },
+                {"resource": {"type": "Company", "id": "acme"}, "context": {}},
             ],
         },
     )
-    data = json.loads(
-        normalize_intent_response(
-            llm_text,
-            "cars",
-            schema=schema,
-            subject=RequestSubject(id="user-1", type="Customer"),
-            policy_context=PolicyContext(policies=policies, fetch_failed=False),
-        ),
-    )
+    data = json.loads(_normalize(llm_text, "my cars and acme"))
     assert [evaluation["context"] for evaluation in data["evaluations"]] == [
-        {"parameters": {"action_derivation_rule": "policy_based"}},
-        {},
+        _stamped({}),
+        _stamped({"parameters": {"k": 1}}),
+        _stamped({}),
     ]
 
 
@@ -3120,51 +2859,30 @@ def test_normalize_intent_response_marks_a_policy_action_that_shares_a_label_wit
         ({"parameters": []}, "evaluations[0]: context.parameters is not an object"),
     ],
 )
-def test_normalize_intent_response_marker_completion_keeps_a_malformed_context_for_validation(context, error):
-    """Completing the policy marker must not replace a malformed context or parameters with a
-    valid-looking object: the shape error is still reported and fed back, not silently accepted -
-    and, the marker withheld, so is the unmarked policy action.
-    """
-    policies = [{"policy": {"subject": {"type": "Customer"}, "actions": ["CAN_DRIVE"], "resource": {"type": "Car"}}}]
+def test_normalize_intent_response_marking_keeps_a_malformed_context_for_validation(context, error):
     llm_text = json.dumps(
-        {"evaluations": [{"action": {"name": "CAN_DRIVE"}, "resource": {"type": "Car"}, "context": context}]}
+        {"evaluations": [{"action": {"name": "RENT"}, "resource": {"type": "Car"}, "context": context}]}
     )
     with pytest.raises(IntentValidationError) as excinfo:
-        _normalize(llm_text, "cars", policy_context=PolicyContext(policies=policies, fetch_failed=False))
-    assert excinfo.value.errors == ["evaluations[0]: action.name 'CAN_DRIVE' is not defined in the data schema", error]
+        _normalize(llm_text, "cars")
+    assert excinfo.value.errors == [error]
 
 
-def test_normalize_intent_response_marks_by_the_bound_subject_type_not_the_models():
-    """The marker is decided on the subject type the evaluation will carry. An unmarked
-    evaluation on which the model wrote `Customer` (schema-valid, and `Customer -RENT-> Car` is
-    an edge) is rebound to the caller, a Company, who holds RENT on Car only through a policy -
-    so it is marked. The same subject as a Subject Search keeps `Customer`, whose own edge it is,
-    and stays unmarked.
-    """
-    policies = [{"policy": {"subject": {"type": "Company"}, "actions": ["RENT"], "resource": {"type": "Car"}}}]
-    llm_text = json.dumps(
-        {
-            "evaluations": [
-                {
-                    "subject": {"type": "Customer"},
-                    "action": {"name": "RENT"},
-                    "resource": {"type": "Car"},
-                    "context": {},
-                },
-                _subject_search_evaluation({"type": "Customer"}),
-            ],
-        },
-    )
-    data = json.loads(
-        normalize_intent_response(
-            llm_text,
+def test_normalize_intent_response_judges_the_bound_subject_type_not_the_models():
+    """An unmarked subject is judged as the caller's type, a kept one as its own."""
+    policies = [_policy("Company", "RENT", "Car")]
+    bound = {"subject": {"type": "Customer"}, "action": {"name": "RENT"}, "resource": {"type": "Car"}, "context": {}}
+
+    def normalize(evaluation):
+        return normalize_intent_response(
+            _rated(json.dumps({"evaluations": [evaluation]})),
             "rent kitt",
             schema=_load_schema_fixture(),
             subject=RequestSubject(id="co-1", type="Company"),
             policy_context=PolicyContext(policies=policies, fetch_failed=False),
-        ),
-    )
-    assert data["evaluations"][0]["subject"] == {"type": "Company", "id": "co-1"}
-    assert data["evaluations"][0]["context"] == {"parameters": {"action_derivation_rule": "policy_based"}}
-    assert data["evaluations"][1]["subject"] == {"type": "Customer"}
-    assert data["evaluations"][1]["context"] == {}
+        )
+
+    assert json.loads(normalize(bound))["evaluations"][0]["subject"] == {"type": "Company", "id": "co-1"}
+    with pytest.raises(IntentValidationError) as excinfo:
+        normalize(_subject_search_evaluation({"type": "Customer"}))
+    assert excinfo.value.errors == ["evaluations[0]: subject.type 'Customer' is not named by any access policy"]

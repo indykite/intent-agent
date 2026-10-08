@@ -164,13 +164,19 @@ Eight modules carry whole service:
   policies (`GET /access/v1/policies?subject_type=`, X-IK-ClientKey, per-subject-type cache key,
   retry + short failure backoff, no cold-start preload since the subject type is per request);
   `get_cached(subject_type) -> (policies, fetch_failed)`. The entries (`{"policy": {subject,
-  actions, resource, condition}, "tags"}`) are the second source of action names next to graph
-  edges (PRD erratum 2026-09-04): `input_schema` widens the enum with them, `render_schema_summary`
-  lists them as "Policy actions", `agent._policy_block` injects the raw list too, and
-  `subject_binding._action_name_error` accepts a policy action only when the evaluation is marked
-  `action_derivation_rule: "policy_based"` and the policy's resource type matches. A failed fetch
-  never fails the request: extraction runs edge-only and `policy_fetch_failed` is set on the
-  audit record and the response context. The eval runner serves fixture policies through
+  actions, resource, condition}, "tags"}`) are the **only** source of the output's vocabulary -
+  graph edges are never action names. `input_schema.policy_triples` turns them into the
+  (subject type, action, resource type) combinations whose types are schema node types (the
+  schema still decides which labels exist): `build_input_schema` builds all three enums from them,
+  `render_schema_summary` lists them under "Policies", `agent._policy_block` injects the raw list
+  so the model can choose by each policy's `condition.cypher`, and `subject_binding` requires every
+  evaluation to be one granted combination, then stamps `action_derivation_rule: "policy_based"` on
+  every evaluation itself. No policy is handled like no schema: a failed fetch with nothing cached, or
+  none existing for the caller's type, is `policy_unavailable_error` before any LLM call (distinct
+  warnings for the two), retried on the next request; a failed refresh serves the
+  last known-good policies with `policy_fetch_failed` set on the audit record and the response
+  context. Policies are fetched for the caller's type only, so a Subject Search or second subject
+  can only be of that type. The eval runner serves fixture policies through
   `evals.runner.FixturePolicyClient` (same `get_cached(subject_type)` contract).
 - **`auth.py`** — pulls the Bearer `access_token` off the A2A request context and validates it via
   RFC 7662 Token Introspection against the external IdP (no local JWT decode/signature check -
@@ -214,9 +220,9 @@ keeps the stale schema instead of losing it.
 
 **Validation loop (TDD 4.8/4.9).** After the LLM's final answer, `subject_binding.py`'s
 `normalize_intent_response` checks every evaluation's `subject.type` / `action.name` /
-`resource.type` against the cached schema (`validate_evaluations`; `action.name` against edges
-plus the policy-granted actions, the same union `build_input_schema` puts in the enum and
-`render_schema_summary` lists as "Policy actions") - belt-and-braces on top of
+`resource.type` against the cached schema and the caller's policies (`validate_evaluations`: each
+part named by a policy, then the three together one combination a policy grants, the same
+`policy_triples` `build_input_schema` puts in the enums) - belt-and-braces on top of
 the structured-output enum, since Gemini treats the enum as a strong hint, not a guarantee - and
 checks `context`'s shape the same way (`filters` a string, `parameters`/`qualifiers` objects;
 null keys, a blank `filters` and the model's internal `subject_source` / `resource_source`
@@ -261,6 +267,17 @@ back to the LLM - is the fixed `{prompt, error, reason, obligation}` shape built
 `errors.error_response`; new ones go in `errors.py` next to the existing ones, never as ad-hoc
 dicts or strings elsewhere.
 
+**Confidence rating.** Every answer with evaluations also carries the model's own rating:
+`explanation` (one short, plain sentence: the policy used, and what no policy covered) and
+`confidence` - `high` (the prompt matches the policies exactly), `medium` (it matches only
+through a synonym: a policy's resource type or action standing in for the one asked), `low` (only
+part of the prompt matched a policy).
+`normalize_intent_response` requires both (missing/invalid is fed back like any other error) and
+strips them: they are **logged (at DEBUG), never returned or audited** - `subject_binding.rating`
+reads them back onto `ExtractionResult.confidence`/`.explanation`, and the eval suite reports `confidence` next to
+each fixture's own optional `confidence` (taken as written, not validated) - a fixture passes on
+its response alone, the rating never decides it, and the explanation is reported, never compared. System-built errors carry no rating.
+
 **Audit log (TDD 4.9).** Every request produces exactly one audit record - a successful
 extraction, an `unmatched`/`validation_failed` one, a rejected token (audited as
 `outcome = error` with the same reason the caller got, like the Agent Gateway audits every
@@ -302,8 +319,8 @@ as passing), on pushes to `master` touching the same paths (both ignore release-
 GitHub environment (each run waits for a reviewer's approval; a fork PR skips the job so its code
 never gets the key, and is evaluated on `master` after merge or on a branch here a maintainer
 copies it to). Each data
-model under `evals/schema/` has a `_schema.json` and, for policy-granted actions, a
-`_policies.json` in the platform listing shape. The loader round-trips every golden answer
+model under `evals/schema/` has a `_schema.json` and a `_policies.json` in the platform listing
+shape (every golden answer's combinations must be granted there). The loader round-trips every golden answer
 through `normalize_intent_response` as the fixture's caller and rejects one that comes back
 different - the pipeline's own rules are the producibility check, not a copy of them. New fixture category
 or gate = `fixtures.CATEGORIES` / `scoring.evaluate_gates`, not a parallel script. The fixtures

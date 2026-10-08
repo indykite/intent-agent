@@ -6,7 +6,7 @@
     "evaluations": [
       {
         "action": {
-          "name": "REPORTS_TO"
+          "name": "CAN_ACCESS"
         },
         "resource": {
           "id": "flo",
@@ -14,7 +14,8 @@
         },
         "context": {
           "parameters": {
-            "direct": false
+            "direct": false,
+            "action_derivation_rule": "policy_based"
           }
         },
         "subject": {
@@ -24,6 +25,7 @@
       }
     ]
   },
+  "confidence": "medium",
   "category": "single intent",
   "data_model": "user_model"
 }

@@ -4,42 +4,9 @@
   "subject_type": "Customer",
   "expected": {
     "prompt": "Who can access me, a customer?",
-    "evaluations": [
-      {
-        "subject": {
-          "type": "User"
-        },
-        "action": {
-          "name": "CAN_ACCESS"
-        },
-        "resource": {
-          "type": "Customer",
-          "id": "bob"
-        },
-        "context": {
-          "parameters": {
-            "action_derivation_rule": "policy_based"
-          }
-        }
-      },
-      {
-        "subject": {
-          "type": "Customer"
-        },
-        "action": {
-          "name": "CAN_ACCESS"
-        },
-        "resource": {
-          "type": "Customer",
-          "id": "bob"
-        },
-        "context": {
-          "parameters": {
-            "action_derivation_rule": "policy_based"
-          }
-        }
-      }
-    ]
+    "error": "Unable to extract intent from prompt.",
+    "reason": "Access policies unavailable - no policy defines what the supplied subject type may do.",
+    "obligation": "Retry once access policies are available, or contact the administrator."
   },
   "category": "subject search",
   "data_model": "combined_model"

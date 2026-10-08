@@ -82,7 +82,7 @@ _EVAL_EVALUATION = {
     "subject": {"type": "User", "id": "leslie"},
     "action": {"name": "CAN_ACCESS"},
     "resource": {"type": "Document", "id": "doc123"},
-    "context": {},
+    "context": {"parameters": {"action_derivation_rule": "policy_based"}},
 }
 
 
@@ -142,11 +142,13 @@ def eval_policies_file(tmp_path):
 
 
 @pytest.fixture
-def eval_fixture_file(tmp_path, eval_schema_file):
+def eval_fixture_file(tmp_path, eval_schema_file, eval_policies_file):
     """A factory writing one golden fixture file `<directory>/<name>.json` (directory defaults to
-    tmp_path/evals, with a `user_model` schema alongside unless one already exists) and returning
-    its path. `fields` override the fixture document's keys; `expected` defaults to one matching
-    evaluation for the default prompt.
+    tmp_path/evals, with a `user_model` schema and the policy granting the default evaluation
+    alongside unless they already exist) and returning its path. `fields` override the fixture
+    document's keys; `expected` defaults to one matching evaluation for the default prompt, and an
+    `expected` with evaluations gets `"confidence": "high"` unless given (`confidence=None` leaves
+    the key out).
     """
 
     def _write(name: str = "single_intent_test_1", *, directory: Path | None = None, **fields: Any) -> Path:
@@ -154,8 +156,14 @@ def eval_fixture_file(tmp_path, eval_schema_file):
         directory.mkdir(parents=True, exist_ok=True)
         if not (directory / "schema" / "user_model_schema.json").exists():
             eval_schema_file(directory=directory)
+        if not (directory / "schema" / "user_model_policies.json").exists():
+            eval_policies_file("user_model", [("User", "CAN_ACCESS", "Document")], directory=directory)
         document = {**_EVAL_FIXTURE_DEFAULTS, **fields}
         document.setdefault("expected", {"prompt": document["prompt"], "evaluations": [_EVAL_EVALUATION]})
+        if isinstance(document["expected"], dict) and "evaluations" in document["expected"]:
+            document.setdefault("confidence", "high")
+        if document.get("confidence", "") is None:
+            del document["confidence"]
         path = directory / f"{name}.json"
         path.write_text(json.dumps(document, indent=2), encoding="utf-8")
         return path

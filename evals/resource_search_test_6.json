@@ -61,6 +61,7 @@
       }
     ]
   },
+  "confidence": "high",
   "category": "resource search",
   "data_model": "combined_model"
 }

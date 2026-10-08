@@ -92,6 +92,11 @@ def response_diff(result: FixtureResult) -> str:
     return "\n".join(lines)
 
 
+def _rating(result: FixtureResult) -> str:
+    """The model's rating of its answer next to the golden one, with its explanation."""
+    return f"confidence: {result.confidence} (golden {result.fixture.confidence or '-'}) - {result.explanation}"
+
+
 def _fence(content: str, info: str = "") -> list[str]:
     """`content` in a Markdown code fence longer than any run of backticks inside it, so a
     hostile fixture prompt or a diff containing ``` can't close the block early.
@@ -161,6 +166,7 @@ def render_text(report: Report) -> str:
                 "",
                 f"  {result.fixture.id} [{result.fixture.category}] outcome={result.outcome} - {result.verdict.detail}",
                 f"    prompt: {result.fixture.prompt}",
+                *([f"    {_rating(result)}"] if result.confidence else []),
                 *(f"    {line}" for line in response_diff(result).splitlines()),
             ]
     lines += ["", f"Result: {_STATUS[report.passed]}"]
@@ -219,6 +225,7 @@ def render_markdown(report: Report) -> str:
                 "",
                 *_fence(result.fixture.prompt, "text"),
                 "",
+                *([*_fence(_rating(result), "text"), ""] if result.confidence else []),
                 *_fence(response_diff(result), "diff"),
                 "",
                 "</details>",
@@ -271,6 +278,9 @@ def to_json(report: Report) -> dict[str, Any]:
                 "timeout_retries": result.timeout_retries,
                 "expected": result.fixture.expected,
                 "actual": result.actual,
+                "expected_confidence": result.fixture.confidence,
+                "confidence": result.confidence or None,
+                "explanation": result.explanation or None,
             }
             for result in report.results
         ],

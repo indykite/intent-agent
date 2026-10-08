@@ -9,8 +9,8 @@
           "name": "CAN_ACCESS"
         },
         "resource": {
-          "type": "User",
-          "id": "roy"
+          "id": "roy",
+          "type": "User"
         },
         "context": {
           "parameters": {
@@ -23,25 +23,27 @@
         }
       },
       {
+        "subject": {
+          "id": "roy",
+          "type": "User"
+        },
         "action": {
           "name": "CAN_ACCESS"
         },
         "resource": {
-          "type": "Document",
-          "id": "doc123"
+          "id": "doc123",
+          "type": "Folder"
         },
         "context": {
           "parameters": {
+            "depends_on_previous_evaluations": true,
             "action_derivation_rule": "policy_based"
           }
-        },
-        "subject": {
-          "type": "User",
-          "id": "roy"
         }
       }
     ]
   },
+  "confidence": "high",
   "category": "adversarial subject spoof",
   "data_model": "user_model"
 }

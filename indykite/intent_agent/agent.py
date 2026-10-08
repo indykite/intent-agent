@@ -32,6 +32,7 @@ from indykite.intent_agent.errors import (
     SubjectTypeMismatchError,
     llm_timeout_error,
     no_intent_error,
+    policy_unavailable_error,
     request_timeout_error,
     schema_not_populated_error,
     schema_unavailable_error,
@@ -46,6 +47,7 @@ from indykite.intent_agent.subject_binding import (
     RequestSubject,
     looks_like_evaluations,
     normalize_intent_response,
+    rating,
     schema_has_no_node_types,
     validate_subject_type,
 )
@@ -91,10 +93,8 @@ def _dump(payload: dict[str, Any]) -> str:
 
 
 def _policy_block(policies: list[dict[str, Any]] | None, preview_chars: int) -> str:
-    """Build the <policies> context block for extract-intent's activation (ENG-9671),
-    mirroring the <data_schema> block. Empty string when there are no policies - the fetch
-    failed, or none exist for this subject_type - so the LLM falls back to schema-only action
-    derivation exactly as it did before this feature existed.
+    """The <policies> block for extract-intent's activation: the raw policies, so the model can
+    read each one's condition.cypher. Empty without policies.
     """
     if not policies:
         return ""
@@ -102,8 +102,9 @@ def _policy_block(policies: list[dict[str, Any]] | None, preview_chars: int) -> 
     return (
         "\n\n<policies>\n"
         + policies_json[:preview_chars]
-        + "\n</policies>\n\nUse the above policies, when relevant, to determine action.name - "
-        'mark such evaluations with context.parameters.action_derivation_rule set to "policy_based".'
+        + "\n</policies>\n\nEvery evaluation must use one subject -ACTION-> resource combination these "
+        "policies grant. Read each policy's condition.cypher to choose between them: it shows how the "
+        "policy is applied to the graph, and so what a prompt asking for it is about."
     )
 
 
@@ -143,6 +144,7 @@ class ExtractionResult:
     """What one extraction produced: `text` is the A2A response body; the rest feeds the audit
     record (TDD 4.9) so the executor never has to parse its own output to classify it.
     `message` follows the IAG's rule for its `reason`: the same text the caller received.
+    `confidence`/`explanation` are the model's rating, logged at DEBUG only (empty without one).
     """
 
     text: str
@@ -155,6 +157,8 @@ class ExtractionResult:
     # None = no policy fetch was attempted this request, distinct from False (attempted and
     # succeeded) - see _policy_audit_fields.
     policy_fetch_failed: bool | None = None
+    confidence: str = ""
+    explanation: str = ""
 
     @classmethod
     def failed(
@@ -182,13 +186,15 @@ class ExtractionResult:
     def from_normalized(
         cls,
         text: str,
+        llm_text: str,
         *,
         schema_version: str,
         validation_retries: int,
         policy_context: PolicyContext,
     ) -> "ExtractionResult":
         """Classify normalize_intent_response()'s output: bound evaluations are a success, the
-        4.7 no-intent shape (the LLM's own empty evaluations list) is `unmatched`.
+        4.7 no-intent shape (the LLM's own empty evaluations list) is `unmatched`. A success
+        carries the model's rating, read from `llm_text` (the answer normalize accepted).
         """
         policy_ver, policy_failed = _policy_audit_fields(policy_context)
         data = json.loads(text)
@@ -196,6 +202,7 @@ class ExtractionResult:
         if isinstance(evaluations, list):
             # validate_evaluations already rejected anything that isn't an object, so the
             # list is exactly what the caller received.
+            confidence, explanation = rating(llm_text)
             return cls(
                 text=text,
                 outcome=Outcome.SUCCESS,
@@ -204,6 +211,8 @@ class ExtractionResult:
                 validation_retries=validation_retries,
                 policy_version=policy_ver,
                 policy_fetch_failed=policy_failed,
+                confidence=confidence,
+                explanation=explanation,
             )
         return cls(
             text=text,
@@ -297,9 +306,9 @@ class IntentAgent:
         concurrent requests against a genuinely down endpoint could pile up orphaned workers
         and exhaust a *shared* executor, starving unrelated concurrent requests' tool calls and
         audit writes too; a small, dedicated pool for fetches specifically (which already
-        degrade gracefully - schema_unavailable_error, or policy_fetch_failed=True proceeding
-        schema-only) contains that pile-up instead of spreading it to everything else a request
-        depends on.
+        degrade gracefully - schema_unavailable_error / policy_unavailable_error, or the last
+        known-good policies with policy_fetch_failed=True) contains that pile-up instead of
+        spreading it to everything else a request depends on.
         """
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._fetch_executor, func, *args)
@@ -375,8 +384,8 @@ class IntentAgent:
             Not needed for intent extraction: activating the extract-intent skill already
             provides every node type, property name and edge. Only call this afterwards, if a
             property's value type matters for a filter. Node labels are entity types. Edge
-            labels can be Actions or context, never Resources. Any node type can be a Resource.
-            Nodes with system_labels containing DigitalTwin can also be Subjects.
+            labels show how the data is linked - never action names, which come only from the
+            access policies.
             """
             return schema_json
 
@@ -408,10 +417,9 @@ class IntentAgent:
         @tool
         def get_policies() -> str:
             """Return this request's AuthZEN policies as minified JSON: a list of
-            {"policy": <policy definition>, "tags": [...]}. A policy's "actions" may be used
-            as action.name when it applies to the resource in question (its resource.type
-            matches) - mark such an evaluation with context.parameters.action_derivation_rule
-            set to "policy_based".
+            {"policy": <policy definition>, "tags": [...]}. Every evaluation must use one
+            policy's subject.type, one of its "actions" and its resource.type together; its
+            condition.cypher shows how the policy is applied to the graph.
             """
             if policy_fetch_failed:
                 logger.warning("get_policies invoked but this request's policy fetch had failed")
@@ -619,7 +627,8 @@ class IntentAgent:
         IntentExecutor._subject_params - not read from static config or the Bearer token, which
         now authenticates the calling client rather than any subject.
 
-        Checks schema availability and subject_type validity upfront, before any LLM call -
+        Checks schema availability, subject_type validity and policy availability
+        (_policy_refusal) upfront, before any LLM call -
         neither can be verified without the schema, so there's no point spending an LLM call
         (or several, across tool-call iterations) on a result that would just be discarded
         afterward. A schema-unavailable request never populates the cache as a side effect of
@@ -707,25 +716,11 @@ class IntentAgent:
                     self.get_cached_policies, subject.type
                 )
                 policy_context = PolicyContext(policies=policies, fetch_failed=policy_fetch_failed)
-                if policy_fetch_failed:
-                    # policies is not None here means PolicyClient fell back to a real,
-                    # last-known-good stale list rather than losing it (review) - the log must
-                    # say so, not claim schema-only derivation when policies are actually still
-                    # in play, just not freshly confirmed this request.
-                    if policies is not None:
-                        logger.warning(
-                            "Policy fetch failed for subject_type %r; proceeding with last "
-                            "known-good policies for prompt %r",
-                            subject.type,
-                            prompt,
-                        )
-                    else:
-                        logger.warning(
-                            "Policies unavailable for subject_type %r after retries; proceeding with "
-                            "schema-only action derivation for prompt %r",
-                            subject.type,
-                            prompt,
-                        )
+                error = self._policy_refusal(policy_context, subject.type, prompt)
+                if error is not None:
+                    return ExtractionResult.failed(
+                        Outcome.ERROR, error, schema_version=version, policy_context=policy_context
+                    )
                 tools = self._build_tools(schema, policies, policy_fetch_failed=policy_fetch_failed)
                 llm_with_tools = self._llm.bind_tools(
                     tools,
@@ -743,6 +738,31 @@ class IntentAgent:
                 )
         except TimeoutError:
             return self._timeout_result(phase, prompt, deadline, version, policy_context)
+
+    @staticmethod
+    def _policy_refusal(policy_context: PolicyContext, subject_type: str, prompt: str) -> dict[str, str] | None:
+        """policy_unavailable_error when no policy exists for the caller's type (fetch failed with
+        nothing cached, or none returned), else None. Stale policies proceed, with a warning.
+        """
+        if policy_context.policies is None:
+            logger.warning(
+                "Policy fetch failed for subject_type %r and no policies are cached; skipping extraction for prompt %r",
+                subject_type,
+                prompt,
+            )
+            return policy_unavailable_error(prompt)
+        if not policy_context.policies:
+            logger.warning(
+                "No access policies exist for subject_type %r; skipping extraction for prompt %r", subject_type, prompt
+            )
+            return policy_unavailable_error(prompt)
+        if policy_context.fetch_failed:
+            logger.warning(
+                "Policy fetch failed for subject_type %r; proceeding with last known-good policies for prompt %r",
+                subject_type,
+                prompt,
+            )
+        return None
 
     def _timeout_result(
         self,
@@ -941,12 +961,18 @@ class IntentAgent:
                 feedback = _dump(validation_feedback_error(prompt, exc.errors))
                 messages.extend((response, HumanMessage(content=feedback)))
             else:
-                return ExtractionResult.from_normalized(
+                result = ExtractionResult.from_normalized(
                     normalized,
+                    final_text,
                     schema_version=version,
                     validation_retries=retries,
                     policy_context=request.policy_context,
                 )
+                if result.confidence:
+                    logger.debug(
+                        "Extraction confidence %s for prompt %r: %s", result.confidence, prompt, result.explanation
+                    )
+                return result
         logger.error("Extraction still off-schema after %d retries; giving up on prompt %r", max_retries, prompt)
         return ExtractionResult.failed(
             Outcome.VALIDATION_FAILED,

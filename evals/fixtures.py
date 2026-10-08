@@ -9,11 +9,12 @@ place of the platform's `GET /data-schema/v1`, plus, when present, the access po
 model (`<data_model>_policies.json`, in the shape of `GET /access/v1/policies`) served in place
 of the platform's policy listing; `jwt_sub` is the caller's id the agent binds, as IAG supplies
 it per request; `subject_type` is the caller's node type - optional when the data model has
-exactly one DigitalTwin type (it is that type), required when it has several. Every action a
-golden answer names must be an edge of the data model or an action a policy of the caller's
-subject type grants on that evaluation's resource type - the same two sources, scoped the same
-way, the pipeline accepts at run time - so a fixture naming anything else is rejected at load
-time instead of reading as a model failure.
+exactly one DigitalTwin type (it is that type), required when it has several; `confidence`
+(optional) is the rating the fixture expects the model to give, taken as written and only
+reported. Every action a golden answer names must be one a policy of the caller's subject type
+grants on that evaluation's resource type - graph edges are never action names, the same rule
+the pipeline applies at run time - so a fixture naming anything else is rejected at load time
+instead of reading as a model failure.
 """
 
 import json
@@ -24,11 +25,10 @@ from pathlib import Path
 from typing import Any
 
 from indykite.intent_agent.errors import IntentValidationError
-from indykite.intent_agent.input_schema import _edge_relations, _node_types, digital_twin_types
+from indykite.intent_agent.input_schema import CONFIDENCE_LEVELS, _node_types, digital_twin_types, policy_triples
 from indykite.intent_agent.subject_binding import (
     PolicyContext,
     RequestSubject,
-    _policy_actions_for_resource,
     normalize_intent_response,
 )
 
@@ -134,6 +134,8 @@ class Fixture:
     schema_path: Path
     expected: dict[str, Any]
     policies_path: Path | None = None
+    # The rating the fixture expects, as written - only shown in the report.
+    confidence: str | None = None
 
     @property
     def expects_refusal(self) -> bool:
@@ -230,31 +232,22 @@ def _as_model_output(fixture: Fixture) -> list[dict[str, Any]]:
 
 
 def _check_actions_producible(fixture: Fixture) -> None:
-    """Reject a golden answer the pipeline could never return for this fixture. First the
-    vocabulary, for a precise message: every action must be an edge of the data model or an
-    action a policy grants the fixture's caller (`subject_type` - the runner serves only that
-    type's policies, as the platform does) on that evaluation's `resource.type`. Then the whole
-    thing: the golden answer, with the binding markers the response strips put back
-    (_as_model_output), is fed through normalize_intent_response as if the model had produced
-    it, and must come out equal to itself (_check_round_trip) - so every rule the pipeline applies
-    after the model (relationship grounding, marker completion, subject binding, the drops and
-    normalisations) is checked by the code that applies it, not by a copy kept in step by hand.
+    """Reject a golden answer the pipeline could never return: first every action against the
+    caller's policies (for a precise message), then a round trip through normalize_intent_response.
     """
     schema = load_schema(fixture.schema_path)
-    edge_relations = _edge_relations(schema)
     policies = policies_for_subject(fixture.policies, fixture.subject_type)
+    granted = {(action, resource) for _, action, resource in policy_triples(policies, schema)}
     for index, evaluation in enumerate(fixture.expected.get("evaluations", [])):
         action, resource = evaluation.get("action"), evaluation.get("resource")
         name = action.get("name") if isinstance(action, dict) else None
         resource_type = resource.get("type") if isinstance(resource, dict) else None
-        if not isinstance(name, str) or name in edge_relations:
-            continue
-        if isinstance(resource_type, str) and name in _policy_actions_for_resource(policies, resource_type):
+        if not isinstance(name, str) or (name, resource_type) in granted:
             continue
         message = (
-            f"{fixture.path.name}: evaluations[{index}] names action {name!r}, which is neither an edge of data "
-            f"model {fixture.data_model!r} nor an action a policy in {fixture.data_model}_policies.json grants "
-            f"subject type {fixture.subject_type!r} on resource type {resource_type!r} - the pipeline can't produce it"
+            f"{fixture.path.name}: evaluations[{index}] names action {name!r}, which no policy in "
+            f"{fixture.data_model}_policies.json grants subject type {fixture.subject_type!r} on resource type "
+            f"{resource_type!r} - the pipeline can't produce it"
         )
         raise FixtureError(message)
     if not fixture.expects_refusal:
@@ -269,7 +262,10 @@ def _check_round_trip(fixture: Fixture, schema: dict[str, Any], policies: list[d
     over a non-DigitalTwin type or a duplicate, strips a blank id ...) - either way the fixture
     could only ever read as a model failure.
     """
-    model_output = json.dumps({"evaluations": _as_model_output(fixture)})
+    model_output = json.dumps(
+        # The rating never changes the response, so any valid level stands in for the model's.
+        {"evaluations": _as_model_output(fixture), "confidence": CONFIDENCE_LEVELS[0], "explanation": "golden answer"}
+    )
     caller = RequestSubject(id=fixture.jwt_sub or None, type=fixture.subject_type)
     try:
         response = json.loads(
@@ -449,6 +445,7 @@ def load_fixture(path: Path, *, schema_dir: Path | None = None) -> Fixture:
     policies_path = schema_dir / f"{data_model}_policies.json"
     if policies_path.is_file():
         load_policies(policies_path)  # validated here, so a malformed listing fails the load, not the run
+    expected = _validate_expected(raw.get("expected"), prompt, path)
     fixture = Fixture(
         id=path.stem,
         path=path,
@@ -458,8 +455,9 @@ def load_fixture(path: Path, *, schema_dir: Path | None = None) -> Fixture:
         category=category,
         data_model=data_model,
         schema_path=schema_path,
-        expected=_validate_expected(raw.get("expected"), prompt, path),
+        expected=expected,
         policies_path=policies_path if policies_path.is_file() else None,
+        confidence=raw.get("confidence"),
     )
     _check_actions_producible(fixture)
     return fixture

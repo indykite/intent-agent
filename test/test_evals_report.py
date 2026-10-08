@@ -239,3 +239,26 @@ def test_markdown_report_escapes_hostile_prompts_and_details(eval_fixture):
     assert "````diff\n" in markdown
     assert markdown.count("<details>") == 1
     assert markdown.rstrip().endswith("</details>")
+
+
+def test_every_report_shows_the_models_rating_of_a_failing_answer(eval_fixture):
+    fixture = eval_fixture(confidence="high")
+    rated = replace(
+        _passing(fixture),
+        verdict=Verdict(
+            passed=False, forced_match=False, detail="evaluations match, but confidence is low (golden high)"
+        ),
+        confidence="low",
+        explanation="Only a related policy fits.",
+    )
+    report = build_report([rated], model="gemini-test", min_correctness=_MIN_CORRECTNESS)
+    rating = "confidence: low (golden high) - Only a related policy fits."
+
+    assert f"    {rating}" in render_text(report)
+    assert rating in render_markdown(report)
+    entry = to_json(report)["fixtures"][0]
+    assert (entry["expected_confidence"], entry["confidence"], entry["explanation"]) == (
+        "high",
+        "low",
+        "Only a related policy fits.",
+    )

@@ -6,12 +6,16 @@
     "evaluations": [
       {
         "action": {
-          "name": "WORKS_IN"
+          "name": "WORKS_IN_PARENT_DEPT"
         },
         "resource": {
           "type": "Department"
         },
-        "context": {},
+        "context": {
+          "parameters": {
+            "action_derivation_rule": "policy_based"
+          }
+        },
         "subject": {
           "type": "User",
           "id": "leslie"
@@ -19,12 +23,16 @@
       },
       {
         "action": {
-          "name": "MADE"
+          "name": "AFFECTED"
         },
         "resource": {
-          "type": "Decision"
+          "type": "Account"
         },
-        "context": {},
+        "context": {
+          "parameters": {
+            "action_derivation_rule": "policy_based"
+          }
+        },
         "subject": {
           "type": "User",
           "id": "leslie"
@@ -32,6 +40,7 @@
       }
     ]
   },
+  "confidence": "high",
   "category": "multi intent",
   "data_model": "user_model"
 }

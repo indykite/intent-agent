@@ -65,20 +65,19 @@ fixtures) and an expected/actual diff for every failure.
   so a typo can't silently drop a fixture out of a gate). Every `adversarial ...` category feeds
   the injection-resistance gate.
 - `ambiguous` and `out of scope` are the categories whose golden answer is always the refusal, and
-  they differ in why the prompt can't be mapped: `out of scope` asks about something the schema
-  doesn't model at all ("is my driving license still valid?"), while `ambiguous` names entities it
-  does model but never says what access to check ("can I access it?", "check the department and the
+  they differ in why the prompt can't be mapped: `out of scope` asks about something no access
+  policy covers ("is my driving license still valid?"), while `ambiguous` names entities the
+  policies do cover but never says what access to check ("can I access it?", "check the department and the
   customer") - the skill's "Nothing actually asked" rule. Both are the fixtures the no-forced-match
   gate is there for, so prefer a prompt the model is tempted by over one it could never answer.
 - `data_model` names `evals/schema/<data_model>_schema.json`, served to the agent as the platform
-  schema, and `evals/schema/<data_model>_policies.json` (optional, the `GET /access/v1/policies`
-  shape), served as the platform's KBAC policy listing - the actions those policies grant are
-  valid action names next to the schema's edges. A golden answer the pipeline could never
-  return is rejected at load time: the loader checks the action vocabulary, then feeds the golden
-  evaluations through the real normalisation as the fixture's caller and requires them to come
-  back unchanged - so a relationship the caller's type doesn't hold, a missing `policy_based`
-  marker, a subject the binding would overwrite or a duplicate it would drop all fail the load
-  instead of reading as a model failure. `jwt_sub` is the caller's id the agent binds (blank for
+  schema, and `evals/schema/<data_model>_policies.json` (the `GET /access/v1/policies` shape),
+  served as the platform's KBAC policy listing - every answer must use what these policies grant.
+  A golden answer the pipeline could never return is rejected at load time: the loader checks the
+  action vocabulary, then feeds the golden evaluations through the real normalisation as the
+  fixture's caller and requires them to come back unchanged - so a combination no policy grants,
+  a subject the binding would overwrite or a duplicate it would drop all fail the load instead of
+  reading as a model failure. `jwt_sub` is the caller's id the agent binds (blank for
   an anonymous caller).
 - `subject_type` is the caller's node type. It may be omitted when the data model has exactly one
   DigitalTwin type (`user_model` -> `User`, `customer_model` -> `Customer`) and is required for
@@ -226,13 +225,10 @@ cache, and real Gemini calls:
    second-subject pattern, both described in `skills/extract-intent/SKILL.md`. A
    third-person prompt like "what can
    user X buy" doesn't test what it looks like it tests. Prefer first-person prompts,
-   and check the platform schema (`GET {INDYKITE_BASE_URL}/data-schema/v1`) for the node
-   types and edge relations that actually exist before assuming an entity or action is
-   graph-modeled (e.g. an individual stock ticker usually isn't a node - that data tends
-   to come from an external source instead). An action word the schema has no relation
-   for (say "retrieve" when the only relation is `CAN_ACCESS`) makes the model re-fetch
-   the schema until `TOOL_CALL_MAX_ITERATIONS` runs out, which comes back as the no-intent
-   error and is audited as `outcome: error`.
+   and check the caller's access policies
+   (`GET {INDYKITE_BASE_URL}/access/v1/policies?subject_type=...`) for what they grant: a
+   prompt no policy covers comes back as the no-intent error, and a `subject_type` with no
+   policies at all as the "Access policies unavailable" error.
 
 ### With scripts
 
@@ -258,9 +254,9 @@ bound to the caller. A Subject Search ("who can ...?") is the one case where the
 `subject` is not the caller: the model picks `subject.type` (the entity type searched for)
 and marks the evaluation with `context.parameters.subject_source` set to `"search"`; the
 agent keeps that type, drops any id, and removes the marker from the response (it is the
-model's instruction to the binding, not data for the caller). To see it, send a caller of a *different* type than
-the one searched for, against the service started above (any non-empty token works with the
-mock introspection service):
+model's instruction to the binding, not data for the caller). To see it, send a "who can"
+prompt one of the caller's policies covers, against the service started above (any non-empty
+token works with the mock introspection service):
 
 ```sh
 curl -s -X POST http://127.0.0.1:6003/ \
@@ -271,18 +267,18 @@ curl -s -X POST http://127.0.0.1:6003/ \
     "jsonrpc": "2.0", "id": "1", "method": "SendMessage",
     "params": {"message": {
       "role": "ROLE_USER",
-      "parts": [{"text": "Which users can access account acc_ted_investing?"}],
+      "parts": [{"text": "Who can waive the fee on account acc_ted_investing?"}],
       "messageId": "manual-search-1",
       "metadata": {"subject_type": "Customer", "subject_id": "rebecca"}
     }}
   }'
 ```
 
-(`User`, `Customer`, `Account` and `CAN_ACCESS` are the CanBank data model - substitute your
-graph's own node types and edge relation.) In the returned evaluation, expect:
+(`Customer`, `Account` and a `Customer -WAIVE_FEE-> Account` policy are only an example -
+substitute your own caller type and a policy it holds.) In the returned evaluation, expect:
 
-- `subject` is `{"type": "User"}` - the searched-for type, not the caller's `Customer`, and
-  no `id` even though the caller supplied one;
+- `subject` is `{"type": "Customer"}` - the searched-for type, with no `id` even though the
+  caller supplied one;
 - no `subject_source` in `context.parameters` - the marker never reaches the caller. If the
   subject came back as the caller instead, the model didn't set the marker - a
   prompt/model-compliance problem, not the binding (`LOG_LEVEL=DEBUG` shows the raw answer).

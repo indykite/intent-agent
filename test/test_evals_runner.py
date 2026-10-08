@@ -19,9 +19,14 @@ from indykite.intent_agent.errors import no_intent_error
 
 _ACTIVATE_EXTRACT_INTENT = {"name": "activate_skill", "args": {"name": "extract-intent"}, "id": "call-1"}
 _PROMPT = "Can I access the document doc123?"
-# What the model answers (no subject - the pipeline binds the caller) and what the caller gets.
+# What the model answers (no subject - the pipeline binds the caller) and what the caller gets
+# (the caller bound, and the policy_based marker the pipeline sets on every evaluation).
 _MODEL_EVALUATION = {"action": {"name": "CAN_ACCESS"}, "resource": {"type": "Document", "id": "doc123"}, "context": {}}
-_BOUND_EVALUATION = {**_MODEL_EVALUATION, "subject": {"type": "User", "id": "leslie"}}
+_BOUND_EVALUATION = {
+    **_MODEL_EVALUATION,
+    "context": {"parameters": {"action_derivation_rule": "policy_based"}},
+    "subject": {"type": "User", "id": "leslie"},
+}
 
 
 class _ScriptedLLM:
@@ -57,7 +62,9 @@ class _ScriptedLLM:
         if not any(isinstance(message, ToolMessage) for message in messages):
             return Mock(text="", content="", tool_calls=[_ACTIVATE_EXTRACT_INTENT])
         self.prompts_seen.append(prompt)
-        text = json.dumps(answer)
+        # The model rates every answer (an empty one too - the pipeline ignores it there); a
+        # script entry that doesn't rate itself is rated high.
+        text = json.dumps({"explanation": "A policy matches the prompt.", "confidence": "high", **answer})
         return Mock(text=text, content=text, tool_calls=[])
 
 
@@ -82,21 +89,21 @@ _CUSTOMER_EXPECTED = {
             "subject": {"type": "Customer", "id": "leslie"},
             "action": {"name": "CAN_ACCESS"},
             "resource": {"type": "Document", "id": "doc123"},
-            "context": {},
+            "context": {"parameters": {"action_derivation_rule": "policy_based"}},
         }
     ],
 }
+_CUSTOMER_CAN_ACCESS_DOCUMENT = ("Customer", "CAN_ACCESS", "Document")
 
 
-def _customer_model(eval_schema_file):
-    """A customer_model whose one DigitalTwin, Customer, holds the CAN_ACCESS Document edge."""
-    return eval_schema_file(
-        "customer_model", digital_twins=("Customer",), relations=[("Customer", "CAN_ACCESS", "Document")]
-    )
+def _customer_model(eval_schema_file, eval_policies_file, *extra_policies):
+    """A customer_model granting Customer CAN_ACCESS Document (plus `extra_policies` triples)."""
+    eval_policies_file("customer_model", [_CUSTOMER_CAN_ACCESS_DOCUMENT, *extra_policies])
+    return eval_schema_file("customer_model", digital_twins=("Customer",), relations=[_CUSTOMER_CAN_ACCESS_DOCUMENT])
 
 
-def test_one_agent_per_data_model(settings, eval_fixture, eval_schema_file):
-    _customer_model(eval_schema_file)
+def test_one_agent_per_data_model(settings, eval_fixture, eval_schema_file, eval_policies_file):
+    _customer_model(eval_schema_file, eval_policies_file)
     fixtures = [
         eval_fixture("a_test_1"),
         eval_fixture("b_test_1", data_model="customer_model", expected=_CUSTOMER_EXPECTED),
@@ -122,6 +129,21 @@ def test_run_fixture_binds_the_fixture_subject_and_judges_the_bound_response(set
     assert result.outcome == Outcome.SUCCESS.value
     assert result.validation_retries == 0
     assert result.latency_seconds > 0
+    assert (result.confidence, result.explanation) == ("high", "A policy matches the prompt.")
+
+
+def test_run_fixture_passes_the_right_evaluations_rated_with_another_confidence(settings, eval_fixture):
+    fixture = eval_fixture(confidence="high")
+    answer = {"evaluations": [_MODEL_EVALUATION], "explanation": "Only a related policy fits.", "confidence": "low"}
+    llm = _ScriptedLLM({_PROMPT: answer})
+    agent = build_agents([fixture], settings, llm=llm)[fixture.schema_path]
+
+    result = asyncio.run(run_fixture(fixture, agent))
+
+    assert result.passed
+    assert result.actual == {"prompt": _PROMPT, "evaluations": [_BOUND_EVALUATION]}
+    assert result.verdict.detail == "response matches the golden answer (confidence low, golden high)"
+    assert (result.confidence, result.explanation) == ("low", "Only a related policy fits.")
 
 
 def test_run_fixture_reports_a_forced_match_on_a_refusal_fixture(settings, eval_fixture):
@@ -239,8 +261,7 @@ def test_run_suite_isolates_a_failing_fixture(settings, eval_fixture):
 
 
 def test_agents_serve_their_data_models_policies(settings, eval_fixture, eval_schema_file, eval_policies_file):
-    _customer_model(eval_schema_file)
-    eval_policies_file("customer_model", [("Customer", "CHECK_MEMBERSHIP", "Document")])
+    _customer_model(eval_schema_file, eval_policies_file, ("Customer", "CHECK_MEMBERSHIP", "Document"))
     fixtures = [
         eval_fixture("a_test_1"),
         eval_fixture("b_test_1", data_model="customer_model", expected=_CUSTOMER_EXPECTED),
@@ -248,10 +269,12 @@ def test_agents_serve_their_data_models_policies(settings, eval_fixture, eval_sc
 
     agents = build_agents(fixtures, settings, llm=_ScriptedLLM({}))
 
-    assert agents[fixtures[0].schema_path].get_cached_policies("User") == ([], False)
+    user_policies, failed = agents[fixtures[0].schema_path].get_cached_policies("User")
+    assert not failed
+    assert [entry["policy"]["actions"] for entry in user_policies] == [["CAN_ACCESS"]]
     customer_policies, failed = agents[fixtures[1].schema_path].get_cached_policies("Customer")
     assert not failed
-    assert [entry["policy"]["actions"] for entry in customer_policies] == [["CHECK_MEMBERSHIP"]]
+    assert [entry["policy"]["actions"] for entry in customer_policies] == [["CAN_ACCESS"], ["CHECK_MEMBERSHIP"]]
     assert agents[fixtures[1].schema_path].get_cached_policies("User") == ([], False)
 
 

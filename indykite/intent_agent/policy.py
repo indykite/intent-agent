@@ -170,13 +170,13 @@ class PolicyClient:
         a malformed body), not just the fact that something failed.
 
         Retries up to retry_attempts times (bounded by timeout_seconds each) before giving up -
-        a transient platform blip must not cost the caller a policy-derived answer it could
-        have had a moment later. A 4xx is the one exception (review): a client error (wrong
+        a transient platform blip must not cost the caller an answer it could have had a
+        moment later. A 4xx is the one exception (review): a client error (wrong
         scope, not found, ...) will not succeed on retry, so it fails fast after a single
         attempt instead of spending the same retry budget a transient failure gets. Every
-        attempt's failure is logged; only the final one at WARNING, since a policies outage is
-        never fatal to extraction (run_extraction proceeds without policy context, see
-        subject_binding._bind_subject/_policy_fetch_failed).
+        attempt's failure is logged; only the final one at WARNING - a policies outage fails
+        only the requests that arrive during it (run_extraction's policy_unavailable_error,
+        unless last known-good policies are cached), never the process.
         """
         if not self._base_url or not self._app_agent_key:
             reason = "IK base URL/app-agent key not set"
@@ -255,8 +255,8 @@ class PolicyClient:
         a failure marker, reasoning that "a fresh attempt is exactly as cheap as serving
         something stale" (true when failures went uncached), but that stopped being true once
         the backoff below was added: every request during the whole backoff window would then
-        get schema-only derivation instead of a policy set that was perfectly usable moments
-        earlier. Falling back to the stale value re-caches it (its own freshness clock resets
+        be refused (policy_unavailable_error) despite a policy set that was perfectly usable
+        moments earlier. Falling back to the stale value re-caches it (its own freshness clock resets
         to now), so the next actual retry is up to POLICY_REFRESH_TTL_MINUTES away rather than
         on literally the next request the way schema.py's async refresh manages - an accepted
         trade against hammering a down platform on every request, not an oversight. Only when
@@ -275,8 +275,8 @@ class PolicyClient:
         retry_attempts x timeout_seconds cost again, and, just as importantly, a waiting
         concurrent caller would see nothing cached once it is their turn and retry the fetch
         itself rather than reusing the winner's failure. That still never blocks or raises for
-        the caller either way - run_extraction proceeds exactly the same
-        (policy_fetch_failed=True) whether this returns fast from a fresh backoff or slow from
+        the caller either way - run_extraction answers exactly the same
+        (policy_unavailable_error) whether this returns fast from a fresh backoff or slow from
         a real attempt. Either fallback logs the specific reason _load() failed with (review),
         not just the fact that it did.
 
@@ -301,8 +301,8 @@ class PolicyClient:
 
         Any cache backend failure (e.g. CACHE_BACKEND=redis genuinely unreachable, not just a
         miss) is treated the same as a policy fetch failure rather than left to escape as an
-        unhandled exception (review) - run_extraction proceeds schema-only either way, and
-        fetch_failed is True.
+        unhandled exception (review) - run_extraction refuses the request
+        (policy_unavailable_error) either way, and fetch_failed is True.
         """
         try:
             resolved, cached_result = self.peek_cached(subject_type)

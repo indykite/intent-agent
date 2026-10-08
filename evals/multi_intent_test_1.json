@@ -20,27 +20,10 @@
           "type": "User",
           "id": "leslie"
         }
-      },
-      {
-        "action": {
-          "name": "CONTAINS"
-        },
-        "resource": {
-          "type": "Document"
-        },
-        "context": {
-          "parameters": {
-            "depends_on_previous_evaluations": true,
-            "action_derivation_rule": "policy_based"
-          }
-        },
-        "subject": {
-          "type": "User",
-          "id": "leslie"
-        }
       }
     ]
   },
+  "confidence": "low",
   "category": "multi intent",
   "data_model": "user_model"
 }
