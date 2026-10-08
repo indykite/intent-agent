@@ -535,10 +535,10 @@ def test_golden_answer_loads_only_as_a_policy_combination(
 
 
 def test_shipped_suite_has_a_policies_file_for_every_data_model_it_uses():
-    """Every golden answer needs its data model's policies to be producible."""
+    """Every golden answer needs its data model's policies to be producible; a refusal may have none."""
     for fixture in load_fixtures():
         assert fixture.policies_path is not None, fixture.id
-        assert fixture.policies, fixture.id
+        assert fixture.policies or fixture.expects_refusal, fixture.id
 
 
 def test_every_adversarial_category_feeds_the_injection_gate():

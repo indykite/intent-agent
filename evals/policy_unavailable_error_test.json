@@ -1,0 +1,13 @@
+{
+  "prompt": "Who can access me, a customer?",
+  "jwt_sub": "bob",
+  "subject_type": "Customer",
+  "expected": {
+    "prompt": "Who can access me, a customer?",
+    "error": "Unable to extract intent from prompt.",
+    "reason": "Access policies for the supplied subject type are unavailable.",
+    "obligation": "Retry once access policies are available, or contact the administrator."
+  },
+  "category": "subject search",
+  "data_model": "no_policies_model"
+}
