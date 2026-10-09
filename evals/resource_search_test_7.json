@@ -6,7 +6,7 @@
     "evaluations": [
       {
         "action": {
-          "name": "AFFECTED"
+          "name": "OWNS"
         },
         "resource": {
           "type": "Account"
@@ -23,7 +23,7 @@
       }
     ]
   },
-  "confidence": "low",
+  "confidence": "high",
   "category": "resource search",
   "data_model": "user_model"
 }

@@ -99,6 +99,26 @@
         }
       },
       "tags": []
+    },
+    {
+      "policy": {
+        "meta": {
+          "policy_version": "2.0-kbac"
+        },
+        "subject": {
+          "type": "User"
+        },
+        "actions": [
+          "OWNS"
+        ],
+        "resource": {
+          "type": "Account"
+        },
+        "condition": {
+          "cypher": "MATCH (subject:User)-[:OWNS]->(resource:Account)"
+        }
+      },
+      "tags": []
     }
   ]
 }
