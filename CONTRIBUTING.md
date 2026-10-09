@@ -106,12 +106,9 @@ git clone https://github.com/YOUR-GITHUB-USERNAME/intent-agent.git   # your fork
 cd intent-agent
 git remote add upstream https://github.com/indykite/intent-agent.git
 
-make install_dev     # verifies uv.lock is current
+make install_dev     # verifies uv.lock is current and installs dependencies
 make test            # runs the unit tests
 ```
-
-There is no separate install step: the first `uv run` (here, `make test`) creates `.venv/` and
-installs the locked dependencies, dev group included.
 
 Unit tests and the integration tests need no credentials or `.env` at all.
 

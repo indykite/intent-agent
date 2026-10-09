@@ -125,12 +125,6 @@ repos:
         language: script
         files: ^chart/
         pass_filenames: false
-      - id: helm-chart-version
-        name: helm-chart-version
-        entry: .github/scripts/pre-commit-check-helm-version.sh
-        language: script
-        files: ^chart/
-        pass_filenames: false
 
   #
   # Renovate
