@@ -6,7 +6,7 @@
     "evaluations": [
       {
         "action": {
-          "name": "CAN_ACCESS"
+          "name": "REPORTS_TO"
         },
         "resource": {
           "id": "flo",
@@ -25,7 +25,7 @@
       }
     ]
   },
-  "confidence": "medium",
+  "confidence": "high",
   "category": "single intent",
   "data_model": "user_model"
 }

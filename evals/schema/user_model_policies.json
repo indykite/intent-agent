@@ -15,7 +15,7 @@
           "type": "Account"
         },
         "condition": {
-          "cypher": "MATCH (subject:User) MATCH (resource:Account)"
+          "cypher": "MATCH (subject:User)-[:MADE]->(:Decision)<-[:CLOSED_BY]-(:Ticket)-[:REGARDING]->(resource:Account)"
         }
       },
       "tags": []
@@ -136,6 +136,26 @@
         },
         "condition": {
           "cypher": "MATCH (subject:User)-[:WORKS_IN]->(:Department)-[:CAN_ACCESS]->(:Folder)-[:CONTAINS]->(resource:Document)"
+        }
+      },
+      "tags": []
+    },
+    {
+      "policy": {
+        "meta": {
+          "policy_version": "2.0-kbac"
+        },
+        "subject": {
+          "type": "User"
+        },
+        "actions": [
+          "REPORTS_TO"
+        ],
+        "resource": {
+          "type": "User"
+        },
+        "condition": {
+          "cypher": "MATCH (subject:User)-[:REPORTS_TO*1..]->(resource:User)"
         }
       },
       "tags": []
