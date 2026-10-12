@@ -24,7 +24,7 @@
       }
     ]
   },
-  "confidence": "high",
+  "confidence": "medium",
   "category": "single intent",
   "data_model": "user_model"
 }

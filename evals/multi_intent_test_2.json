@@ -1,0 +1,46 @@
+{
+  "prompt": "Which accounts do I own, and which quotes can I retrieve?",
+  "jwt_sub": "leslie",
+  "expected": {
+    "prompt": "Which accounts do I own, and which quotes can I retrieve?",
+    "evaluations": [
+      {
+        "action": {
+          "name": "OWNS"
+        },
+        "resource": {
+          "type": "Account"
+        },
+        "context": {
+          "parameters": {
+            "action_derivation_rule": "policy_based"
+          }
+        },
+        "subject": {
+          "type": "User",
+          "id": "leslie"
+        }
+      },
+      {
+        "action": {
+          "name": "CAN_RETRIEVE"
+        },
+        "resource": {
+          "type": "Quote"
+        },
+        "context": {
+          "parameters": {
+            "action_derivation_rule": "policy_based"
+          }
+        },
+        "subject": {
+          "type": "User",
+          "id": "leslie"
+        }
+      }
+    ]
+  },
+  "confidence": "high",
+  "category": "multi intent",
+  "data_model": "user_model"
+}
