@@ -111,7 +111,7 @@ Keep everything the prompt states, and invent nothing:
 | ----------------------------------------------------------------- | -------------------------------------- |
 | a named instance ("report rep_31", "team with id=platform")       | `resource.id`, character for character |
 | criteria over the resource's own properties ("open", "under 100") | `filters`, one CEL expression          |
-| one attribute asked for ("the _total_ of budget bud_9")           | `parameters.attribute`                 |
+| a property asked for ("the _total_ of budget bud_9"), always      | `parameters.attribute`                 |
 | "directly" / "indirectly"                                         | `parameters.direct`: `true` / `false`  |
 | "part of", "under", "inside" (a parent or container)              | `parameters.direct`: `false`           |
 | time, location, channel                                           | `qualifiers`                           |
