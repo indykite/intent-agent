@@ -611,8 +611,13 @@ def _lift_external_id_filters(data: dict[str, Any]) -> None:
         del context["filters"]
 
 
-# One `resource.<property> = '<literal>'` restriction in a policy's Cypher condition.
-_CONDITION_EQUALITY = re.compile(r"""resource\.(?P<prop>\w+)\s*=\s*(?P<q>['"])(?P<value>[^'"]*)(?P=q)""")
+# One whole `resource.<property> = '<literal>'` term of a policy's Cypher WHERE: it must start the
+# WHERE, an AND or a group and end it, so `resource.code = 'A' + 'B'` is never read as `code = A`.
+_CONDITION_EQUALITY = re.compile(
+    r"""(?:\bWHERE|\bAND|\()\s*resource\.(?P<prop>\w+)\s*=\s*(?P<q>['"])(?P<value>[^'"]*)(?P=q)"""
+    r"""(?=\s*(?:$|\bAND\b|\bRETURN\b|\bWITH\b|\)))""",
+    re.IGNORECASE,
+)
 
 
 def _field(node: object, key: str) -> object:
@@ -654,14 +659,24 @@ def _drop_condition_filters(data: dict[str, Any], policies: list[dict[str, Any]]
         filters = context.get("filters") if isinstance(context, dict) else None
         if not isinstance(filters, str) or "||" in filters or "(" in filters:
             continue
+        clauses = filters.split("&&")
+        # A quote split across clauses means an `&&` inside a string literal: leave the filter as written.
+        if any(clause.count("'") % 2 or clause.count('"') % 2 for clause in clauses):
+            continue
         restrictions = _condition_restrictions(policies, evaluation)
-        kept = []
-        for clause in filters.split("&&"):
-            match = _EQUALITY_CLAUSE.match(clause)
-            value = match and (match.group("a") if match.group("a") is not None else match.group("b"))
-            if not match or (match.group("prop") or match.group("prop2"), value) not in restrictions:
-                kept.append(clause.strip())
-        context["filters"] = " && ".join(kept)
+        kept = [clause for clause in clauses if _clause_equality(clause) not in restrictions]
+        # Untouched unless a clause actually goes: the filter is the caller's data, kept verbatim.
+        if len(kept) < len(clauses):
+            context["filters"] = "&&".join(kept).strip()
+
+
+def _clause_equality(clause: str) -> tuple[str, str] | None:
+    """(property, literal) when the whole clause is `resource.<property> == '<literal>'`, else None."""
+    match = _EQUALITY_CLAUSE.match(clause)
+    if match is None:
+        return None
+    value = match.group("a") if match.group("a") is not None else match.group("b")
+    return match.group("prop") or match.group("prop2"), value
 
 
 def _drop_duplicate_evaluations(data: dict[str, Any]) -> None:

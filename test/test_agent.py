@@ -2182,6 +2182,16 @@ def test_normalize_intent_response_leaves_every_other_filter_alone(resource, fil
             {"filters": "resource.make == 'Ford' || resource.model == 'kitt'"},
             id="disjunction",
         ),
+        pytest.param(
+            "resource.model == 'a&&b' && resource.make == 'Ford'",
+            {"filters": "resource.model == 'a&&b' && resource.make == 'Ford'"},
+            id="and_inside_a_literal",
+        ),
+        pytest.param(
+            "resource.model=='kitt'&&resource.year>1",
+            {"filters": "resource.model=='kitt'&&resource.year>1"},
+            id="nothing_dropped_kept_verbatim",
+        ),
     ],
 )
 def test_normalize_intent_response_drops_filter_clauses_the_policy_condition_checks(filters, expected):
@@ -2220,6 +2230,11 @@ _FORD_FILTER = {"filters": "resource.make == 'Ford'"}
             [_ford_policy("MATCH (subject:Customer), (resource:Car) WHERE NOT resource.make = 'Ford'")],
             _FORD_FILTER,
             id="negated_condition",
+        ),
+        pytest.param(
+            [_ford_policy("MATCH (subject:Customer), (resource:Car) WHERE resource.make = 'Ford' + 'X'")],
+            _FORD_FILTER,
+            id="concatenated_literal",
         ),
         pytest.param(
             [{"policy": {"subject": "Customer", "actions": ["RENT"], "condition": "x"}}, _ford_policy()],
