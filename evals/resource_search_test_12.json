@@ -1,0 +1,48 @@
+{
+  "prompt": "Does alison's account fall in any investment category?",
+  "jwt_sub": "bob",
+  "expected": {
+    "prompt": "Does alison's account fall in any investment category?",
+    "evaluations": [
+      {
+        "action": {
+          "name": "CAN_ACCESS"
+        },
+        "resource": {
+          "type": "Customer",
+          "id": "alison"
+        },
+        "context": {
+          "parameters": {
+            "action_derivation_rule": "policy_based"
+          }
+        },
+        "subject": {
+          "type": "Customer",
+          "id": "bob"
+        }
+      },
+      {
+        "action": {
+          "name": "VIEW_ACCOUNT_CATEGORY"
+        },
+        "resource": {
+          "type": "InvestmentCategory"
+        },
+        "context": {
+          "parameters": {
+            "depends_on_previous_evaluations": true,
+            "action_derivation_rule": "policy_based"
+          }
+        },
+        "subject": {
+          "type": "Customer",
+          "id": "alison"
+        }
+      }
+    ]
+  },
+  "confidence": "high",
+  "category": "resource search",
+  "data_model": "customer_model"
+}

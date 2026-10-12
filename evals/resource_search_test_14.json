@@ -1,0 +1,30 @@
+{
+  "prompt": "What rulings were made on the support requests I opened?",
+  "jwt_sub": "bob",
+  "expected": {
+    "prompt": "What rulings were made on the support requests I opened?",
+    "evaluations": [
+      {
+        "action": {
+          "name": "VIEW_TICKET_DECISION"
+        },
+        "resource": {
+          "type": "Decision"
+        },
+        "context": {
+          "parameters": {
+            "action_derivation_rule": "policy_based"
+          }
+        },
+        "subject": {
+          "type": "Customer",
+          "id": "bob"
+        }
+      }
+    ]
+  },
+  "confidence": "medium",
+  "category": "resource search",
+  "data_model": "combined_model",
+  "subject_type": "Customer"
+}

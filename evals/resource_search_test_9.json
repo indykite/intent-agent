@@ -1,0 +1,29 @@
+{
+  "prompt": "Which customers are served by the same department as me?",
+  "jwt_sub": "bob",
+  "expected": {
+    "prompt": "Which customers are served by the same department as me?",
+    "evaluations": [
+      {
+        "action": {
+          "name": "VIEW_FELLOW_CUSTOMER"
+        },
+        "resource": {
+          "type": "Customer"
+        },
+        "context": {
+          "parameters": {
+            "action_derivation_rule": "policy_based"
+          }
+        },
+        "subject": {
+          "type": "Customer",
+          "id": "bob"
+        }
+      }
+    ]
+  },
+  "confidence": "high",
+  "category": "resource search",
+  "data_model": "customer_model"
+}

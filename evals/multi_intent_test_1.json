@@ -20,10 +20,28 @@
           "type": "User",
           "id": "leslie"
         }
+      },
+      {
+        "action": {
+          "name": "CAN_ACCESS"
+        },
+        "resource": {
+          "type": "Document"
+        },
+        "context": {
+          "parameters": {
+            "action_derivation_rule": "policy_based",
+            "depends_on_previous_evaluations": true
+          }
+        },
+        "subject": {
+          "type": "User",
+          "id": "leslie"
+        }
       }
     ]
   },
-  "confidence": "low",
+  "confidence": "high",
   "category": "multi intent",
   "data_model": "user_model"
 }

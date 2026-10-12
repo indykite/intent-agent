@@ -119,6 +119,26 @@
         }
       },
       "tags": []
+    },
+    {
+      "policy": {
+        "meta": {
+          "policy_version": "2.0-kbac"
+        },
+        "subject": {
+          "type": "User"
+        },
+        "actions": [
+          "CAN_ACCESS"
+        ],
+        "resource": {
+          "type": "Document"
+        },
+        "condition": {
+          "cypher": "MATCH (subject:User)-[:WORKS_IN]->(:Department)-[:CAN_ACCESS]->(:Folder)-[:CONTAINS]->(resource:Document)"
+        }
+      },
+      "tags": []
     }
   ]
 }

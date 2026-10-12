@@ -32,7 +32,7 @@
         },
         "resource": {
           "id": "doc123",
-          "type": "Folder"
+          "type": "Document"
         },
         "context": {
           "parameters": {

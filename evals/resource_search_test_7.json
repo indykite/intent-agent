@@ -1,15 +1,15 @@
 {
-  "prompt": "What accounts do I own?",
-  "jwt_sub": "leslie",
+  "prompt": "Which of my unpaid invoices can I view?",
+  "jwt_sub": "bob",
   "expected": {
-    "prompt": "What accounts do I own?",
+    "prompt": "Which of my unpaid invoices can I view?",
     "evaluations": [
       {
         "action": {
-          "name": "OWNS"
+          "name": "VIEW_UNPAID_INVOICE"
         },
         "resource": {
-          "type": "Account"
+          "type": "Invoice"
         },
         "context": {
           "parameters": {
@@ -17,13 +17,13 @@
           }
         },
         "subject": {
-          "type": "User",
-          "id": "leslie"
+          "type": "Customer",
+          "id": "bob"
         }
       }
     ]
   },
   "confidence": "high",
   "category": "resource search",
-  "data_model": "user_model"
+  "data_model": "customer_model"
 }

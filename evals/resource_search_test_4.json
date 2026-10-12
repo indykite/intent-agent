@@ -1,16 +1,15 @@
 {
-  "prompt": "What customers can I access?",
+  "prompt": "What accounts have been affected by my decisions?",
   "jwt_sub": "leslie",
-  "subject_type": "User",
   "expected": {
-    "prompt": "What customers can I access?",
+    "prompt": "What accounts have been affected by my decisions?",
     "evaluations": [
       {
         "action": {
-          "name": "CAN_ACCESS"
+          "name": "AFFECTED"
         },
         "resource": {
-          "type": "Customer"
+          "type": "Account"
         },
         "context": {
           "parameters": {
@@ -26,5 +25,5 @@
   },
   "confidence": "high",
   "category": "resource search",
-  "data_model": "combined_model"
+  "data_model": "user_model"
 }

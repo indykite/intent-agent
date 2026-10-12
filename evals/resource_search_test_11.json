@@ -1,0 +1,29 @@
+{
+  "prompt": "What tiers are my closed accounts in?",
+  "jwt_sub": "bob",
+  "expected": {
+    "prompt": "What tiers are my closed accounts in?",
+    "evaluations": [
+      {
+        "action": {
+          "name": "CAN_ACCESS"
+        },
+        "resource": {
+          "type": "AccountTier"
+        },
+        "context": {
+          "parameters": {
+            "action_derivation_rule": "policy_based"
+          }
+        },
+        "subject": {
+          "type": "Customer",
+          "id": "bob"
+        }
+      }
+    ]
+  },
+  "confidence": "low",
+  "category": "resource search",
+  "data_model": "customer_model"
+}

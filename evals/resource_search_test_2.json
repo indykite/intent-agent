@@ -1,15 +1,16 @@
 {
-  "prompt": "What account tiers do my account span?",
+  "prompt": "What accounts with tier tier_2 do I own?",
   "jwt_sub": "bob",
   "expected": {
-    "prompt": "What account tiers do my account span?",
+    "prompt": "What accounts with tier tier_2 do I own?",
     "evaluations": [
       {
         "action": {
           "name": "CAN_ACCESS"
         },
         "resource": {
-          "type": "AccountTier"
+          "type": "AccountTier",
+          "id": "tier_2"
         },
         "context": {
           "parameters": {
