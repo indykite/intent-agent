@@ -214,8 +214,20 @@ def digital_twin_types(schema: dict[str, Any]) -> list[str]:
     return sorted(label for label, node in nodes.items() if not label.startswith("_") and _has_digital_twin_label(node))
 
 
+def _property_summary(name: str, spec: object) -> str:
+    """`name:TYPE`, the observed value types without NOT NULL - a filter has to match them."""
+    types = spec.get("types") if isinstance(spec, dict) else None
+    entries = types if isinstance(types, list) else []
+    names = {
+        entry["type"].removesuffix(" NOT NULL")
+        for entry in entries
+        if isinstance(entry, dict) and isinstance(entry.get("type"), str) and entry["type"]
+    }
+    return f"{name}:{'|'.join(sorted(names))}" if names else name
+
+
 def _node_summary(label: str, node: object) -> str:
-    """One line for a node type: its label, whether it may be a subject, and its property names.
+    """One line for a node type: its label, whether it may be a subject, and its properties with types.
     A `_`-prefixed type is the platform's own (`_Application`, the calling app) - it carries the
     DigitalTwin label too but is never what a prompt is about, so it is flagged as internal
     rather than as a Subject candidate.
@@ -225,7 +237,11 @@ def _node_summary(label: str, node: object) -> str:
         metadata = {}
     digital_twin = _has_digital_twin_label(node)
     properties = metadata.get("properties", {})
-    names = sorted(properties) if isinstance(properties, dict) else []
+    names = (
+        [_property_summary(name, properties[name]) for name in sorted(properties)]
+        if isinstance(properties, dict)
+        else []
+    )
     if label.startswith("_"):
         kind = " (platform-internal, never a Subject or Resource)"
     else:

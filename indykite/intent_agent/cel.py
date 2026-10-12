@@ -18,6 +18,11 @@ FILTER_VARIABLE = "resource"
 # Like the platform's evaluator: no host-type reflection from a filter, whether called as
 # `dyn(x)` or receiver-style as `x.dyn()`.
 _BLOCKED_FUNCTIONS = frozenset({"dyn", "type"})
+# CEL's standard global functions and the `has` macro. The parser accepts any name, so the model's
+# `float(x)` / `toFloat(x)` (no such functions) would only fail when IBAC evaluates the filter.
+_GLOBAL_FUNCTIONS = frozenset(
+    {"bool", "bytes", "double", "duration", "has", "int", "matches", "size", "string", "timestamp", "uint"}
+)
 # Comprehension macros bind their first argument as a loop variable, a legitimate identifier
 # inside the macro's remaining arguments only (`resource.tags.exists(t, t == 'x')`).
 _COMPREHENSION_MACROS = frozenset({"all", "exists", "exists_one", "filter", "map"})
@@ -50,6 +55,7 @@ class _Findings:
 
     foreign: list[str] = field(default_factory=list)
     blocked: list[str] = field(default_factory=list)
+    unknown: list[str] = field(default_factory=list)
     # The properties read off the filter variable itself (`resource.<name>`, `resource["<name>"]`),
     # so they can be checked against the resource type's own properties; a deeper access
     # (`resource.a.b`) contributes only its first name, the one the data schema can speak for.
@@ -135,10 +141,12 @@ def _note_variable(node: Tree, bound: frozenset[str], findings: _Findings) -> No
 
 
 def _walk_global_call(node: Tree, bound: frozenset[str], findings: _Findings) -> None:
-    """Visit a global call `f(args)`, recording a blocked function by name."""
+    """Visit a global call `f(args)`, recording a blocked or non-CEL function by name."""
     function = str(node.children[0])
     if function in _BLOCKED_FUNCTIONS:
         findings.note(findings.blocked, function)
+    elif function not in _GLOBAL_FUNCTIONS:
+        findings.note(findings.unknown, function)
     for child in node.children[1:]:
         _walk(child, bound, findings)
 
@@ -189,6 +197,10 @@ def filter_errors(expression: str, properties: set[str] | None = None) -> list[s
         for name in findings.foreign
     ]
     errors.extend(f"context.filters calls {function}(), which is not allowed" for function in findings.blocked)
+    errors.extend(
+        f"context.filters calls {function}(), not a CEL function (CEL has double(), int(), string(), ...)"
+        for function in findings.unknown
+    )
     if properties:
         known = properties | _ALWAYS_KNOWN_PROPERTIES
         errors.extend(

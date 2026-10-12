@@ -197,7 +197,8 @@ discovered by `skills.discover_skills()` relative to `skills.py`'s own directory
 construction time. System prompt only lists skill names/descriptions; LLM calls `activate_skill`
 to fetch skill's full body on demand, and for `extract-intent` specifically, the cached IndyKite
 schema gets injected into that response as `input_schema.render_schema_summary`'s compact
-node/edge vocabulary (a few KB; the raw JGF is tens of KB and used to be cut mid-JSON at
+node/edge vocabulary, each property with its observed type (`amount:STRING`, so a filter can
+convert with `double()`) (a few KB; the raw JGF is tens of KB and used to be cut mid-JSON at
 `SCHEMA_PREVIEW_CHARS`, which then sent the model re-fetching until the tool budget was gone). Currently one skill ships:
 `extract-intent` — deliberately no separate `get-data-schema` skill; schema fetching = internal
 infrastructure (`SchemaClient`, wired through `IntentAgent.load_data_schema`/
@@ -244,7 +245,8 @@ caller's own type/id as the resource ("who can access me?"), a blank second-subj
 completed from the gate evaluation, and everything else passes through verbatim as untrusted data) and enforces CEL on `filters` (`cel.py`, on `cel-python`): it must parse,
 may reference only the `resource` variable, may read only properties the schema observed for that
 `resource.type` (plus AuthZEN's own `id`/`type`; a type the schema lists no properties for
-disables the check rather than failing every filter), and may not call `dyn()`/`type()` - the same
+disables the check rather than failing every filter), and may not call `dyn()`/`type()` or a
+global function CEL doesn't have (`float()`, seen live; the parser accepts any name) - the same
 posture as the platform's (blocked reflection functions, size limit). The
 expression is never evaluated here; IBAC does that. An
 off-schema value (or non-JSON output) raises `IntentValidationError`; `IntentAgent` feeds the

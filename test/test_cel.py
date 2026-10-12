@@ -13,6 +13,7 @@ from indykite.intent_agent.cel import MAX_FILTER_LENGTH, filter_errors
         pytest.param("resource.name.matches('^CanBank') || !resource.archived", id="regex_and_negation"),
         pytest.param("resource.tags.exists(t, t == 'policy')", id="comprehension_binds_its_loop_variable"),
         pytest.param("has(resource.description) && size(resource.holdings) > 0", id="has_and_size"),
+        pytest.param("double(resource.total) < 9.5 && int(resource.rank) > 2", id="conversion_functions"),
         pytest.param("resource.tags.size() > 0 && resource.name.lowerAscii() == 'x'", id="zero_argument_methods"),
         pytest.param(
             "resource.tags.exists(t, resource.labels.all(u, t == u)) && resource.tags.exists(t, t.size() > 0)",
@@ -95,6 +96,14 @@ def test_filter_errors_rejects_foreign_variables_and_blocked_functions(expressio
     receiver, are reported - each once, all at the same time.
     """
     assert filter_errors(expression) == expected
+
+
+def test_filter_errors_rejects_functions_cel_does_not_have():
+    """The parser accepts any call name; a non-CEL one would only fail when IBAC evaluates it."""
+    assert filter_errors("float(resource.total) > 9.5 || toNumber(resource.rank) > 2") == [
+        "context.filters calls float(), not a CEL function (CEL has double(), int(), string(), ...)",
+        "context.filters calls toNumber(), not a CEL function (CEL has double(), int(), string(), ...)",
+    ]
 
 
 def test_filter_errors_caps_the_length():

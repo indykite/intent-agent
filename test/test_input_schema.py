@@ -172,7 +172,11 @@ def test_render_schema_summary_lists_node_types_edges_and_policies_sorted():
             "nodes": {
                 "Document": {
                     "metadata": {
-                        "properties": {"title": {}, "external_id": {}},
+                        "properties": {
+                            "title": {"types": [{"type": "STRING NOT NULL"}]},
+                            "external_id": {"types": [{"type": "STRING"}, {"type": "FLOAT"}, "?"]},
+                            "pages": {"types": "?"},
+                        },
                         "system_labels": [{"name": "Resource"}],
                     }
                 },
@@ -194,7 +198,7 @@ def test_render_schema_summary_lists_node_types_edges_and_policies_sorted():
 
     assert summary.splitlines() == [
         "Node types, with their properties (only a type a policy below names may be a Subject or Resource):",
-        "- Document: external_id, title",
+        "- Document: external_id:FLOAT|STRING, pages, title:STRING",
         "- Ghost: (no properties)",
         "- User (DigitalTwin): external_id",
         "",

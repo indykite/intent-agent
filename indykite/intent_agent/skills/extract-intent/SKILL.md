@@ -123,10 +123,14 @@ Keep everything the prompt states, and invent nothing:
 
 `context` is always present: `{}` when the prompt supplies nothing.
 
-`filters` rules: properties of `resource` only, named as the data schema lists them for that type
+`filters` is always a valid CEL expression (cel.dev), never free text or another language. Rules:
+properties of `resource` only, named as the data schema lists them for that type
 (`resource.status in ['open', 'pending']`, `resource.name.contains('q3')`,
 `resource.create_time > timestamp('2024-01-01T00:00:00Z')`); no relationships, no SQL, no Cypher,
-no `dyn()` / `type()`, under 1000 characters.
+only CEL's own functions and methods (`size`, `has`, `double`, `int`, `string`, `timestamp`,
+`contains`, `startsWith`, `matches`, ...), no `dyn()` / `type()`, under 1000 characters.
+A number compared with a `STRING` property is converted with `double()`
+(`double(resource.total) < 100.0`).
 
 ## Patterns
 

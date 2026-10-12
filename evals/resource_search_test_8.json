@@ -12,7 +12,7 @@
           "type": "Invoice"
         },
         "context": {
-          "filters": "resource.amount > 500",
+          "filters": "double(resource.amount) > 500.0",
           "parameters": {
             "action_derivation_rule": "policy_based"
           }
