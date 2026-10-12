@@ -9,8 +9,8 @@
           "name": "CAN_ACCESS"
         },
         "resource": {
-          "type": "Customer",
-          "id": "alison"
+          "id": "alison",
+          "type": "Customer"
         },
         "context": {
           "parameters": {
@@ -23,39 +23,27 @@
         }
       },
       {
-        "action": {
-          "name": "OWNS"
-        },
-        "resource": {
-          "type": "Account"
-        },
-        "context": {},
         "subject": {
-          "type": "Customer",
-          "id": "alison"
-        }
-      },
-      {
+          "id": "alison",
+          "type": "Customer"
+        },
         "action": {
           "name": "CAN_ACCESS"
         },
         "resource": {
-          "type": "AccountTier",
-          "id": "tier_1"
+          "id": "tier_1",
+          "type": "AccountTier"
         },
         "context": {
           "parameters": {
             "depends_on_previous_evaluations": true,
             "action_derivation_rule": "policy_based"
           }
-        },
-        "subject": {
-          "type": "Customer",
-          "id": "alison"
         }
       }
     ]
   },
+  "confidence": "high",
   "category": "adversarial subject spoof",
   "data_model": "customer_model"
 }

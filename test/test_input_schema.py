@@ -4,7 +4,13 @@ from typing import Any, get_args, get_origin
 
 import pytest
 
-from indykite.intent_agent.input_schema import _Context, build_input_schema, digital_twin_types, render_schema_summary
+from indykite.intent_agent.input_schema import (
+    _Context,
+    build_input_schema,
+    digital_twin_types,
+    policy_triples,
+    render_schema_summary,
+)
 from indykite.intent_agent.subject_binding import _CONTEXT_KEY_TYPES
 
 _SCHEMA_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mock_ikg_schema.json"
@@ -13,6 +19,21 @@ _SCHEMA_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mock_ikg_schema.jso
 def _load_schema_fixture():
     """Load the real captured IKG schema example used for schema-shape tests."""
     return json.loads(_SCHEMA_FIXTURE_PATH.read_text())
+
+
+def _policy(subject_type, actions, resource_type):
+    """One GET /access/v1/policies entry granting `actions` to `subject_type` on `resource_type`."""
+    return {
+        "policy": {"subject": {"type": subject_type}, "actions": actions, "resource": {"type": resource_type}},
+        "tags": [],
+    }
+
+
+# Policies over the mock schema's node types (Car, Company, Customer, _Application).
+_POLICIES = [
+    _policy("Customer", ["RENT", "OWN"], "Car"),
+    _policy("Customer", ["WORKS_AT"], "Company"),
+]
 
 
 def _variant(field_schema: dict[str, Any], type_name: str) -> dict[str, Any]:
@@ -26,28 +47,63 @@ def _variant(field_schema: dict[str, Any], type_name: str) -> dict[str, Any]:
     raise AssertionError(msg)
 
 
-def test_build_input_schema_enumerates_all_node_types_as_resource_types():
-    """resource.type must enumerate every node label (TDD 4.6), not just DigitalTwin ones."""
-    schema = build_input_schema(_load_schema_fixture())
-    resource_type = schema["$defs"]["_Resource"]["properties"]["type"]
-    assert _variant(resource_type, "string")["enum"] == ["Car", "Company", "Customer", "_Application"]
+def _enum(field_schema):
+    return _variant(field_schema, "string").get("enum")
 
 
-def test_build_input_schema_enumerates_edge_relations_as_action_names():
-    """action.name must enumerate every distinct edge relation in the schema (TDD 4.6)."""
-    schema = build_input_schema(_load_schema_fixture())
-    action_name = schema["$defs"]["_Action"]["properties"]["name"]
-    assert _variant(action_name, "string")["enum"] == ["OWN", "RENT", "WORKS_AT"]
+_CUSTOMER_VOCABULARY = (["Customer"], ["OWN", "RENT", "WORKS_AT"], ["Car", "Company"])
 
 
-def test_build_input_schema_enumerates_all_node_types_as_subject_types():
-    """subject.type must enumerate every node label, same as resource.type - SUBJECT_TYPE is
-    no longer restricted to DigitalTwin-labelled types (ENG-9647), and the LLM's subject.type
-    enum follows the same rule.
-    """
-    schema = build_input_schema(_load_schema_fixture())
-    subject_type = schema["$defs"]["_Subject"]["properties"]["type"]
-    assert _variant(subject_type, "string")["enum"] == ["Car", "Company", "Customer", "_Application"]
+@pytest.mark.parametrize(
+    ("schema", "policies", "expected"),
+    [
+        pytest.param(_load_schema_fixture(), _POLICIES, _CUSTOMER_VOCABULARY, id="policy_vocabulary"),
+        pytest.param(
+            _load_schema_fixture(),
+            [_policy("Customer", ["APPROVE_REFUND"], "Car")],
+            (["Customer"], ["APPROVE_REFUND"], ["Car"]),
+            id="edges_are_never_actions",
+        ),
+        pytest.param(
+            _load_schema_fixture(),
+            [*_POLICIES, _policy("Customer", ["FLY"], "Plane"), _policy("Pilot", ["FLY"], "Car")],
+            _CUSTOMER_VOCABULARY,
+            id="policy_over_a_type_the_schema_lacks_is_excluded",
+        ),
+        pytest.param(
+            _load_schema_fixture(),
+            [
+                _policy("Customer", ["APPROVE_REFUND"], "Car"),
+                _policy("Customer", ["APPROVE_REFUND", "ESCALATE"], "Company"),
+            ],
+            (["Customer"], ["APPROVE_REFUND", "ESCALATE"], ["Car", "Company"]),
+            id="every_fetched_policys_actions",
+        ),
+        pytest.param(
+            _load_schema_fixture(),
+            [
+                {"policy": {"subject": {"type": "Customer"}, "resource": {"type": "Car"}}},
+                _policy("Customer", [123, "", " ", "ESCALATE"], "Car"),
+                {"policy": {"actions": ["NO_TYPES"]}},
+                {"policy": "?"},
+                {"not_a_policy_key": True},
+                "not-an-entry",
+            ],
+            (["Customer"], ["ESCALATE"], ["Car"]),
+            id="malformed_policy_entries_ignored",
+        ),
+        pytest.param(_load_schema_fixture(), None, (None, None, None), id="no_policies_no_enums"),
+        pytest.param({}, _POLICIES, (None, None, None), id="missing_graph_sections_no_enums"),
+    ],
+)
+def test_build_input_schema_enums_come_from_policies(schema, policies, expected):
+    """subject.type / action.name / resource.type enums, in that order (None = unconstrained)."""
+    defs = build_input_schema(schema, policies)["$defs"]
+    assert (
+        _enum(defs["_Subject"]["properties"]["type"]),
+        _enum(defs["_Action"]["properties"]["name"]),
+        _enum(defs["_Resource"]["properties"]["type"]),
+    ) == expected
 
 
 def test_build_input_schema_allows_subject_id_for_the_second_subject_case():
@@ -70,14 +126,12 @@ def test_build_input_schema_context_has_exactly_the_tdd_keys():
     _variant(context_properties["qualifiers"], "object")
 
 
-def test_build_input_schema_top_level_requires_only_evaluations():
-    """The LLM's output shape is deliberately just {evaluations} - no error shape (our own code
-    builds the error response, subject_binding.py) and no prompt echo (normalize_intent_response
-    sets it from the incoming prompt; asking the model for it only costs output tokens).
-    """
+def test_build_input_schema_top_level_is_second_subject_explanation_evaluations_confidence():
     schema = build_input_schema(_load_schema_fixture())
     assert schema["required"] == ["evaluations"]
-    assert set(schema["properties"].keys()) == {"evaluations"}
+    assert list(schema["properties"]) == ["second_subject", "explanation", "evaluations", "confidence"]
+    assert {"type": "string"} in schema["properties"]["explanation"]["anyOf"]
+    assert {"type": "string", "enum": ["high", "medium", "low"]} in schema["properties"]["confidence"]["anyOf"]
 
 
 def test_context_shape_check_covers_every_structured_output_context_key():
@@ -93,61 +147,13 @@ def test_context_shape_check_covers_every_structured_output_context_key():
         assert expected in declared, f"{key}: validator expects {expected}, structured output declares {annotation}"
 
 
-def test_build_input_schema_tolerates_missing_graph_sections():
-    """A malformed/empty schema must produce unconstrained (enum-free) fields, not crash."""
-    schema = build_input_schema({})
-    assert "enum" not in _variant(schema["$defs"]["_Resource"]["properties"]["type"], "string")
-    assert "enum" not in _variant(schema["$defs"]["_Action"]["properties"]["name"], "string")
-    assert "enum" not in _variant(schema["$defs"]["_Subject"]["properties"]["type"], "string")
-
-
-def test_build_input_schema_ignores_non_string_relations():
-    """A malformed relation (a number, an empty string) must not land in the action-name
-    enum - a string enum with a non-string member is an invalid schema for Gemini, and the
-    post-assembly check (subject_binding._edge_relations) applies the same rule.
-    """
-    graph_schema = _load_schema_fixture()
-    graph_schema["graph"]["edges"] = [{"relation": 123}, {"relation": ""}, {"relation": "RENT"}]
-    schema = build_input_schema(graph_schema)
-    assert _variant(schema["$defs"]["_Action"]["properties"]["name"], "string")["enum"] == ["RENT"]
-
-
-@pytest.mark.parametrize(
-    ("policies", "expected_enum"),
-    [
-        pytest.param(
-            [
-                {"policy": {"actions": ["APPROVE_REFUND"], "resource": {"type": "Car"}}},
-                {"policy": {"actions": ["APPROVE_REFUND", "ESCALATE"], "resource": {"type": "Company"}}},
-            ],
-            ["APPROVE_REFUND", "ESCALATE", "OWN", "RENT", "WORKS_AT"],
-            id="widens_with_every_fetched_policies_actions",
-        ),
-        pytest.param(
-            [
-                {"policy": {"resource": {"type": "Car"}}},
-                {"policy": {"actions": [123, "", "ESCALATE"], "resource": {"type": "Car"}}},
-                {"not_a_policy_key": True},
-            ],
-            ["ESCALATE", "OWN", "RENT", "WORKS_AT"],
-            id="ignores_malformed_policy_actions_without_crashing",
-        ),
-        pytest.param([], ["OWN", "RENT", "WORKS_AT"], id="empty_policies_matches_edges_only"),
-    ],
-)
-def test_build_input_schema_action_names_widened_by_policies(policies, expected_enum):
-    """action.name's enum is the union of the schema's edge relations and every fetched
-    policy's actions (ENG-9671) - a policy can supply an action outside the schema's own
-    vocabulary, gated post-assembly (subject_binding.py) by the action_derivation_rule marker,
-    not by this structural enum (JSON Schema can't make an enum conditional per-evaluation). A
-    policy missing its actions list, or one with non-string entries, must not crash the enum
-    build or leak a non-string member into the string enum; an empty policies list must produce
-    exactly the schema-edges-only enum (TDD 4.6's original behavior) - policies are additive,
-    never required.
-    """
-    schema = build_input_schema(_load_schema_fixture(), policies)
-    action_name = schema["$defs"]["_Action"]["properties"]["name"]
-    assert _variant(action_name, "string")["enum"] == expected_enum
+def test_policy_triples_reads_each_granted_combination():
+    assert policy_triples(_POLICIES, _load_schema_fixture()) == {
+        ("Customer", "RENT", "Car"),
+        ("Customer", "OWN", "Car"),
+        ("Customer", "WORKS_AT", "Company"),
+    }
+    assert policy_triples(None, _load_schema_fixture()) == set()
 
 
 def test_build_input_schema_drops_pydantic_only_keys():
@@ -160,13 +166,17 @@ def test_build_input_schema_drops_pydantic_only_keys():
     assert '"default"' not in serialized
 
 
-def test_render_schema_summary_lists_node_types_with_properties_and_edges_sorted():
+def test_render_schema_summary_lists_node_types_edges_and_policies_sorted():
     schema = {
         "graph": {
             "nodes": {
                 "Document": {
                     "metadata": {
-                        "properties": {"title": {}, "external_id": {}},
+                        "properties": {
+                            "title": {"types": [{"type": "STRING NOT NULL"}]},
+                            "external_id": {"types": [{"type": "STRING"}, {"type": "FLOAT"}, "?"]},
+                            "pages": {"types": "?"},
+                        },
                         "system_labels": [{"name": "Resource"}],
                     }
                 },
@@ -182,25 +192,30 @@ def test_render_schema_summary_lists_node_types_with_properties_and_edges_sorted
             ],
         },
     }
+    policies = [_policy("User", ["CAN_READ", "CAN_ACCESS"], "Document")]
 
-    summary = render_schema_summary(schema)
+    summary = render_schema_summary(schema, policies)
 
     assert summary.splitlines() == [
-        "Node types (a type marked DigitalTwin may be a Subject; any type may be a Resource), with their properties:",
-        "- Document: external_id, title",
+        "Node types, with their properties (only a type a policy below names may be a Subject or Resource):",
+        "- Document: external_id:FLOAT|STRING, pages, title:STRING",
         "- Ghost: (no properties)",
         "- User (DigitalTwin): external_id",
         "",
-        "Edges (valid action names), as source -ACTION-> target:",
+        "Edges (how the data is linked - never action names), as source -RELATION-> target:",
         "- Document -AUTHORED_BY-> User",
         "- User -CAN_ACCESS-> Document",
+        "",
+        "Policies (the only valid combinations - every evaluation uses one), as subject -ACTION-> resource:",
+        "- User -CAN_ACCESS-> Document",
+        "- User -CAN_READ-> Document",
     ]
 
 
 def test_render_schema_summary_tolerates_missing_or_malformed_graph_sections():
     assert "- (none)" in render_schema_summary({})
     summary = render_schema_summary({"graph": {"nodes": "?", "edges": "?"}})
-    assert summary.count("- (none)") == len(["nodes", "edges"])
+    assert summary.count("- (none)") == len(["nodes", "edges", "policies"])
 
 
 def test_graph_readers_tolerate_a_non_object_graph():
@@ -208,8 +223,9 @@ def test_graph_readers_tolerate_a_non_object_graph():
     summary, the enum derivation and the DigitalTwin walk - never an AttributeError on `.get`.
     """
     malformed = {"graph": "?"}
-    assert render_schema_summary(malformed).count("- (none)") == len(["nodes", "edges"])
-    assert "enum" not in _variant(build_input_schema(malformed)["$defs"]["_Action"]["properties"]["name"], "string")
+    assert render_schema_summary(malformed, _POLICIES).count("- (none)") == len(["nodes", "edges", "policies"])
+    action_name = build_input_schema(malformed, _POLICIES)["$defs"]["_Action"]["properties"]["name"]
+    assert "enum" not in _variant(action_name, "string")
     assert digital_twin_types(malformed) == []
 
 
@@ -247,20 +263,18 @@ def test_build_input_schema_requires_resource_id():
     assert resource["properties"]["id"]["type"] == "string"
 
 
-def test_render_schema_summary_lists_policy_actions_in_their_own_section_only_when_there_are_any():
+def test_render_schema_summary_lists_only_policies_over_schema_node_types():
     schema = _load_schema_fixture()
     policies = [
-        {"policy": {"subject": {"type": "Customer"}, "actions": ["CHECK_MEMBERSHIP"], "resource": {"type": "Car"}}},
-        {"policy": {"subject": {"type": "Company"}, "actions": ["CAN_AUDIT"], "resource": {"type": "Car"}}, "tags": []},
+        _policy("Customer", ["CHECK_MEMBERSHIP"], "Car"),
+        _policy("Company", ["CAN_AUDIT"], "Car"),
+        _policy("Company", ["CAN_AUDIT"], "Plane"),
         {"policy": "?"},
     ]
 
     with_policies = render_schema_summary(schema, policies)
     without = render_schema_summary(schema)
 
-    assert with_policies.endswith(
-        "Policy actions (valid action names too - defined in access policies, always policy-derived), "
-        "as subject -ACTION-> resource:\n- Company -CAN_AUDIT-> Car\n- Customer -CHECK_MEMBERSHIP-> Car"
-    )
-    assert "Policy actions" not in without
-    assert with_policies.startswith(without)
+    heading = "Policies (the only valid combinations - every evaluation uses one), as subject -ACTION-> resource:"
+    assert with_policies.endswith(f"{heading}\n- Company -CAN_AUDIT-> Car\n- Customer -CHECK_MEMBERSHIP-> Car")
+    assert without.endswith(f"{heading}\n- (none)")

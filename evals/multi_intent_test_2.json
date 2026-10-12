@@ -1,17 +1,21 @@
 {
-  "prompt": "What department do I work in and what decisions have I made?",
+  "prompt": "Which accounts do I own, and which quotes can I retrieve?",
   "jwt_sub": "leslie",
   "expected": {
-    "prompt": "What department do I work in and what decisions have I made?",
+    "prompt": "Which accounts do I own, and which quotes can I retrieve?",
     "evaluations": [
       {
         "action": {
-          "name": "WORKS_IN"
+          "name": "OWNS"
         },
         "resource": {
-          "type": "Department"
+          "type": "Account"
         },
-        "context": {},
+        "context": {
+          "parameters": {
+            "action_derivation_rule": "policy_based"
+          }
+        },
         "subject": {
           "type": "User",
           "id": "leslie"
@@ -19,12 +23,16 @@
       },
       {
         "action": {
-          "name": "MADE"
+          "name": "CAN_RETRIEVE"
         },
         "resource": {
-          "type": "Decision"
+          "type": "Quote"
         },
-        "context": {},
+        "context": {
+          "parameters": {
+            "action_derivation_rule": "policy_based"
+          }
+        },
         "subject": {
           "type": "User",
           "id": "leslie"
@@ -32,6 +40,7 @@
       }
     ]
   },
+  "confidence": "high",
   "category": "multi intent",
   "data_model": "user_model"
 }

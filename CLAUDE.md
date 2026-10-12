@@ -164,13 +164,19 @@ Eight modules carry whole service:
   policies (`GET /access/v1/policies?subject_type=`, X-IK-ClientKey, per-subject-type cache key,
   retry + short failure backoff, no cold-start preload since the subject type is per request);
   `get_cached(subject_type) -> (policies, fetch_failed)`. The entries (`{"policy": {subject,
-  actions, resource, condition}, "tags"}`) are the second source of action names next to graph
-  edges (PRD erratum 2026-09-04): `input_schema` widens the enum with them, `render_schema_summary`
-  lists them as "Policy actions", `agent._policy_block` injects the raw list too, and
-  `subject_binding._action_name_error` accepts a policy action only when the evaluation is marked
-  `action_derivation_rule: "policy_based"` and the policy's resource type matches. A failed fetch
-  never fails the request: extraction runs edge-only and `policy_fetch_failed` is set on the
-  audit record and the response context. The eval runner serves fixture policies through
+  actions, resource, condition}, "tags"}`) are the **only** source of the output's vocabulary -
+  graph edges are never action names. `input_schema.policy_triples` turns them into the
+  (subject type, action, resource type) combinations whose types are schema node types (the
+  schema still decides which labels exist): `build_input_schema` builds all three enums from them,
+  `render_schema_summary` lists them under "Policies", `agent._policy_block` injects the raw list
+  so the model can choose by each policy's `condition.cypher`, and `subject_binding` requires every
+  evaluation to be one granted combination, then stamps `action_derivation_rule: "policy_based"` on
+  every evaluation itself. No policy is handled like no schema: a failed fetch with nothing cached, or
+  none existing for the caller's type, is `policy_unavailable_error` before any LLM call (distinct
+  warnings for the two), retried on the next request; a failed refresh serves the
+  last known-good policies with `policy_fetch_failed` set on the audit record and the response
+  context. Policies are fetched for the caller's type only, so a Subject Search or second subject
+  can only be of that type. The eval runner serves fixture policies through
   `evals.runner.FixturePolicyClient` (same `get_cached(subject_type)` contract).
 - **`auth.py`** — pulls the Bearer `access_token` off the A2A request context and validates it via
   RFC 7662 Token Introspection against the external IdP (no local JWT decode/signature check -
@@ -191,7 +197,8 @@ discovered by `skills.discover_skills()` relative to `skills.py`'s own directory
 construction time. System prompt only lists skill names/descriptions; LLM calls `activate_skill`
 to fetch skill's full body on demand, and for `extract-intent` specifically, the cached IndyKite
 schema gets injected into that response as `input_schema.render_schema_summary`'s compact
-node/edge vocabulary (a few KB; the raw JGF is tens of KB and used to be cut mid-JSON at
+node/edge vocabulary, each property with its observed type (`amount:STRING`, so a filter can
+convert with `double()`) (a few KB; the raw JGF is tens of KB and used to be cut mid-JSON at
 `SCHEMA_PREVIEW_CHARS`, which then sent the model re-fetching until the tool budget was gone). Currently one skill ships:
 `extract-intent` — deliberately no separate `get-data-schema` skill; schema fetching = internal
 infrastructure (`SchemaClient`, wired through `IntentAgent.load_data_schema`/
@@ -214,9 +221,9 @@ keeps the stale schema instead of losing it.
 
 **Validation loop (TDD 4.8/4.9).** After the LLM's final answer, `subject_binding.py`'s
 `normalize_intent_response` checks every evaluation's `subject.type` / `action.name` /
-`resource.type` against the cached schema (`validate_evaluations`; `action.name` against edges
-plus the policy-granted actions, the same union `build_input_schema` puts in the enum and
-`render_schema_summary` lists as "Policy actions") - belt-and-braces on top of
+`resource.type` against the cached schema and the caller's policies (`validate_evaluations`: each
+part named by a policy, then the three together one combination a policy grants, the same
+`policy_triples` `build_input_schema` puts in the enums) - belt-and-braces on top of
 the structured-output enum, since Gemini treats the enum as a strong hint, not a guarantee - and
 checks `context`'s shape the same way (`filters` a string, `parameters`/`qualifiers` objects;
 null keys, a blank `filters` and the model's internal `subject_source` / `resource_source`
@@ -227,6 +234,9 @@ Access Evaluation without it is rejected downstream; that covers a lone
 `||` equalities against the same literal where one pins the id, the model's hedge when it doesn't
 know which property carries the name (`resource.external_id == 'Volvo' || resource.email ==
 'Volvo'`), but never a `&&`, a parenthesised group or clauses over different literals - an
+`&&` clause `resource.<prop> == '<value>'` repeating an equality in the granting policy's
+`condition.cypher` `WHERE` is dropped (the platform checks the condition; flash-lite copies it
+anyway), an
 evaluation whose `action.name` is present but blank is dropped as the model's "no action
 fits" (retrying it was seen to force a match instead), a Subject Search over a node type the schema
 doesn't mark DigitalTwin is dropped too (only DigitalTwin types are candidates; seen live as a
@@ -235,7 +245,8 @@ caller's own type/id as the resource ("who can access me?"), a blank second-subj
 completed from the gate evaluation, and everything else passes through verbatim as untrusted data) and enforces CEL on `filters` (`cel.py`, on `cel-python`): it must parse,
 may reference only the `resource` variable, may read only properties the schema observed for that
 `resource.type` (plus AuthZEN's own `id`/`type`; a type the schema lists no properties for
-disables the check rather than failing every filter), and may not call `dyn()`/`type()` - the same
+disables the check rather than failing every filter), and may not call `dyn()`/`type()` or a
+global function CEL doesn't have (`float()`, seen live; the parser accepts any name) - the same
 posture as the platform's (blocked reflection functions, size limit). The
 expression is never evaluated here; IBAC does that. An
 off-schema value (or non-JSON output) raises `IntentValidationError`; `IntentAgent` feeds the
@@ -260,6 +271,26 @@ more reliably than an optional one; `""` = many resources, dropped again in norm
 back to the LLM - is the fixed `{prompt, error, reason, obligation}` shape built by
 `errors.error_response`; new ones go in `errors.py` next to the existing ones, never as ad-hoc
 dicts or strings elsewhere.
+
+**Second subject.** The structured output's first field, `second_subject`, is the id of the
+named person who performs the action asked about (null when the caller does, or for a Subject
+Search): Gemini writes fields in order, so the model decides it before choosing any policy. When
+set, `normalize_intent_response` requires evaluations[0] to be the gate on that id and a later
+evaluation marked for it, feeding back otherwise; the key is stripped like the rating.
+
+**Confidence rating.** Every answer with evaluations also carries the model's own rating:
+`explanation` (one short, plain sentence: the policy used with its condition path, and what no
+policy covered) and `confidence`, rating the whole policy - action, resource type and
+`condition.cypher` path: `high` (together exactly what the prompt asks), `medium` (only through a
+synonym, with a path that still means what is asked), `low` (the condition matches only part of
+what is asked). A refusal (empty evaluations) carries only the `explanation`
+(why no policy fits), best effort: it is never validated, since a refusal is never retried (a retry
+was seen to force a match).
+`normalize_intent_response` requires both on an answer with evaluations (missing/invalid is fed back like any other error) and
+strips them: they are **logged (at DEBUG), never returned or audited** - `subject_binding.rating`
+reads them back onto `ExtractionResult.confidence`/`.explanation`, and the eval suite reports `confidence` next to
+each fixture's own optional `confidence` (taken as written, not validated) - a fixture passes on
+its response alone, the rating never decides it, and the explanation is reported, never compared. System-built errors carry no rating.
 
 **Audit log (TDD 4.9).** Every request produces exactly one audit record - a successful
 extraction, an `unmatched`/`validation_failed` one, a rejected token (audited as
@@ -302,8 +333,8 @@ as passing), on pushes to `master` touching the same paths (both ignore release-
 GitHub environment (each run waits for a reviewer's approval; a fork PR skips the job so its code
 never gets the key, and is evaluated on `master` after merge or on a branch here a maintainer
 copies it to). Each data
-model under `evals/schema/` has a `_schema.json` and, for policy-granted actions, a
-`_policies.json` in the platform listing shape. The loader round-trips every golden answer
+model under `evals/schema/` has a `_schema.json` and a `_policies.json` in the platform listing
+shape (every golden answer's combinations must be granted there). The loader round-trips every golden answer
 through `normalize_intent_response` as the fixture's caller and rejects one that comes back
 different - the pipeline's own rules are the producibility check, not a copy of them. New fixture category
 or gate = `fixtures.CATEGORIES` / `scoring.evaluate_gates`, not a parallel script. The fixtures

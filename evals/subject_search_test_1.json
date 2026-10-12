@@ -12,8 +12,8 @@
           "name": "CAN_ACCESS"
         },
         "resource": {
-          "type": "Document",
-          "id": "doc123"
+          "id": "doc123",
+          "type": "Document"
         },
         "context": {
           "parameters": {
@@ -23,6 +23,7 @@
       }
     ]
   },
+  "confidence": "high",
   "category": "subject search",
   "data_model": "user_model"
 }

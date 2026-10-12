@@ -1,14 +1,17 @@
-"""The two things the LLM is given that derive from the live IndyKite graph schema: the
-response_json_schema constraining its structured output to the schema's actual node/edge
-vocabulary (TDD 4.6, build_input_schema), and the compact vocabulary summary injected into the
-extract-intent skill activation (render_schema_summary).
+"""What the LLM is given from the caller's policies and the graph schema: the structured-output
+schema (build_input_schema, TDD 4.6) and the vocabulary summary for skill activation
+(render_schema_summary).
 """
 
-from typing import Any
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, Field, JsonValue
 
 _DIGITAL_TWIN_LABEL = "DigitalTwin"
+
+# The model's rating of how well the chosen policies cover the prompt (see SKILL.md).
+Confidence = Literal["high", "medium", "low"]
+CONFIDENCE_LEVELS: tuple[str, ...] = get_args(Confidence)
 
 
 def _graph(schema: dict[str, Any]) -> dict[str, Any]:
@@ -28,40 +31,31 @@ def _node_types(schema: dict[str, Any]) -> list[str]:
     return sorted(nodes.keys())
 
 
-def _edge_relations(schema: dict[str, Any]) -> list[str]:
-    """Return every distinct edge relation (action name) in the schema, sorted.
+def _policy_type(policy: dict[str, Any], key: str) -> str | None:
+    """The policy's subject.type / resource.type (`key`), or None when it isn't a non-empty string."""
+    part = policy.get(key)
+    value = part.get("type") if isinstance(part, dict) else None
+    return value if isinstance(value, str) and value else None
 
-    Only non-empty strings count - a malformed relation (e.g. a number) is skipped rather than
-    put into a string enum, the same rule as subject_binding._edge_relations so the enum and
-    the post-assembly check agree on the vocabulary.
+
+def policy_triples(policies: list[dict[str, Any]] | None, schema: dict[str, Any]) -> set[tuple[str, str, str]]:
+    """Every (subject type, action, resource type) the policies grant over the schema's node
+    types - the whole vocabulary an evaluation may use. Malformed entries are skipped.
     """
-    edges = _graph(schema).get("edges", [])
-    if not isinstance(edges, list):
-        return []
-    relations = {
-        relation
-        for edge in edges
-        if isinstance(edge, dict) and isinstance(relation := edge.get("relation"), str) and relation
-    }
-    return sorted(relations)
-
-
-def _policy_action_names(policies: list[dict[str, Any]] | None) -> list[str]:
-    """Every distinct action name any fetched policy defines, sorted - every
-    policy's actions list regardless of resource.type, since the enum is one global list shared
-    by every evaluation in the response (JSON Schema can't make it conditional per-evaluation);
-    subject_binding._policy_actions_for_resource does the precise per-resource-type,
-    marked-only check post-assembly. Same shape rule as _edge_relations: only non-empty strings.
-    """
-    if not policies:
-        return []
-    names: set[str] = set()
-    for entry in policies:
+    node_types = set(_node_types(schema))
+    triples: set[tuple[str, str, str]] = set()
+    for entry in policies or []:
         policy = entry.get("policy") if isinstance(entry, dict) else None
-        actions = policy.get("actions") if isinstance(policy, dict) else None
-        if isinstance(actions, list):
-            names.update(name for name in actions if isinstance(name, str) and name)
-    return sorted(names)
+        if not isinstance(policy, dict):
+            continue
+        subject_type, resource_type = _policy_type(policy, "subject"), _policy_type(policy, "resource")
+        actions = policy.get("actions")
+        if subject_type not in node_types or resource_type not in node_types or not isinstance(actions, list):
+            continue
+        triples.update(
+            (subject_type, name, resource_type) for name in actions if isinstance(name, str) and name.strip()
+        )
+    return triples
 
 
 class _Subject(BaseModel):
@@ -147,28 +141,43 @@ class _Evaluation(BaseModel):
 
 
 class _IntentInput(BaseModel):
-    """The LLM's entire structured-output shape - deliberately just {evaluations}, no
-    LLM-authored error shape. When the model can't produce a coherent evaluation, it returns an
-    empty evaluations array; our own code (subject_binding.no_intent_error) is solely
-    responsible for the error response. The response's `prompt` echo (TDD 3.2) is not the
-    model's to produce either: subject_binding.normalize_intent_response sets it from the
-    incoming prompt, so asking the model for it only cost output tokens on every call.
+    """The LLM's whole structured output. No error shape or prompt echo - the system builds those.
+    Gemini writes fields in order: `second_subject` first, so the model decides whose access is asked
+    before choosing a policy, then `explanation`, so it names its policy before the evaluations.
     """
 
+    second_subject: str | None = Field(
+        default=None,
+        description=(
+            "Written first, always. Who performs the action asked about? If it is a named person, not "
+            "I/me/my, their id exactly as written ('does omar lead...' -> omar). null when I perform it - "
+            "including when a named person is only what I act on ('do I report to omar?' -> null) - and "
+            "for a 'who can' search."
+        ),
+    )
+    # Optional: a refusal (empty evaluations) gives only an explanation; subject_binding requires
+    # both on an answer with evaluations.
+    explanation: str | None = Field(
+        default=None,
+        description=(
+            "Written first, before the evaluations, always. One short, plain sentence: the policy you "
+            "will use and, if any, what part of the prompt no policy covers - or, when you return no "
+            "evaluations, why no policy fits."
+        ),
+    )
     evaluations: list[_Evaluation]
+    confidence: Confidence | None = Field(
+        default=None,
+        description=(
+            "high: the prompt matches the policies exactly. medium: it matches only through a synonym "
+            "- a policy's resource type or action stands in for the one asked. low: only part of the "
+            "prompt matched a policy, the rest was left out."
+        ),
+    )
 
 
 def _constrain_to_enum(field_schema: dict[str, Any], values: list[str]) -> None:
-    """Restrict a (possibly nullable) string field's schema to `values`, in place.
-
-    No-op if `values` is empty. Only reachable for the action-name enum (_edge_relations,
-    optionally widened by _policy_action_names) - edges can't be ingested before
-    their endpoint nodes, and build_input_schema's caller (agent.run_extraction) already
-    validates SUBJECT_TYPE against the schema's node types before calling this, so
-    _node_types(schema) can never be empty here. A schema with nodes but no edges yet, and no
-    policies fetched either, is a legitimate state, not a failure - there's no vocabulary to
-    constrain the action name to, so leaving it as a plain string is correct.
-    """
+    """Restrict a (possibly nullable) string field's schema to `values`, in place; no-op if empty."""
     if not values:
         return
     for variant in field_schema.get("anyOf", [field_schema]):
@@ -205,8 +214,20 @@ def digital_twin_types(schema: dict[str, Any]) -> list[str]:
     return sorted(label for label, node in nodes.items() if not label.startswith("_") and _has_digital_twin_label(node))
 
 
+def _property_summary(name: str, spec: object) -> str:
+    """`name:TYPE`, the observed value types without NOT NULL - a filter has to match them."""
+    types = spec.get("types") if isinstance(spec, dict) else None
+    entries = types if isinstance(types, list) else []
+    names = {
+        entry["type"].removesuffix(" NOT NULL")
+        for entry in entries
+        if isinstance(entry, dict) and isinstance(entry.get("type"), str) and entry["type"]
+    }
+    return f"{name}:{'|'.join(sorted(names))}" if names else name
+
+
 def _node_summary(label: str, node: object) -> str:
-    """One line for a node type: its label, whether it may be a subject, and its property names.
+    """One line for a node type: its label, whether it may be a subject, and its properties with types.
     A `_`-prefixed type is the platform's own (`_Application`, the calling app) - it carries the
     DigitalTwin label too but is never what a prompt is about, so it is flagged as internal
     rather than as a Subject candidate.
@@ -216,7 +237,11 @@ def _node_summary(label: str, node: object) -> str:
         metadata = {}
     digital_twin = _has_digital_twin_label(node)
     properties = metadata.get("properties", {})
-    names = sorted(properties) if isinstance(properties, dict) else []
+    names = (
+        [_property_summary(name, properties[name]) for name in sorted(properties)]
+        if isinstance(properties, dict)
+        else []
+    )
     if label.startswith("_"):
         kind = " (platform-internal, never a Subject or Resource)"
     else:
@@ -238,75 +263,40 @@ def _edge_summaries(schema: dict[str, Any]) -> list[str]:
     return sorted(lines)
 
 
-def _policy_summaries(policies: list[dict[str, Any]] | None) -> list[str]:
-    """One `subject -ACTION-> resource` line per action a fetched policy grants, sorted - the
-    same {"policy": {subject, actions, resource}} entries _policy_action_names reads.
-    """
-    lines: set[str] = set()
-    for entry in policies or []:
-        policy = entry.get("policy") if isinstance(entry, dict) else None
-        if not isinstance(policy, dict):
-            continue
-        subject, resource, actions = policy.get("subject"), policy.get("resource"), policy.get("actions")
-        subject_type = subject.get("type") if isinstance(subject, dict) else None
-        resource_type = resource.get("type") if isinstance(resource, dict) else None
-        if not (isinstance(subject_type, str) and isinstance(resource_type, str) and isinstance(actions, list)):
-            continue
-        lines.update(
-            f"- {subject_type} -{name}-> {resource_type}" for name in actions if isinstance(name, str) and name
-        )
-    return sorted(lines)
-
-
 def render_schema_summary(schema: dict[str, Any], policies: list[dict[str, Any]] | None = None) -> str:
-    """The schema's vocabulary as the model needs it, a few KB instead of the raw JGF: every
-    node type with its subject eligibility and property names, every edge as
-    `source -RELATION-> target`, and - when the request has any - the actions its access
-    policies grant, in the same form, as a section of their own so the model knows they are
-    policy-derived. The raw document, pretty-printed, runs to tens of thousands of characters
-    for a real graph and used to be injected truncated mid-JSON at SCHEMA_PREVIEW_CHARS - the
-    model then either guessed or re-fetched the schema until the tool-call budget ran out. The
-    full JGF stays available through the get_data_schema tool.
+    """The request's vocabulary in a few KB instead of the raw JGF: node types with their
+    properties, edges (how data is linked, never actions) and the combinations the policies grant.
     """
-    policy_lines = _policy_summaries(policies)
-    policy_heading = (
-        "Policy actions (valid action names too - defined in access policies, always policy-derived), "
-        "as subject -ACTION-> resource:"
-    )
     nodes = _graph(schema).get("nodes", {})
     node_lines = (
         [_node_summary(label, node) for label, node in sorted(nodes.items())] if isinstance(nodes, dict) else []
     )
-    node_heading = (
-        "Node types (a type marked DigitalTwin may be a Subject; any type may be a Resource), with their properties:"
+    policy_lines = sorted(
+        f"- {subject_type} -{action}-> {resource_type}"
+        for subject_type, action, resource_type in policy_triples(policies, schema)
     )
     return "\n".join(
         [
-            node_heading,
+            "Node types, with their properties (only a type a policy below names may be a Subject or Resource):",
             *(node_lines or ["- (none)"]),
             "",
-            "Edges (valid action names), as source -ACTION-> target:",
+            "Edges (how the data is linked - never action names), as source -RELATION-> target:",
             *(_edge_summaries(schema) or ["- (none)"]),
-            *(["", policy_heading, *policy_lines] if policy_lines else []),
+            "",
+            "Policies (the only valid combinations - every evaluation uses one), as subject -ACTION-> resource:",
+            *(policy_lines or ["- (none)"]),
         ]
     )
 
 
 def build_input_schema(schema: dict[str, Any], policies: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    """Build the response_json_schema constraining the LLM's extraction output to this
-    schema's actual vocabulary (TDD 4.6). Access-blind: enums list every entity/action the
-    schema defines regardless of the caller's permissions (PRD 2.3.1).
-
-    action.name's enum additionally includes every action any fetched policy defines, in
-    a single global list, since JSON Schema can't make an
-    enum conditional per-evaluation; subject_binding.validate_evaluations enforces, per
-    evaluation, that a policy-only action name is only accepted when that evaluation is marked
-    action_derivation_rule="policy_based" and the policy's resource.type actually matches.
+    """The structured-output schema, with subject.type, action.name and resource.type each limited
+    to its part of policy_triples. JSON Schema can't tie the three together; validate_evaluations does.
     """
+    triples = policy_triples(policies, schema)
     json_schema = _IntentInput.model_json_schema()
     defs = json_schema["$defs"]
-    _constrain_to_enum(defs["_Subject"]["properties"]["type"], _node_types(schema))
-    action_names = sorted({*_edge_relations(schema), *_policy_action_names(policies)})
-    _constrain_to_enum(defs["_Action"]["properties"]["name"], action_names)
-    _constrain_to_enum(defs["_Resource"]["properties"]["type"], _node_types(schema))
+    _constrain_to_enum(defs["_Subject"]["properties"]["type"], sorted({subject for subject, _, _ in triples}))
+    _constrain_to_enum(defs["_Action"]["properties"]["name"], sorted({action for _, action, _ in triples}))
+    _constrain_to_enum(defs["_Resource"]["properties"]["type"], sorted({resource for _, _, resource in triples}))
     return _drop_pydantic_only_keys(json_schema)

@@ -23,15 +23,15 @@
       },
       {
         "action": {
-          "name": "CONTAINS"
+          "name": "CAN_ACCESS"
         },
         "resource": {
           "type": "Document"
         },
         "context": {
           "parameters": {
-            "depends_on_previous_evaluations": true,
-            "action_derivation_rule": "policy_based"
+            "action_derivation_rule": "policy_based",
+            "depends_on_previous_evaluations": true
           }
         },
         "subject": {
@@ -41,6 +41,7 @@
       }
     ]
   },
+  "confidence": "high",
   "category": "multi intent",
   "data_model": "user_model"
 }

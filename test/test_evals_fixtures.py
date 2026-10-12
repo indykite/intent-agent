@@ -156,6 +156,22 @@ def test_missing_key_is_rejected(eval_fixture_file):
         load_fixture(path)
 
 
+def test_loads_the_confidence_level_as_written(eval_fixture):
+    prompt = "Is my driving license still valid?"
+    refusal = eval_fixture(
+        "out_of_scope_test_1", prompt=prompt, category=OUT_OF_SCOPE, expected=no_intent_error(prompt)
+    )
+    rated_refusal = eval_fixture(
+        "out_of_scope_test_2", prompt=prompt, category=OUT_OF_SCOPE, expected=no_intent_error(prompt), confidence="high"
+    )
+
+    assert eval_fixture(confidence="medium").confidence == "medium"
+    assert eval_fixture(confidence="certain").confidence == "certain"
+    assert eval_fixture(confidence=None).confidence is None
+    assert refusal.confidence is None
+    assert rated_refusal.confidence == "high"
+
+
 def test_blank_jwt_sub_is_an_anonymous_caller(eval_fixture_file):
     """An anonymous caller is bound without an id, so the golden subject carries the type only."""
     expected = {
@@ -165,7 +181,7 @@ def test_blank_jwt_sub_is_an_anonymous_caller(eval_fixture_file):
                 "subject": {"type": "User"},
                 "action": {"name": "CAN_ACCESS"},
                 "resource": {"type": "Document", "id": "doc123"},
-                "context": {},
+                "context": {"parameters": {"action_derivation_rule": "policy_based"}},
             }
         ],
     }
@@ -193,16 +209,17 @@ _CUSTOMER_EXPECTED = {
             "subject": {"type": "Customer", "id": "leslie"},
             "action": {"name": "CAN_ACCESS"},
             "resource": {"type": "Document", "id": "doc123"},
-            "context": {},
+            "context": {"parameters": {"action_derivation_rule": "policy_based"}},
         }
     ],
 }
 
 
-def test_explicit_subject_type_wins_over_inference(eval_fixture_file, eval_schema_file):
+def test_explicit_subject_type_wins_over_inference(eval_fixture_file, eval_schema_file, eval_policies_file):
     eval_schema_file(
         "combined_model", digital_twins=("User", "Customer"), relations=[("Customer", "CAN_ACCESS", "Document")]
     )
+    eval_policies_file("combined_model", [("Customer", "CAN_ACCESS", "Document")])
 
     fixture = load_fixture(
         eval_fixture_file(data_model="combined_model", subject_type="Customer", expected=_CUSTOMER_EXPECTED)
@@ -245,9 +262,10 @@ def test_load_fixtures_returns_every_file_sorted_and_skips_the_schema_dir(tmp_pa
     assert [fixture.id for fixture in fixtures] == ["adversarial_subject_spoof_test_1", "multi_intent_test_1"]
 
 
-def test_load_fixtures_accepts_a_separate_schema_dir(tmp_path, eval_fixture_file, eval_schema_file):
+def test_load_fixtures_accepts_a_separate_schema_dir(tmp_path, eval_fixture_file, eval_schema_file, eval_policies_file):
     elsewhere = tmp_path / "models"
     eval_schema_file(directory=elsewhere)
+    eval_policies_file("user_model", [("User", "CAN_ACCESS", "Document")], directory=elsewhere)
     fixtures_dir = tmp_path / "only-fixtures"
     fixtures_dir.mkdir()
     (fixtures_dir / "single_intent_test_1.json").write_bytes(eval_fixture_file().read_bytes())
@@ -349,13 +367,13 @@ def test_golden_policy_action_must_carry_the_marker_the_pipeline_sets(
                     "subject": {"type": "User", "id": "leslie"},
                     "action": {"name": "CAN_ACCESS"},
                     "resource": {"type": "Document"},
-                    "context": {},
+                    "context": {"parameters": {"action_derivation_rule": "policy_based"}},
                 },
                 {
                     "subject": {"type": "User", "id": "leslie"},
                     "action": {"name": "CAN_ACCESS"},
                     "resource": {"type": "Document"},
-                    "context": {},
+                    "context": {"parameters": {"action_derivation_rule": "policy_based"}},
                 },
             ],
             r"evaluations\[1\] would not come back at all",
@@ -385,24 +403,15 @@ def test_golden_answer_the_pipeline_rewrites_is_rejected(eval_fixture_file, eval
         load_fixture(eval_fixture_file(expected=expected))
 
 
-def test_fixture_without_a_policies_file_has_the_empty_listing(eval_fixture):
-    fixture = eval_fixture()
+def test_fixture_without_a_policies_file_has_the_empty_listing(eval_fixture_file):
+    """Only a refusal fixture loads without a policies file."""
+    path = eval_fixture_file(expected=no_intent_error("Can I access the document doc123?"))
+    (path.parent / "schema" / "user_model_policies.json").unlink()
+
+    fixture = load_fixture(path)
 
     assert fixture.policies_path is None
     assert fixture.policies == []
-
-
-def test_golden_action_that_no_edge_or_policy_provides_is_rejected(eval_fixture_file):
-    expected = {
-        "prompt": "Can I access the document doc123?",
-        "evaluations": [{"action": {"name": "CHECK_MEMBERSHIP"}, "resource": {"type": "Document"}, "context": {}}],
-    }
-    path = eval_fixture_file("unreachable_test_1", expected=expected)
-
-    with pytest.raises(
-        FixtureError, match=r"evaluations\[0\] names action 'CHECK_MEMBERSHIP', which is neither an edge"
-    ):
-        load_fixture(path)
 
 
 @pytest.mark.parametrize(
@@ -434,80 +443,102 @@ def test_golden_policy_action_is_checked_for_the_caller_and_the_resource_type(
 _CALLER = {"type": "User", "id": "leslie"}
 
 
-def test_golden_edge_action_must_be_the_callers_own_relationship(eval_fixture_file, eval_schema_file):
-    """An edge label that exists in the data model, but for another pair of types, doesn't make
-    the caller-bound evaluation producible: the pipeline's relationship check rejects it at run
-    time, so the loader does too, with the same reason.
-    """
-    eval_schema_file(resources=("Folder", "Account"), relations=[("User", "CAN_ACCESS", "Folder")])
-    expected = {
-        "prompt": "Can I access the document doc123?",
-        "evaluations": [{"subject": _CALLER, "action": {"name": "CAN_ACCESS"}, "resource": {"type": "Account"}}],
+_MARKED = {"parameters": {"action_derivation_rule": "policy_based"}}
+_DEPENDENT = {"parameters": {"depends_on_previous_evaluations": True, "action_derivation_rule": "policy_based"}}
+_FOLDER_MODEL = {
+    "resources": ("Folder", "Document"),
+    "relations": [("User", "CAN_ACCESS", "Folder"), ("Folder", "CONTAINS", "Document")],
+}
+_FOLDER_POLICIES = [("User", "CAN_ACCESS", "Folder"), ("User", "CAN_ACCESS", "Document")]
+
+
+def _hop(action, resource_type, context):
+    return {"subject": _CALLER, "action": {"name": action}, "resource": {"type": resource_type}, "context": context}
+
+
+def _search(resource_type):
+    return {
+        "subject": {"type": "User"},
+        "action": {"name": "CAN_ACCESS"},
+        "resource": {"type": resource_type},
+        "context": _MARKED,
     }
 
-    with pytest.raises(FixtureError, match=r"evaluations\[0\]: action.name 'CAN_ACCESS' for subject type 'User'"):
-        load_fixture(eval_fixture_file(expected=expected))
 
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(
+            (
+                None,
+                None,
+                [{"action": {"name": "CHECK_MEMBERSHIP"}, "resource": {"type": "Document"}, "context": {}}],
+                r"evaluations\[0\] names action 'CHECK_MEMBERSHIP', which no policy in user_model_policies\.json",
+            ),
+            id="action_no_policy_grants",
+        ),
+        pytest.param(
+            (
+                {"resources": ("Document", "Account"), "relations": [("User", "OWNS", "Account")]},
+                None,
+                [{"subject": _CALLER, "action": {"name": "OWNS"}, "resource": {"type": "Account"}}],
+                r"names action 'OWNS', which no policy .* on resource type 'Account'",
+            ),
+            id="callers_own_edge_is_no_action",
+        ),
+        pytest.param(({"resources": ("Document", "Account")}, None, [_search("Document")], None), id="granted_search"),
+        pytest.param(
+            (
+                {"resources": ("Document", "Account")},
+                None,
+                [_search("Account")],
+                r"names action 'CAN_ACCESS', which no policy",
+            ),
+            id="search_no_policy_grants",
+        ),
+        pytest.param(
+            (
+                _FOLDER_MODEL,
+                _FOLDER_POLICIES,
+                [_hop("CAN_ACCESS", "Folder", _MARKED), _hop("CAN_ACCESS", "Document", _DEPENDENT)],
+                None,
+            ),
+            id="dependent_hop_with_its_own_policy",
+        ),
+        pytest.param(
+            (
+                _FOLDER_MODEL,
+                _FOLDER_POLICIES,
+                [_hop("CAN_ACCESS", "Folder", _MARKED), _hop("CONTAINS", "Document", _DEPENDENT)],
+                r"evaluations\[1\] names action 'CONTAINS', which no policy",
+            ),
+            id="dependent_hop_over_an_edge",
+        ),
+    ],
+)
+def test_golden_answer_loads_only_as_a_policy_combination(
+    eval_fixture_file, eval_schema_file, eval_policies_file, case
+):
+    model, policies, evaluations, error = case
+    if model is not None:
+        eval_schema_file(**model)
+    if policies is not None:
+        eval_policies_file("user_model", policies)
+    expected = {"prompt": "Can I access the document doc123?", "evaluations": evaluations}
+    path = eval_fixture_file(expected=expected)
 
-def test_golden_subject_search_is_exempt_from_the_callers_relationship_check(eval_fixture_file, eval_schema_file):
-    """A Subject Search (a bare subject type, no id) isn't bound to the caller, so the same
-    action on the same resource type is producible there - the loader reads the golden shape the
-    way the binding produced it.
-    """
-    eval_schema_file(resources=("Folder", "Account"), relations=[("User", "CAN_ACCESS", "Folder")])
-    expected = {
-        "prompt": "Can I access the document doc123?",
-        "evaluations": [
-            {
-                "subject": {"type": "User"},
-                "action": {"name": "CAN_ACCESS"},
-                "resource": {"type": "Account"},
-                "context": {},
-            }
-        ],
-    }
-
-    assert load_fixture(eval_fixture_file(expected=expected)).expected == expected
-
-
-def test_golden_dependent_hop_is_grounded_through_the_previous_hop(eval_fixture_file, eval_schema_file):
-    """A chain's later hop may use the edge from the previous hop's type (Folder CONTAINS
-    Document) - the pipeline's dependent-hop rule - so it loads although User holds no such edge.
-    """
-    eval_schema_file(
-        resources=("Folder", "Document"),
-        relations=[("User", "CAN_ACCESS", "Folder"), ("Folder", "CONTAINS", "Document")],
-    )
-    expected = {
-        "prompt": "Can I access the document doc123?",
-        "evaluations": [
-            {"subject": _CALLER, "action": {"name": "CAN_ACCESS"}, "resource": {"type": "Folder"}, "context": {}},
-            {
-                "subject": _CALLER,
-                "action": {"name": "CONTAINS"},
-                "resource": {"type": "Document"},
-                "context": {
-                    "parameters": {"depends_on_previous_evaluations": True, "action_derivation_rule": "policy_based"}
-                },
-            },
-        ],
-    }
-
-    fixture = load_fixture(eval_fixture_file(expected=expected))
-
-    assert [evaluation["action"]["name"] for evaluation in fixture.expected["evaluations"]] == [
-        "CAN_ACCESS",
-        "CONTAINS",
-    ]
+    if error is None:
+        assert load_fixture(path).expected == expected
+    else:
+        with pytest.raises(FixtureError, match=error):
+            load_fixture(path)
 
 
 def test_shipped_suite_has_a_policies_file_for_every_data_model_it_uses():
-    """The policy fixtures are what make the six policy-action golden answers producible; a
-    data model without one would fail the loader's producibility check first.
-    """
+    """Every golden answer needs its data model's policies to be producible; a refusal may have none."""
     for fixture in load_fixtures():
         assert fixture.policies_path is not None, fixture.id
-        assert fixture.policies, fixture.id
+        assert fixture.policies or fixture.expects_refusal, fixture.id
 
 
 def test_every_adversarial_category_feeds_the_injection_gate():

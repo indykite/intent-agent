@@ -1,0 +1,30 @@
+{
+  "prompt": "Which of my unpaid invoices are over 500?",
+  "jwt_sub": "bob",
+  "expected": {
+    "prompt": "Which of my unpaid invoices are over 500?",
+    "evaluations": [
+      {
+        "action": {
+          "name": "VIEW_UNPAID_INVOICE"
+        },
+        "resource": {
+          "type": "Invoice"
+        },
+        "context": {
+          "filters": "double(resource.amount) > 500.0",
+          "parameters": {
+            "action_derivation_rule": "policy_based"
+          }
+        },
+        "subject": {
+          "type": "Customer",
+          "id": "bob"
+        }
+      }
+    ]
+  },
+  "confidence": "high",
+  "category": "resource search",
+  "data_model": "customer_model"
+}

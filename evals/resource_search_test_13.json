@@ -1,0 +1,48 @@
+{
+  "prompt": "Which accounts do I own, and which investment categories are they in?",
+  "jwt_sub": "bob",
+  "expected": {
+    "prompt": "Which accounts do I own, and which investment categories are they in?",
+    "evaluations": [
+      {
+        "action": {
+          "name": "VIEW_OWNED_ACCOUNT"
+        },
+        "resource": {
+          "type": "Account"
+        },
+        "context": {
+          "parameters": {
+            "action_derivation_rule": "policy_based"
+          }
+        },
+        "subject": {
+          "type": "Customer",
+          "id": "bob"
+        }
+      },
+      {
+        "action": {
+          "name": "VIEW_ACCOUNT_CATEGORY"
+        },
+        "resource": {
+          "type": "InvestmentCategory"
+        },
+        "context": {
+          "parameters": {
+            "depends_on_previous_evaluations": true,
+            "action_derivation_rule": "policy_based"
+          }
+        },
+        "subject": {
+          "type": "Customer",
+          "id": "bob"
+        }
+      }
+    ]
+  },
+  "confidence": "high",
+  "category": "resource search",
+  "data_model": "combined_model",
+  "subject_type": "Customer"
+}

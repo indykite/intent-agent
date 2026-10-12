@@ -56,6 +56,15 @@ def schema_unavailable_error(prompt: str) -> dict[str, str]:
     )
 
 
+def policy_unavailable_error(prompt: str) -> dict[str, str]:
+    """Build the 4.7 error shape for when no access policy exists for the caller's subject type."""
+    return error_response(
+        prompt,
+        "Access policies for the supplied subject type are unavailable.",
+        "Retry once access policies are available, or contact the administrator.",
+    )
+
+
 def schema_not_populated_error(prompt: str) -> dict[str, str]:
     """Build the 4.7 error shape for when the schema is fetched but the data model has no
     node types beyond the platform's own bootstrap node (_Application) - i.e. nothing has
@@ -108,20 +117,26 @@ def no_intent_error(prompt: str) -> dict[str, str]:
 # can tell those apart from shape problems without guessing at the wording.
 SCHEMA_MEMBERSHIP_SUFFIX = "is not defined in the data schema"
 SCHEMA_BLANK_SUFFIX = "is missing or blank"
-# A third way: the label exists, but neither an edge from the caller's own type nor a policy for
-# it gives the caller that relationship to that resource type (subject_binding._relationship_reason).
-SCHEMA_RELATIONSHIP_SUFFIX = "is not a relationship the data schema or a policy gives the caller's subject type"
-SCHEMA_VALUE_SUFFIXES = (SCHEMA_MEMBERSHIP_SUFFIX, SCHEMA_BLANK_SUFFIX, SCHEMA_RELATIONSHIP_SUFFIX)
+# A type or action name no access policy uses (subject_binding._vocabulary_reason).
+POLICY_MEMBERSHIP_SUFFIX = "is not named by any access policy"
+# Each part is valid, but no single policy grants them together (subject_binding._policy_combination_errors).
+SCHEMA_RELATIONSHIP_SUFFIX = "is not a combination any access policy grants"
+SCHEMA_VALUE_SUFFIXES = (
+    SCHEMA_MEMBERSHIP_SUFFIX,
+    SCHEMA_BLANK_SUFFIX,
+    POLICY_MEMBERSHIP_SUFFIX,
+    SCHEMA_RELATIONSHIP_SUFFIX,
+)
 
 _FEEDBACK_OBLIGATION = (
-    'Return a corrected JSON object with the same {"evaluations"} shape, using only subject types, '
-    "action names and resource types defined in the data schema, with context.filters a valid CEL "
-    "expression over resource.<property> only, under 1000 characters, and context.parameters / "
-    "context.qualifiers objects. A relationship the caller's own type can't hold is not fixed by "
-    "picking another edge: if the prompt asks who can act on a resource, answer with a Subject Search "
-    '(subject.type set, no subject.id, context.parameters.subject_source "search"); if it asks about '
-    "the caller's own access, use an action a policy grants the caller's type. "
-    "If the prompt can't be mapped onto the schema, return an empty evaluations array instead."
+    "Return a corrected JSON object with the same keys: second_subject (or null), explanation, "
+    "evaluations and confidence - explanation and confidence are required whenever evaluations is "
+    "not empty. Every evaluation's subject type, action name and resource type together form one "
+    "subject -ACTION-> resource combination listed under Policies; an Action Search keeps its "
+    "action omitted. context.filters is a valid CEL expression over resource.<property> only, under "
+    "1000 characters, and context.parameters / context.qualifiers are objects. A graph edge is never "
+    "an action name. If no policy covers the prompt, return an empty evaluations array with an "
+    "explanation instead."
 )
 
 
@@ -138,7 +153,7 @@ def validation_feedback_error(prompt: str, errors: list[str]) -> dict[str, str]:
     schema_errors = [error for error in errors if error.endswith(SCHEMA_VALUE_SUFFIXES)]
     shape_errors = [error for error in errors if not error.endswith(SCHEMA_VALUE_SUFFIXES)]
     groups = (
-        ("Values not matched to the data schema:", schema_errors),
+        ("Values not matched to the data schema or access policies:", schema_errors),
         ("Malformed shape:", shape_errors),
     )
     sections = [

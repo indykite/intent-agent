@@ -64,11 +64,7 @@ def _fake_policy_client(mocker, **kwargs):
     return mocker.Mock(**kwargs)
 
 
-# The permissions the PRD's example prompts assume the caller holds. In the CanBank graph the
-# CAN_* edges hang off Department, not User; permission labels are granted by access policies
-# (PRD erratum 2026-09-04) and the pipeline's relationship check accepts them only from a policy
-# for the caller's subject type or from the caller's own edges - so the scenarios that replay a
-# permission answer carry these policies, the same way a real deployment's listing would.
+# A policy for every combination the replayed answers use (one list serves both callers here).
 def _permission_policy(subject_type, action, resource_type):
     return {
         "policy": {"subject": {"type": subject_type}, "actions": [action], "resource": {"type": resource_type}},
@@ -81,13 +77,17 @@ _PRD_PERMISSION_POLICIES = [
     _permission_policy("User", "CAN_RETRIEVE", "Account"),
     _permission_policy("User", "CAN_ACCESS", "Decision"),
     _permission_policy("User", "CAN_ACCESS", "Document"),
+    _permission_policy("User", "WORKS_IN", "Department"),
+    _permission_policy("User", "MADE", "Decision"),
+    _permission_policy("Customer", "HAS_INVOICE", "Invoice"),
+    _permission_policy("Customer", "OWNS", "Account"),
 ]
 
 
 def _agent(monkeypatch, mocker, baseline_env, answers):
     """An IntentAgent over the CanBank schema whose LLM activates extract-intent and then
-    answers with `answers` (dicts, serialized) in order, with the PRD examples' permissions
-    granted by policy (_PRD_PERMISSION_POLICIES).
+    answers with `answers` (dicts, serialized) in order, with every combination the PRD
+    examples use granted by policy (_PRD_PERMISSION_POLICIES).
     """
     baseline_env()
     responses = [
@@ -114,10 +114,8 @@ def _agent(monkeypatch, mocker, baseline_env, answers):
 
 
 def _answer(*evaluations):
-    """The LLM's {evaluations} object for a scenario - the structured-output contract has no
-    prompt key; normalize_intent_response adds the echo from the incoming prompt.
-    """
-    return {"evaluations": list(evaluations)}
+    """The LLM's structured output for a scenario: evaluations plus a rating."""
+    return {"evaluations": list(evaluations), "explanation": "A policy matches the prompt.", "confidence": "high"}
 
 
 _SCENARIOS = [
@@ -186,7 +184,10 @@ _SCENARIOS = [
                 {
                     "action": {"name": "HAS_INVOICE"},
                     "resource": {"type": "Invoice"},
-                    "context": {"filters": "resource.status in ['open', 'pending']"},
+                    "context": {
+                        "filters": "resource.status in ['open', 'pending']",
+                        "parameters": {"action_derivation_rule": "policy_based"},
+                    },
                     "subject": _CUSTOMER,
                 },
             ],
@@ -208,7 +209,10 @@ _SCENARIOS = [
                 {
                     "action": {"name": "OWNS"},
                     "resource": {"type": "Account"},
-                    "context": {"filters": _ACTIVE_SINCE_FILTER},
+                    "context": {
+                        "filters": _ACTIVE_SINCE_FILTER,
+                        "parameters": {"action_derivation_rule": "policy_based"},
+                    },
                     "subject": _CUSTOMER,
                 },
             ],
@@ -281,8 +285,18 @@ _SCENARIOS = [
                 {"action": {"name": "MADE"}, "resource": {"type": "Decision"}},
             ],
             [
-                {"action": {"name": "WORKS_IN"}, "resource": {"type": "Department"}, "context": {}, "subject": _USER},
-                {"action": {"name": "MADE"}, "resource": {"type": "Decision"}, "context": {}, "subject": _USER},
+                {
+                    "action": {"name": "WORKS_IN"},
+                    "resource": {"type": "Department"},
+                    "context": {"parameters": {"action_derivation_rule": "policy_based"}},
+                    "subject": _USER,
+                },
+                {
+                    "action": {"name": "MADE"},
+                    "resource": {"type": "Decision"},
+                    "context": {"parameters": {"action_derivation_rule": "policy_based"}},
+                    "subject": _USER,
+                },
             ],
         ),
         id="multi_intent_gets_context_object_on_every_evaluation",
@@ -303,7 +317,7 @@ _SCENARIOS = [
                 {
                     "action": {"name": "OWNS"},
                     "resource": {"type": "Account"},
-                    "context": {"parameters": {"target_customer": "ted"}},
+                    "context": {"parameters": {"target_customer": "ted", "action_derivation_rule": "policy_based"}},
                     "subject": _CUSTOMER,
                 },
             ],
@@ -317,9 +331,9 @@ _SCENARIOS = [
 def test_golden_scenario_extracts_context_sub_shapes(monkeypatch, mocker, baseline_env, scenario):
     """One golden prompt per context sub-shape and per PRD example pattern, plus the two
     multi-evaluation shapes and the subject spoof: the model's answer comes back with the
-    context passed through as-is (nulls pruned, `{}` where it gave none; a permission the
-    caller holds only through a policy gains the policy_based marker), the caller bound as
-    subject on every evaluation, no retry spent, and audited as a success.
+    context passed through as-is (nulls pruned; every evaluation gains the system's policy_based
+    marker), the caller bound as subject on every evaluation, no retry spent, and audited as a
+    success.
 
     `scenario` is (prompt, subject to bind, the evaluations the LLM answered, the evaluations
     the caller must get).
@@ -389,7 +403,10 @@ def test_golden_scenario_mis_typed_filters_is_retried_with_shape_feedback(monkey
 
     assert result.outcome == Outcome.SUCCESS
     assert result.validation_retries == 1
-    assert result.evaluations[0]["context"] == right["context"]
+    assert result.evaluations[0]["context"] == {
+        **right["context"],
+        "parameters": {"action_derivation_rule": "policy_based"},
+    }
     assert mock_ainvoke.call_count == _LLM_CALLS_WITH_ONE_RETRY
     feedback = json.loads(mock_ainvoke.call_args_list[-1].args[0][-1].content)
     assert "Malformed shape:\n- evaluations[0]: context.filters is not a string" in feedback["reason"]
@@ -418,7 +435,7 @@ def test_golden_scenario_non_cel_filter_is_retried_until_it_parses(monkeypatch, 
 
     assert result.outcome == Outcome.SUCCESS
     assert result.validation_retries == 1
-    # CAN_ACCESS on Document is granted by policy, not by a User edge, so the marker is completed.
+    # Every accepted evaluation is policy-derived, so the system stamps the marker on it.
     assert result.evaluations[0]["context"] == {
         **cel["context"],
         "parameters": {"action_derivation_rule": "policy_based"},
@@ -430,8 +447,8 @@ def test_golden_scenario_non_cel_filter_is_retried_until_it_parses(monkeypatch, 
 
 def _agent_with_policies(monkeypatch, mocker, baseline_env, answers, policies):
     """Like _agent, but with this request's PolicyClient.get_cached() returning `policies`
-    instead of the usual empty list - for the one golden scenario that actually exercises
-    ENG-9671's policy-derived action.name.
+    instead of _PRD_PERMISSION_POLICIES - for the golden scenario replaying a real captured
+    policy.
     """
     baseline_env()
     responses = [
@@ -457,10 +474,10 @@ def test_golden_scenario_policy_derived_action_replays_a_real_captured_policy(mo
     """ENG-9671 end to end, replaying a policy actually captured from a live RC environment's
     GET /access/v1/policies (not a synthetic shape): a KBAC policy defines "WAIVE_FEE", an
     action that is not one of the CanBank schema's own edge relations at all. The prompt names
-    no specific account, so this is a Resource Search (no resource.id) with the "over a year"
-    condition expressed as a filters CEL clause, mirroring the policy's own cypher condition.
-    Marked action_derivation_rule="policy_based", it is accepted without a retry, and the
-    marker survives verbatim into what the caller gets.
+    no specific account, so this is a Resource Search (no resource.id), and the "over a year"
+    condition is left to the policy's own cypher condition rather than repeated as a filter.
+    It is accepted without a retry, and the caller gets it marked action_derivation_rule=
+    "policy_based" - the system's own statement, whatever the model wrote there.
     """
     policies = [
         {
@@ -482,7 +499,6 @@ def test_golden_scenario_policy_derived_action_replays_a_real_captured_policy(mo
         "resource": {"type": "Account"},
         "context": {
             "parameters": {"action_derivation_rule": "policy_based"},
-            "filters": "resource.create_time < timestamp('2024-09-23T00:00:00Z')",
         },
     }
     agent, mock_ainvoke = _agent_with_policies(monkeypatch, mocker, baseline_env, [_answer(answer)], policies)
@@ -498,13 +514,15 @@ def test_golden_scenario_policy_derived_action_replays_a_real_captured_policy(mo
             "resource": {"type": "Account"},
             "context": {
                 "parameters": {"action_derivation_rule": "policy_based"},
-                "filters": "resource.create_time < timestamp('2024-09-23T00:00:00Z')",
             },
             "subject": {"type": "Customer", "id": "rebecca"},
         },
     ]
     assert result.policy_version
     assert result.policy_fetch_failed is False
+    # The rating is on the result, never in the response.
+    assert (result.confidence, result.explanation) == ("high", "A policy matches the prompt.")
+    assert list(json.loads(result.text)) == ["prompt", "evaluations"]
 
 
 def _skill_json_examples():

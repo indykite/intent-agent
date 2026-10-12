@@ -1,0 +1,29 @@
+{
+  "prompt": "Which investment categories are my accounts in?",
+  "jwt_sub": "bob",
+  "expected": {
+    "prompt": "Which investment categories are my accounts in?",
+    "evaluations": [
+      {
+        "action": {
+          "name": "VIEW_ACCOUNT_CATEGORY"
+        },
+        "resource": {
+          "type": "InvestmentCategory"
+        },
+        "context": {
+          "parameters": {
+            "action_derivation_rule": "policy_based"
+          }
+        },
+        "subject": {
+          "type": "Customer",
+          "id": "bob"
+        }
+      }
+    ]
+  },
+  "confidence": "high",
+  "category": "resource search",
+  "data_model": "customer_model"
+}

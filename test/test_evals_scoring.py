@@ -32,7 +32,7 @@ _EVALUATION = {
     "subject": {"type": "User", "id": "leslie"},
     "action": {"name": "CAN_ACCESS"},
     "resource": {"type": "Document", "id": "doc123"},
-    "context": {},
+    "context": {"parameters": {"action_derivation_rule": "policy_based"}},
 }
 _OTHER_EVALUATION = {**_EVALUATION, "resource": {"type": "Document"}}
 
@@ -46,12 +46,24 @@ def _result(fixture, *, passed=True, forced_match=False, outcome="success"):
     )
 
 
-def test_exact_match_passes(eval_fixture):
-    fixture = eval_fixture()
+_MATCH = "response matches the golden answer"
 
-    verdict = judge(fixture, {"prompt": _PROMPT, "evaluations": [_EVALUATION]})
 
-    assert verdict == Verdict(passed=True, forced_match=False, detail="response matches the golden answer")
+@pytest.mark.parametrize(
+    ("golden", "confidence", "detail"),
+    [
+        pytest.param("high", "high", _MATCH, id="same_confidence"),
+        pytest.param("high", "medium", f"{_MATCH} (confidence medium, golden high)", id="other_confidence_noted"),
+        pytest.param("high", "", f"{_MATCH} (confidence missing, golden high)", id="missing_confidence_noted"),
+        pytest.param(None, "low", _MATCH, id="no_golden_confidence"),
+    ],
+)
+def test_matching_response_passes_whatever_its_confidence(eval_fixture, golden, confidence, detail):
+    fixture = eval_fixture(confidence=golden)
+
+    verdict = judge(fixture, {"prompt": _PROMPT, "evaluations": [_EVALUATION]}, confidence)
+
+    assert verdict == Verdict(passed=True, forced_match=False, detail=detail)
 
 
 def test_key_order_is_irrelevant_but_evaluation_order_is_not(eval_fixture):
@@ -59,7 +71,7 @@ def test_key_order_is_irrelevant_but_evaluation_order_is_not(eval_fixture):
     reordered_keys = {"evaluations": [dict(reversed(list(_EVALUATION.items()))), _OTHER_EVALUATION], "prompt": _PROMPT}
     reordered_evaluations = {"prompt": _PROMPT, "evaluations": [_OTHER_EVALUATION, _EVALUATION]}
 
-    assert judge(fixture, reordered_keys).passed
+    assert judge(fixture, reordered_keys, "high").passed
     verdict = judge(fixture, reordered_evaluations)
     assert not verdict.passed
     assert not verdict.forced_match

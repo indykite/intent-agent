@@ -129,9 +129,11 @@ async def _extract_once(fixture: Fixture, agent: IntentAgent) -> FixtureResult:
         fixture=fixture,
         actual=actual,
         outcome=result.outcome.value,
-        verdict=judge(fixture, actual),
+        verdict=judge(fixture, actual, result.confidence),
         validation_retries=result.validation_retries,
         latency_seconds=time.perf_counter() - started,
+        confidence=result.confidence,
+        explanation=result.explanation,
     )
 
 

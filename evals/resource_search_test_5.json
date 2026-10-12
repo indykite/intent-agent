@@ -1,17 +1,23 @@
 {
-  "prompt": "What accounts have been affected by my decisions?",
+  "prompt": "What Users and Customers are part of the system sys123?",
   "jwt_sub": "leslie",
+  "subject_type": "User",
   "expected": {
-    "prompt": "What accounts have been affected by my decisions?",
+    "prompt": "What Users and Customers are part of the system sys123?",
     "evaluations": [
       {
         "action": {
-          "name": "MADE"
+          "name": "CAN_ACCESS"
         },
         "resource": {
-          "type": "Decision"
+          "type": "System",
+          "id": "sys123"
         },
-        "context": {},
+        "context": {
+          "parameters": {
+            "action_derivation_rule": "policy_based"
+          }
+        },
         "subject": {
           "type": "User",
           "id": "leslie"
@@ -19,10 +25,28 @@
       },
       {
         "action": {
-          "name": "AFFECTED"
+          "name": "CHECK_MEMBERSHIP"
         },
         "resource": {
-          "type": "Account"
+          "type": "User"
+        },
+        "context": {
+          "parameters": {
+            "depends_on_previous_evaluations": true,
+            "action_derivation_rule": "policy_based"
+          }
+        },
+        "subject": {
+          "type": "User",
+          "id": "leslie"
+        }
+      },
+      {
+        "action": {
+          "name": "CHECK_MEMBERSHIP"
+        },
+        "resource": {
+          "type": "Customer"
         },
         "context": {
           "parameters": {
@@ -37,6 +61,7 @@
       }
     ]
   },
+  "confidence": "high",
   "category": "resource search",
-  "data_model": "user_model"
+  "data_model": "combined_model"
 }

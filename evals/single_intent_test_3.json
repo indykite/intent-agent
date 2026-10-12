@@ -14,7 +14,8 @@
         },
         "context": {
           "parameters": {
-            "direct": false
+            "direct": false,
+            "action_derivation_rule": "policy_based"
           }
         },
         "subject": {
@@ -24,6 +25,7 @@
       }
     ]
   },
+  "confidence": "high",
   "category": "single intent",
   "data_model": "user_model"
 }

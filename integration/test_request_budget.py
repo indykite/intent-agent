@@ -14,7 +14,7 @@ from starlette.testclient import TestClient
 from indykite.intent_agent.app import build_app
 from indykite.intent_agent.config import Settings
 from indykite.intent_agent.errors import llm_timeout_error
-from integration.schema_fixtures import load_schema_fixture
+from integration.schema_fixtures import load_schema_fixture, policies
 
 _PRD_REQUEST_BUDGET_SECONDS = 10.0
 # Small so the test is quick, but the elapsed-time assertion is still well below the PRD
@@ -54,7 +54,10 @@ def test_hung_llm_call_is_cut_off_within_request_budget(monkeypatch, mocker, tmp
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=fake_bound_llm))
 
     settings = Settings(_env_file=None)
-    app, _agent = build_app(settings, llm=fake_llm, schema_client=fake_schema_client)
+    fake_policy_client = mocker.Mock(
+        get_cached=mocker.Mock(return_value=(policies(("Customer", "RENT", "Car")), False))
+    )
+    app, _agent = build_app(settings, llm=fake_llm, schema_client=fake_schema_client, policy_client=fake_policy_client)
     client = TestClient(app)
 
     started = time.perf_counter()

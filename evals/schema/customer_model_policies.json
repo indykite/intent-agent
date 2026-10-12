@@ -35,7 +35,67 @@
           "type": "AccountTier"
         },
         "condition": {
-          "cypher": "MATCH (subject:Customer) MATCH (resource:AccountTier)"
+          "cypher": "MATCH (subject:Customer)-[:OWNS]->(:Account)-[:IS_TIER]->(resource:AccountTier)"
+        }
+      },
+      "tags": []
+    },
+    {
+      "policy": {
+        "meta": {
+          "policy_version": "2.0-kbac"
+        },
+        "subject": {
+          "type": "Customer"
+        },
+        "actions": [
+          "VIEW_UNPAID_INVOICE"
+        ],
+        "resource": {
+          "type": "Invoice"
+        },
+        "condition": {
+          "cypher": "MATCH (subject:Customer)-[:HAS_INVOICE]->(resource:Invoice) WHERE resource.status = 'unpaid'"
+        }
+      },
+      "tags": []
+    },
+    {
+      "policy": {
+        "meta": {
+          "policy_version": "2.0-kbac"
+        },
+        "subject": {
+          "type": "Customer"
+        },
+        "actions": [
+          "VIEW_FELLOW_CUSTOMER"
+        ],
+        "resource": {
+          "type": "Customer"
+        },
+        "condition": {
+          "cypher": "MATCH (subject:Customer)<-[:SERVES]-(:Department)-[:SERVES]->(resource:Customer)"
+        }
+      },
+      "tags": []
+    },
+    {
+      "policy": {
+        "meta": {
+          "policy_version": "2.0-kbac"
+        },
+        "subject": {
+          "type": "Customer"
+        },
+        "actions": [
+          "VIEW_ACCOUNT_CATEGORY"
+        ],
+        "resource": {
+          "type": "InvestmentCategory"
+        },
+        "condition": {
+          "cypher": "MATCH (subject:Customer)-[:OWNS]->(:Account)-[:IS_TYPE]->(resource:InvestmentCategory)"
         }
       },
       "tags": []

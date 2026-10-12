@@ -1,43 +1,30 @@
 {
-  "prompt": "What accounts with tier tier_2 do I own?",
-  "jwt_sub": "bob",
+  "prompt": "What customers can I access?",
+  "jwt_sub": "leslie",
+  "subject_type": "User",
   "expected": {
-    "prompt": "What accounts with tier tier_2 do I own?",
+    "prompt": "What customers can I access?",
     "evaluations": [
-      {
-        "action": {
-          "name": "OWNS"
-        },
-        "resource": {
-          "type": "Account"
-        },
-        "context": {},
-        "subject": {
-          "type": "Customer",
-          "id": "bob"
-        }
-      },
       {
         "action": {
           "name": "CAN_ACCESS"
         },
         "resource": {
-          "type": "AccountTier",
-          "id": "tier_2"
+          "type": "Customer"
         },
         "context": {
           "parameters": {
-            "depends_on_previous_evaluations": true,
             "action_derivation_rule": "policy_based"
           }
         },
         "subject": {
-          "type": "Customer",
-          "id": "bob"
+          "type": "User",
+          "id": "leslie"
         }
       }
     ]
   },
+  "confidence": "high",
   "category": "resource search",
-  "data_model": "customer_model"
+  "data_model": "combined_model"
 }

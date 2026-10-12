@@ -11,7 +11,7 @@ from starlette.testclient import TestClient
 
 from indykite.intent_agent.app import build_app
 from indykite.intent_agent.config import Settings
-from integration.schema_fixtures import schema_with_stocks
+from integration.schema_fixtures import RATING, STOCK_POLICIES, schema_with_stocks
 
 _SCHEMA_FIXTURE = schema_with_stocks()
 _TOOL_CALL_ROUND_TRIPS = 2  # one activate_skill tool call, one final answer
@@ -22,19 +22,21 @@ _APP_AGENT_KEY = jwt.encode({"sub": "test-app-agent"}, key="", algorithm="none")
 
 
 class _SchemaHandler(BaseHTTPRequestHandler):
-    """Serves 503 until `serving_schema` is flipped on, then the real schema fixture -
-    a real HTTP server standing in for the IndyKite platform, not a mocked SchemaClient.
+    """Serves 503 until `serving_schema` is flipped on, then the real schema fixture and its
+    policies - a real HTTP server standing in for the IndyKite platform, not mocked clients.
     """
 
     def log_message(self, *args):
         pass
 
     def do_GET(self):
-        if self.path != "/data-schema/v1" or not self.server.serving_schema:
+        documents = {"/data-schema/v1": _SCHEMA_FIXTURE, "/access/v1/policies": {"results": STOCK_POLICIES}}
+        document = documents.get(self.path.split("?", 1)[0])
+        if document is None or not self.server.serving_schema:
             self.send_response(503)
             self.end_headers()
             return
-        body = json.dumps(_SCHEMA_FIXTURE).encode()
+        body = json.dumps(document).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -146,7 +148,8 @@ def test_recovers_on_next_request_once_platform_publishes_schema(monkeypatch, mo
     final_response = AIMessage(
         content=(
             '{"prompt": "Can I buy 50 shares of AAPL?", "evaluations": '
-            '[{"action": {"name": "buy"}, "resource": {"type": "Stock", "id": "AAPL"}}]}'
+            '[{"action": {"name": "buy"}, "resource": {"type": "Stock", "id": "AAPL"}}], '
+            f"{RATING}}}"
         ),
         tool_calls=[],
     )

@@ -1,8 +1,8 @@
 {
-  "prompt": "What accounts do I own?",
+  "prompt": "Can I book a meeting room for tomorrow?",
   "jwt_sub": "leslie",
   "expected": {
-    "prompt": "What accounts do I own?",
+    "prompt": "Can I book a meeting room for tomorrow?",
     "error": "Unable to extract intent from prompt.",
     "reason": "The prompt doesn't match the Knowledge Graph Schema, or is unclear.",
     "obligation": "Ask the prompter to clarify their request or ensure it's relevant to the system."

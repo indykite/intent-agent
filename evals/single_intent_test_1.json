@@ -5,21 +5,26 @@
     "prompt": "Do I, a User, work in Department with id=trading?",
     "evaluations": [
       {
+        "action": {
+          "name": "WORKS_IN_PARENT_DEPT"
+        },
+        "resource": {
+          "id": "trading",
+          "type": "Department"
+        },
+        "context": {
+          "parameters": {
+            "action_derivation_rule": "policy_based"
+          }
+        },
         "subject": {
           "type": "User",
           "id": "roy"
-        },
-        "resource": {
-          "type": "Department",
-          "id": "trading"
-        },
-        "action": {
-          "name": "WORKS_IN"
-        },
-        "context": {}
+        }
       }
     ]
   },
+  "confidence": "medium",
   "category": "single intent",
   "data_model": "user_model"
 }

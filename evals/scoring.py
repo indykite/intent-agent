@@ -5,7 +5,9 @@ One rule decides a fixture: the response the agent returned must equal the fixtu
 response - the same evaluations, in the same order (later evaluations may depend on earlier ones),
 with the same subject binding and context; or, for a prompt that must be refused, the same 4.7
 error. `prompt` is part of both, so the echo is checked too. Evaluation order is the one thing
-dict equality doesn't already forgive, deliberately.
+dict equality doesn't already forgive, deliberately. The model's rating of an answer - its
+`confidence`, logged rather than returned - is reported next to the fixture's own and named in the
+verdict when the two differ, but never decides it; its explanation is reported, never compared.
 
 Four gates, all required (TDD 7.1 - "regressions on any of the four gates block release"):
 
@@ -71,6 +73,9 @@ class FixtureResult:
     # Reruns the runner spent because the only outcome was a per-call/request timeout - a platform
     # or provider latency spike, not a judgement of the model's answer (see runner.run_fixture).
     timeout_retries: int = 0
+    # The model's rating (ExtractionResult); a refusal has only an explanation.
+    confidence: str = ""
+    explanation: str = ""
 
     @property
     def passed(self) -> bool:
@@ -106,10 +111,13 @@ def _evaluations_mismatch(fixture: Fixture, actual: dict[str, Any]) -> str:
     return "evaluations differ from the golden answer"
 
 
-def judge(fixture: Fixture, actual: dict[str, Any]) -> Verdict:
-    """Compare the agent's response with the fixture's golden response (see module docstring)."""
+def judge(fixture: Fixture, actual: dict[str, Any], confidence: str = "") -> Verdict:
+    """Compare the response with the golden one. A differing confidence is noted, never failed."""
     if actual == fixture.expected:
-        return Verdict(passed=True, forced_match=False, detail="response matches the golden answer")
+        detail = "response matches the golden answer"
+        if fixture.confidence is not None and not fixture.expects_refusal and confidence != fixture.confidence:
+            detail += f" (confidence {confidence or 'missing'}, golden {fixture.confidence})"
+        return Verdict(passed=True, forced_match=False, detail=detail)
     if fixture.expects_refusal:
         return Verdict(passed=False, forced_match="evaluations" in actual, detail=_refusal_mismatch(actual))
     return Verdict(passed=False, forced_match=False, detail=_evaluations_mismatch(fixture, actual))

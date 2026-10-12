@@ -1,56 +1,18 @@
 {
-  "prompt": "What Users and Customers are part of the system sys123?",
+  "prompt": "What accounts do I own?",
   "jwt_sub": "leslie",
-  "subject_type": "User",
   "expected": {
-    "prompt": "What Users and Customers are part of the system sys123?",
+    "prompt": "What accounts do I own?",
     "evaluations": [
       {
         "action": {
-          "name": "CAN_ACCESS"
+          "name": "OWNS"
         },
         "resource": {
-          "type": "System",
-          "id": "sys123"
+          "type": "Account"
         },
         "context": {
           "parameters": {
-            "action_derivation_rule": "policy_based"
-          }
-        },
-        "subject": {
-          "type": "User",
-          "id": "leslie"
-        }
-      },
-      {
-        "action": {
-          "name": "CHECK_MEMBERSHIP"
-        },
-        "resource": {
-          "type": "User"
-        },
-        "context": {
-          "parameters": {
-            "depends_on_previous_evaluations": true,
-            "action_derivation_rule": "policy_based"
-          }
-        },
-        "subject": {
-          "type": "User",
-          "id": "leslie"
-        }
-      },
-      {
-        "action": {
-          "name": "CHECK_MEMBERSHIP"
-        },
-        "resource": {
-          "type": "Customer"
-        },
-        "context": {
-          "parameters": {
-            "depends_on_previous_evaluations": true,
             "action_derivation_rule": "policy_based"
           }
         },
@@ -61,6 +23,7 @@
       }
     ]
   },
+  "confidence": "high",
   "category": "resource search",
-  "data_model": "combined_model"
+  "data_model": "user_model"
 }

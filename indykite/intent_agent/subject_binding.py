@@ -7,6 +7,7 @@ from typing import Any
 
 from indykite.intent_agent.cel import filter_errors
 from indykite.intent_agent.errors import (
+    POLICY_MEMBERSHIP_SUFFIX,
     SCHEMA_BLANK_SUFFIX,
     SCHEMA_MEMBERSHIP_SUFFIX,
     SCHEMA_RELATIONSHIP_SUFFIX,
@@ -14,7 +15,7 @@ from indykite.intent_agent.errors import (
     SubjectTypeMismatchError,
     no_intent_error,
 )
-from indykite.intent_agent.input_schema import digital_twin_types
+from indykite.intent_agent.input_schema import CONFIDENCE_LEVELS, digital_twin_types, policy_triples
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,14 +32,8 @@ class RequestSubject:
 
 @dataclass(frozen=True, slots=True)
 class PolicyContext:
-    """This request's fetched AuthZEN policies used to accept a policy-derived
-    action.name when the evaluation is marked action_derivation_rule="policy_based", see
-    _action_name_error - and whether the fetch itself failed after retries, which
-    normalize_intent_response tags onto every evaluation's context.parameters (see
-    _set_policy_fetch_failed) so the receiving agent knows this answer used the data schema
-    only. Bundled together since both come from one per-request PolicyClient.get_cached() call
-    and normalize_intent_response needs both; separately they would push its own argument count
-    over the lint limit.
+    """This request's policies and whether their live fetch failed (so they are stale) - both
+    from one PolicyClient.get_cached() call.
     """
 
     policies: list[dict[str, Any]] | None
@@ -69,22 +64,6 @@ def _node_properties(schema: dict[str, Any]) -> dict[str, set[str]]:
         names = {name for name in declared if isinstance(name, str)} if isinstance(declared, dict) else set()
         properties[node_type] = names
     return properties
-
-
-def _edge_relations(schema: dict[str, Any]) -> set[str]:
-    """Return every distinct edge relation (action name) defined in the given schema.
-
-    Only non-empty strings count - a malformed relation (e.g. a number) is skipped, the same
-    rule as input_schema._edge_relations so the enum and this check agree on the vocabulary.
-    """
-    edges = schema.get("graph", {}).get("edges", [])
-    if not isinstance(edges, list):
-        return set()
-    return {
-        relation
-        for edge in edges
-        if isinstance(edge, dict) and isinstance(relation := edge.get("relation"), str) and relation
-    }
 
 
 _BOOTSTRAP_NODE_TYPE = "_Application"
@@ -118,112 +97,25 @@ def _blank(value: object) -> bool:
     return not isinstance(value, str) or not value.strip()
 
 
-def _vocabulary_reason(field: str, value: object, allowed: set[str]) -> str | None:
-    """Describe why `value` isn't acceptable for `field`, or None if it is. One line of the
-    `reason` in errors.validation_feedback_error - not an error response itself.
-
-    A blank value means the LLM tried and failed to correlate the field to the schema; a
-    non-blank value outside `allowed` is the post-assembly schema-membership check itself
-    (TDD 4.8). An empty `allowed` set skips the membership check - the same no-op rule as
-    input_schema._constrain_to_enum, since a schema with nodes but no edges yet leaves
-    action.name legitimately unconstrained.
+def _vocabulary_reason(
+    field: str, value: object, node_types: set[str] | None, policy_values: set[str] | None
+) -> str | None:
+    """Why `value` isn't acceptable for `field` (one feedback line), or None. It must be non-blank,
+    in `node_types` and in `policy_values`; a None set skips that check.
     """
     if _blank(value):
         return f"{field} {SCHEMA_BLANK_SUFFIX}"
-    if allowed and value not in allowed:
+    if node_types is not None and value not in node_types:
         return f"{field} {value!r} {SCHEMA_MEMBERSHIP_SUFFIX}"
+    if policy_values is not None and value not in policy_values:
+        return f"{field} {value!r} {POLICY_MEMBERSHIP_SUFFIX}"
     return None
 
 
-# SKILL.md's marker for "action.name came from a policy, not the schema's edge relations" -
-# same context.parameters convention as subject_source, a different key so the two markers
-# never collide on one evaluation.
+# Set by the system on every evaluation (_mark_policy_based), never taken from the model.
 _ACTION_DERIVATION_KEY = "action_derivation_rule"
 _ACTION_DERIVATION_POLICY = "policy_based"
 _POLICY_FETCH_FAILED_KEY = "policy_fetch_failed"
-
-
-def _policy_actions_for_resource(policies: list[dict[str, Any]] | None, resource_type: str) -> set[str]:
-    """Every action name a fetched policy defines for evaluations against this resource type -
-    from policy.actions where policy.resource.type matches. Confirmed against a real captured
-    GET /access/v1/policies response (ENG-9671):
-    {"results": [{"policy": {"actions": [...], "resource": {"type": ...}, "subject": {...},
-    "condition": {...}}, "tags": [...]}]} - subject.type is not checked here too, since the
-    fetch itself is already scoped to the caller's subject_type (PolicyClient.get_cached).
-    """
-    if not policies:
-        return set()
-    names: set[str] = set()
-    for entry in policies:
-        policy = entry.get("policy") if isinstance(entry, dict) else None
-        if not isinstance(policy, dict):
-            continue
-        resource = policy.get("resource")
-        if not isinstance(resource, dict) or resource.get("type") != resource_type:
-            continue
-        actions = policy.get("actions")
-        if isinstance(actions, list):
-            names.update(name for name in actions if isinstance(name, str) and name)
-    return names
-
-
-def _action_derivation_rule(evaluation: dict[str, Any]) -> object:
-    """Return the evaluation's context.parameters.action_derivation_rule marker, mirroring
-    _subject_source - a malformed context/parameters reads as no marker at all.
-    """
-    context = evaluation.get("context")
-    if not isinstance(context, dict):
-        return None
-    parameters = context.get("parameters")
-    if not isinstance(parameters, dict):
-        return None
-    return parameters.get(_ACTION_DERIVATION_KEY)
-
-
-def _action_name_error(
-    action: dict[str, Any],
-    resource_type: object,
-    edge_relations: set[str],
-    policies: list[dict[str, Any]] | None,
-    marker: object,
-) -> str | None:
-    """Describe why action.name isn't acceptable, or None if it is. `action` is already known
-    to be an object (see _evaluation_errors); `marker` is the evaluation's own
-    context.parameters.action_derivation_rule value (_action_derivation_rule).
-
-    Valid three ways: as a schema edge relation, always (marked or not - unchanged from before
-    ENG-9671); as a policy-derived action for this evaluation's resource.type, but only when
-    marker == "policy_based"; or, when the schema has no edges at all *and* no policies were
-    fetched, unconstrained - the pre-ENG-9671 behavior for a schema with nodes but no edges yet
-    (see _vocabulary_reason). Unmarked, or against the wrong resource.type, a policy-only action
-    name is rejected the same as any other off-schema value - the retry loop
-    (validation_feedback_error) is what pushes the LLM to add the marker, not a silent
-    acceptance of an unmarked claim.
-
-    This checks schema and policy membership directly rather than delegating to
-    _vocabulary_reason: that helper's own "empty allowed set" carve-out (for a schema with no
-    edges yet) returns None for any non-blank name regardless of policies, which would silently
-    skip the policy-membership/marker check below whenever the schema simply has no edges -
-    letting an arbitrary action, or a policy action against the wrong resource.type, through
-    unmarked. The unconstrained carve-out here only applies when there is truly no vocabulary
-    (schema or policy) to validate against at all.
-    """
-    name = action.get("name")
-    if _blank(name):
-        # Only reachable through a direct validate_evaluations call: normalize_intent_response
-        # drops blank-named evaluations first (_drop_unnamed_actions) instead of retrying them.
-        return f"action.name {SCHEMA_BLANK_SUFFIX}"
-    if name in edge_relations:
-        return None
-    if (
-        isinstance(resource_type, str)
-        and marker == _ACTION_DERIVATION_POLICY
-        and name in _policy_actions_for_resource(policies, resource_type)
-    ):
-        return None
-    if not edge_relations and not policies:
-        return None
-    return f"action.name {name!r} {SCHEMA_MEMBERSHIP_SUFFIX}"
 
 
 # The PRD's context sub-shapes (TDD 3.2) and what each must be when present - the same three
@@ -258,168 +150,91 @@ def _context_errors(context: object, properties: set[str] | None = None) -> list
     return errors
 
 
+_SEARCH_WITHOUT_SUBJECT = (
+    'context.parameters.subject_source is "search" but subject.type is missing - a Subject '
+    "Search must name the subject type to search for"
+)
+
+
+def _resource_errors(resource: object, node_types: set[str], triples: set[tuple[str, str, str]]) -> list[str | None]:
+    """Problems with `resource`: missing, a type no policy names, or a non-string id."""
+    if not isinstance(resource, dict):
+        return ["resource is missing or not an object"]
+    errors = [_vocabulary_reason("resource.type", resource.get("type"), node_types, {r for _, _, r in triples})]
+    if resource.get("id") is not None and not isinstance(resource["id"], str):
+        errors.append("resource.id is not a string")
+    return errors
+
+
+def _action_errors(action: object, triples: set[tuple[str, str, str]]) -> list[str | None]:
+    """Problems with a present `action`: not an object, or a name no policy grants."""
+    if not isinstance(action, dict):
+        return ["action is not an object"]
+    return [_vocabulary_reason("action.name", action.get("name"), None, {a for _, a, _ in triples})]
+
+
+def _subject_errors(
+    evaluation: dict[str, Any], node_types: set[str], triples: set[tuple[str, str, str]]
+) -> list[str | None]:
+    """Problems with `subject`. Only a kept subject (search / second subject) must be a policy's
+    subject type - any other is overwritten with the caller's.
+    """
+    subject = evaluation.get("subject")
+    if isinstance(subject, dict):
+        keeps_own = _subject_source(evaluation) in {_SUBJECT_SOURCE_SEARCH, _SUBJECT_SOURCE_PROMPT}
+        subject_types = {s for s, _, _ in triples} if keeps_own else None
+        return [_vocabulary_reason("subject.type", subject.get("type"), node_types, subject_types)]
+    if _subject_source(evaluation) == _SUBJECT_SOURCE_SEARCH:
+        # Otherwise the marker is ignored and the caller bound, and the retry never learns why.
+        return [_SEARCH_WITHOUT_SUBJECT]
+    return []
+
+
 def _evaluation_errors(
     evaluation: object,
     node_types: set[str],
-    edge_relations: set[str],
-    policies: list[dict[str, Any]] | None,
+    triples: set[tuple[str, str, str]],
     node_properties: dict[str, set[str]] | None = None,
 ) -> list[str]:
-    """Return every reason this evaluation can't be accepted, empty if it can.
-
-    Must run before _bind_subject, which overwrites subject.type/id regardless of what the
-    LLM produced on every evaluation but the marked exceptions - and those keep a subject.type
-    only this check has vetted. A key entirely absent (e.g. no `subject` for Access
-    Evaluation, no `action` for Action Search - see SKILL.md) is a legitimate
-    per-evaluation-kind omission, not a failure; a key present but malformed (wrong
-    type, or a blank/off-schema type/name inside it) means the LLM tried and failed to
-    correlate it. subject is exempt from the malformed-shape check (though not the
-    blank/off-schema one) since _bind_subject replaces a non-object subject outright either
-    way. context is checked for its shape and, where the schema observed properties for
-    resource.type, for filters reading a property that type doesn't have (_context_errors).
-    action.name is additionally valid as a policy-derived action for resource.type when marked
-    action_derivation_rule="policy_based" (ENG-9671) - see _action_name_error.
+    """Every reason this evaluation can't be accepted, each part on its own. An absent key
+    (no `action` on an Action Search) is fine; the parts forming one granted combination is
+    checked later (_policy_combination_errors). Must run before _bind_subject.
     """
     if not isinstance(evaluation, dict):
         return ["evaluation is not an object"]
-    errors: list[str] = []
     resource = evaluation.get("resource")
+    errors = _resource_errors(resource, node_types, triples)
+    if evaluation.get("action") is not None:
+        errors += _action_errors(evaluation["action"], triples)
+    errors += _subject_errors(evaluation, node_types, triples)
     resource_type = resource.get("type") if isinstance(resource, dict) else None
-    if not isinstance(resource, dict):
-        errors.append("resource is missing or not an object")
-    else:
-        errors.append(_vocabulary_reason("resource.type", resource_type, node_types))
-        if resource.get("id") is not None and not isinstance(resource["id"], str):
-            errors.append("resource.id is not a string")
-    action = evaluation.get("action")
-    if action is not None:
-        if not isinstance(action, dict):
-            errors.append("action is not an object")
-        else:
-            marker = _action_derivation_rule(evaluation)
-            errors.append(_action_name_error(action, resource_type, edge_relations, policies, marker))
-    subject = evaluation.get("subject")
-    if isinstance(subject, dict):
-        errors.append(_vocabulary_reason("subject.type", subject.get("type"), node_types))
-    if _subject_source(evaluation) == _SUBJECT_SOURCE_SEARCH and not isinstance(subject, dict):
-        # Seen live (flash-lite): the marker is set but the `subject` object is left out, mixing up
-        # SKILL.md's "omit subject" rule for the other evaluation kinds with the Subject Search
-        # exception. Without this the marker is ignored, _bind_subject binds the caller, and the
-        # caller then fails the relationship check - which sends the retry after the action name
-        # instead of the missing type, and it answers with an empty array instead. A subject that
-        # is present but blank already reports itself above; this is the case nothing else sees.
-        errors.append(
-            'context.parameters.subject_source is "search" but subject.type is missing - a Subject '
-            "Search must name the subject type to search for"
-        )
     properties = (node_properties or {}).get(resource_type) if isinstance(resource_type, str) else None
-    errors.extend(_context_errors(evaluation.get("context"), properties))
+    errors += _context_errors(evaluation.get("context"), properties)
     return [error for error in errors if error]
 
 
-def _edge_triples(schema: dict[str, Any]) -> set[tuple[str, str, str]]:
-    """Every well-formed (source, relation, target) edge of the schema."""
-    edges = schema.get("graph", {}).get("edges", [])
-    if not isinstance(edges, list):
-        return set()
-    return {
-        (edge["source"], edge["relation"], edge["target"])
-        for edge in edges
-        if isinstance(edge, dict) and all(not _blank(edge.get(key)) for key in ("source", "relation", "target"))
-    }
-
-
-def _relationship_reason(
-    evaluation: dict[str, Any],
-    *,
-    caller_type: str,
-    previous_resource_type: str | None,
-    triples: set[tuple[str, str, str]],
-    policies: list[dict[str, Any]] | None,
-) -> str | None:
-    """Why the caller can't hold this evaluation's relationship, or None if they can. The action
-    must be an edge from the caller's own type to the resource type, or an action a fetched
-    policy grants for that resource type (the listing is already scoped to the caller's subject
-    type - PolicyClient.get_cached; permission labels such as CAN_ACCESS are granted there, not
-    by whichever pair of node types happens to hold such an edge in the graph) - or, on a
-    dependent hop of a chain, an edge from the previous hop's resource type, `previous_resource_type`
-    being None unless that previous hop was itself grounded by this check (the dependency marker
-    is the model's, so it can't vouch for a hop on its own). Seen live otherwise: "what accounts
-    do I own?" in a graph where nothing relates a User to an Account answered with `REGARDING`,
-    a `Ticket -> Account` edge, a forced match that must not reach the caller.
-    """
-    action, resource = evaluation.get("action"), evaluation.get("resource")
-    name = action.get("name") if isinstance(action, dict) else None
-    resource_type = resource.get("type") if isinstance(resource, dict) else None
-    if _blank(name) or _blank(resource_type):
-        return None
-    if (caller_type, name, resource_type) in triples or name in _policy_actions_for_resource(policies, resource_type):
-        return None
-    dependent = _subject_source_parameters(evaluation).get("depends_on_previous_evaluations") is True
-    if dependent and previous_resource_type is not None and (previous_resource_type, name, resource_type) in triples:
-        return None
-    return (
-        f"action.name {name!r} for subject type {caller_type!r} on resource type {resource_type!r} "
-        f"{SCHEMA_RELATIONSHIP_SUFFIX}"
-    )
-
-
-def _is_caller(subject: dict[str, Any], caller_type: str, caller_id: str | None) -> bool:
-    """True when `subject` names the caller's own identity - type and id both."""
-    return subject.get("type") == caller_type and not _blank(caller_id) and subject.get("id") == caller_id
-
-
-def _caller_relationship_errors(
-    schema: dict[str, Any],
-    evaluations: list[object],
-    policies: list[dict[str, Any]] | None,
-    caller_type: str,
-    caller_id: str | None,
+def _policy_combination_errors(
+    evaluations: list[object], triples: set[tuple[str, str, str]], caller_type: str
 ) -> list[str]:
-    """The relationship check for every evaluation that carries a subject: the caller's own
-    (bound, or a "second subject" that is in fact the caller's identity - the marker never
-    exempts the caller from their own check) against the caller's type, a trusted second
-    subject against its own type. A marked Subject Search discovers subjects and is left to the
-    vocabulary check alone. A second subject additionally passes with an action marked
-    `policy_based`: the golden answers (adversarial_subject_spoof_test_2) name a permission
-    about a third party that neither an edge nor a fetched policy - scoped to the caller's type -
-    grounds, so that claim is IBAC's to decide; an *unmarked* relationship label must be an edge
-    from the second subject's own type. A hop only counts as the "previous hop" for the next
-    evaluation's dependent-hop rule when it passed this check and named an action.
+    """Every evaluation naming an action must be one granted combination of the subject type it
+    will carry (its own if kept, else the caller's), the action and the resource type.
     """
-    triples = _edge_triples(schema)
     gate = _gate_resource({"evaluations": evaluations})
     errors: list[str] = []
-    previous_resource_type: str | None = None
     for index, evaluation in enumerate(evaluations):
-        if not isinstance(evaluation, dict) or _subject_search(evaluation):
-            previous_resource_type = None
+        if not isinstance(evaluation, dict):
             continue
-        second_subject = (
-            index > 0
-            and _subject_from_prompt(evaluation, gate)
-            and not _is_caller(evaluation["subject"], caller_type, caller_id)
-        )
-        # The fetched policies are the caller's subject type's: they ground the caller's own
-        # evaluations only. A second subject passes on its own edge, a grounded dependent hop, or
-        # the explicit policy_based claim below - never on the caller's policies.
-        reason = _relationship_reason(
-            evaluation,
-            caller_type=evaluation["subject"]["type"] if second_subject else caller_type,
-            previous_resource_type=previous_resource_type,
-            triples=triples,
-            policies=None if second_subject else policies,
-        )
-        if reason and second_subject and _action_derivation_rule(evaluation) == _ACTION_DERIVATION_POLICY:
-            reason = None
-        if reason:
-            errors.append(f"evaluations[{index}]: {reason}")
-        # Only a hop that named an action and passed the check establishes a relationship the
-        # next hop may build on - an Action Search (no action) checks nothing and grounds nothing.
         action, resource = evaluation.get("action"), evaluation.get("resource")
-        named = isinstance(action, dict) and not _blank(action.get("name"))
-        grounded = reason is None and named and isinstance(resource, dict)
-        previous_resource_type = resource.get("type") if grounded else None
+        name = action.get("name") if isinstance(action, dict) else None
+        resource_type = resource.get("type") if isinstance(resource, dict) else None
+        if _blank(name) or _blank(resource_type):
+            continue
+        keeps_own_subject = _subject_search(evaluation) or (index > 0 and _subject_from_prompt(evaluation, gate))
+        subject_type = evaluation["subject"]["type"] if keeps_own_subject else caller_type
+        if (subject_type, name, resource_type) not in triples:
+            errors.append(
+                f"evaluations[{index}]: {subject_type} -{name}-> {resource_type} {SCHEMA_RELATIONSHIP_SUFFIX}"
+            )
     return errors
 
 
@@ -429,31 +244,20 @@ def validate_evaluations(
     policies: list[dict[str, Any]] | None = None,
     *,
     caller_type: str | None = None,
-    caller_id: str | None = None,
 ) -> list[str]:
-    """Check every evaluation's subject.type / action.name / resource.type against the
-    schema's node types and edge relations (TDD 4.8 post-assembly check), and its context
-    against the PRD's parameters/filters/qualifiers shape. Returns one message per problem,
-    prefixed with the evaluation's index so the LLM can tell which entry to fix (they
-    become the `reason` lines of errors.validation_feedback_error); empty means the list
-    is acceptable. `policies` (ENG-9671) additionally allows a marked action.name to come from
-    a policy instead of the schema - see _action_name_error. With `caller_type`, every
-    evaluation bound to the caller must also name a relationship the caller's type can hold
-    (_relationship_reason) - checked only once the vocabulary itself is clean, and only when
-    there is a relationship vocabulary to check against: a schema with no edges and no policies
-    fetched leaves action.name unconstrained (_action_name_error's carve-out), and a check that
-    then failed every caller-bound action would turn that legitimate state into a refusal.
+    """One feedback line per problem, prefixed with the evaluation's index (TDD 4.8). With
+    `caller_type`, the combinations are checked too, once each part is clean.
     """
     node_types = _node_types(schema)
-    edge_relations = _edge_relations(schema)
+    triples = policy_triples(policies, schema)
     node_properties = _node_properties(schema)
     errors = [
         f"evaluations[{index}]: {error}"
         for index, evaluation in enumerate(evaluations)
-        for error in _evaluation_errors(evaluation, node_types, edge_relations, policies, node_properties)
+        for error in _evaluation_errors(evaluation, node_types, triples, node_properties)
     ]
-    if caller_type is not None and not errors and (edge_relations or policies):
-        errors = _caller_relationship_errors(schema, evaluations, policies, caller_type, caller_id)
+    if caller_type is not None and not errors:
+        errors = _policy_combination_errors(evaluations, triples, caller_type)
     return errors
 
 
@@ -526,97 +330,128 @@ def normalize_intent_response(
     evaluations = _drop_off_twin_subject_searches(data, schema)
     if not evaluations:
         return json.dumps(no_intent_error(original_prompt), indent=2, ensure_ascii=False)
+    rating_errors = _rating_errors(data)
     # Settle resource ids first: the gate check below reads evaluations[0].resource.id, and a
     # gate the model wrote in the filter form must be recognised as the same identified resource.
     _drop_blank_resource_ids(data)
     _lift_external_id_filters(data)
     _complete_second_subject_types(data)
     _bind_caller_resources(data, subject_id=subject.id, subject_type=subject.type)
-    _mark_policy_derived_actions(data, schema, policy_context.policies, caller_type=subject.type)
-    errors = validate_evaluations(
-        schema, evaluations, policy_context.policies, caller_type=subject.type, caller_id=subject.id
+    # After the second-subject types are completed, which the gate match reads.
+    errors = (
+        rating_errors
+        + _second_subject_errors(data)
+        + validate_evaluations(schema, evaluations, policy_context.policies, caller_type=subject.type)
     )
     if errors:
         raise IntentValidationError(errors)
 
+    _mark_second_subjects_dependent(data)
     _bind_subject(data, subject_id=subject.id, subject_type=subject.type)
+    # After binding (reads the subject type); an emptied filter is dropped by _normalize_contexts.
+    _drop_condition_filters(data, policy_context.policies)
     _normalize_contexts(data)
+    # Marked before the drops, so they compare evaluations in their final shape.
+    _mark_policy_based(data)
     _drop_duplicate_evaluations(data)
+    _drop_repeated_hops(data)
+    _drop_first_dependency(data)
     _set_policy_fetch_failed(data, fetch_failed=policy_context.fetch_failed)
+    # The model's own notes: the rating is only logged (see rating()), none is returned.
+    data = {key: value for key, value in data.items() if key not in _MODEL_NOTE_KEYS}
     return json.dumps(data, indent=2, ensure_ascii=False)
 
 
-def _mark_policy_derived_actions(
-    data: dict[str, Any],
-    schema: dict[str, Any],
-    policies: list[dict[str, Any]] | None,
-    *,
-    caller_type: str,
-) -> None:
-    """Set `action_derivation_rule: "policy_based"` where the action is policy-derived by
-    definition, so the marker is a statement of fact the system makes itself rather than a claim
-    it needs the model to attest to. Two cases: an action a fetched policy grants for its resource
-    type that is not the subject's own graph edge to that type (an edge label reused elsewhere in
-    the graph doesn't make it a relationship the subject holds), and a dependent hop of a chain
-    (`depends_on_previous_evaluations: true`) whose action is not an edge from the evaluation's
-    own subject type - SKILL.md's rule, and what every golden dependent hop carries.
-    validate_evaluations still rejects an unmarked policy action when called directly, and still
-    rejects any name that is neither an edge nor a policy action for that resource type. Seen
-    live (flash-lite): the model picks the right action and forgets the marker, and the retry
-    that followed turned a correct chain into a refusal.
+_MODEL_NOTE_KEYS = frozenset({"confidence", "explanation", "second_subject"})
+
+
+def rating(llm_text: str) -> tuple[str, str]:
+    """(confidence, explanation) the model gave an accepted answer - "" for any it left out (a refusal)."""
+    data = _parse_llm_json(llm_text)
+    if not isinstance(data, dict):
+        return "", ""
+    confidence, explanation = data.get("confidence"), data.get("explanation")
+    return (
+        confidence if isinstance(confidence, str) else "",
+        explanation.strip() if isinstance(explanation, str) else "",
+    )
+
+
+def _rating_errors(data: dict[str, Any]) -> list[str]:
+    """Problems with the model's rating: `confidence` must be a known level, `explanation` non-blank."""
+    errors = []
+    if data.get("confidence") not in CONFIDENCE_LEVELS:
+        errors.append(f"confidence is missing or not one of {', '.join(CONFIDENCE_LEVELS)}")
+    if _blank(data.get("explanation")):
+        errors.append("explanation is missing or blank")
+    return errors
+
+
+def _second_subject_errors(data: dict[str, Any]) -> list[str]:
+    """The second subject the model named, unless the evaluations gate on it and ask about it."""
+    named = data.get("second_subject")
+    if _blank(named):
+        return []
+    evaluations = data.get("evaluations", [])
+    gate = _gate_resource(data)
+    if gate and gate[1] == named and any(_subject_from_prompt(e, gate) for e in evaluations[1:] if isinstance(e, dict)):
+        return []
+    message = (
+        f"second_subject is {named!r}, so evaluations[0] must be the gate on {named!r} (resource.id) and "
+        f'the evaluations after it must have subject.id {named!r} marked subject_source "prompt"'
+    )
+    return [message]
+
+
+def _mark_second_subjects_dependent(data: dict[str, Any]) -> None:
+    """Mark every trusted second-subject evaluation as depending on the caller's gate. Runs before
+    _normalize_contexts strips the subject_source marker it reads.
     """
-    triples = _edge_triples(schema)
     gate = _gate_resource(data)
     for index, evaluation in enumerate(data.get("evaluations", [])):
+        if index > 0 and isinstance(evaluation, dict) and _subject_from_prompt(evaluation, gate):
+            evaluation["context"]["parameters"][_DEPENDS_ON_PREVIOUS_KEY] = True
+
+
+_DEPENDS_ON_PREVIOUS_KEY = "depends_on_previous_evaluations"
+
+
+def _without_dependency(evaluation: object) -> object:
+    """`evaluation` without the depends_on_previous_evaluations marker."""
+    if not isinstance(evaluation, dict):
+        return evaluation
+    context = evaluation.get("context")
+    parameters = context.get("parameters") if isinstance(context, dict) else None
+    if not isinstance(parameters, dict) or _DEPENDS_ON_PREVIOUS_KEY not in parameters:
+        return evaluation
+    remaining = {key: value for key, value in parameters.items() if key != _DEPENDS_ON_PREVIOUS_KEY}
+    rest = {key: value for key, value in context.items() if key != "parameters"}
+    return {**evaluation, "context": {**rest, **({"parameters": remaining} if remaining else {})}}
+
+
+def _drop_first_dependency(data: dict[str, Any]) -> None:
+    """Remove the dependency marker from the first evaluation - nothing precedes it."""
+    evaluations = data.get("evaluations", [])
+    if evaluations:
+        evaluations[0] = _without_dependency(evaluations[0])
+
+
+def _drop_repeated_hops(data: dict[str, Any]) -> None:
+    """Drop a dependent hop that only repeats the evaluation before it."""
+    kept: list[object] = []
+    for evaluation in data.get("evaluations", []):
+        if kept and _without_dependency(evaluation) == _without_dependency(kept[-1]) and evaluation != kept[-1]:
+            continue
+        kept.append(evaluation)
+    data["evaluations"] = kept
+
+
+def _mark_policy_based(data: dict[str, Any]) -> None:
+    """Set `action_derivation_rule: "policy_based"` on every (validated, normalised) evaluation."""
+    for evaluation in data.get("evaluations", []):
         if not isinstance(evaluation, dict):
             continue
-        action, resource = evaluation.get("action"), evaluation.get("resource")
-        name = action.get("name") if isinstance(action, dict) else None
-        resource_type = resource.get("type") if isinstance(resource, dict) else None
-        if _blank(name) or _blank(resource_type):
-            continue
-        parameters = _subject_source_parameters(evaluation)
-        # The subject type the evaluation will actually carry: its own only where _bind_subject
-        # keeps it (a Subject Search, a trusted second subject), the caller's everywhere else -
-        # a schema-valid but wrong type the model wrote on a caller-bound evaluation is overwritten
-        # and must not decide the marker.
-        second_subject = index > 0 and _subject_from_prompt(evaluation, gate)
-        keeps_own_subject = _subject_search(evaluation) or second_subject
-        own_type = evaluation["subject"]["type"] if keeps_own_subject else caller_type
-        # The fetched policies are the caller's subject type's, so they can only speak for an
-        # evaluation that ends up carrying that type. Marking a second subject of a *different*
-        # type would hand _caller_relationship_errors the policy_based claim it clears its reason
-        # on - the claim it deliberately refuses to read off the caller's policies - and so ground
-        # a relationship nothing established (a User policy can't say what a Customer may do).
-        # Left unmarked, such an evaluation stands or falls on the model's own explicit claim,
-        # which is what a second subject is meant to rest on. A Subject Search is unaffected: its
-        # subject is unidentified and _caller_relationship_errors never grounds it at all.
-        if second_subject and own_type != caller_type:
-            continue
-        # Policy-derived unless the action is the subject's own graph edge to that resource type -
-        # judged on the (policy, resource type) pair, not on whether the label also appears on some
-        # unrelated edge elsewhere in the graph (CAN_ACCESS usually does).
-        policy_granted = name in _policy_actions_for_resource(policies, resource_type)
-        policy_only = policy_granted and (own_type, name, resource_type) not in triples
-        dependent_off_type = (
-            parameters.get("depends_on_previous_evaluations") is True and (own_type, name, resource_type) not in triples
-        )
-        if not (policy_only or dependent_off_type):
-            continue
-        # A missing context / parameters is created; a malformed one (a string, a list) is left
-        # alone so validate_evaluations still reports the shape error.
-        context = evaluation.get("context")
-        if context is None:
-            context = {}
-            evaluation["context"] = context
-        elif not isinstance(context, dict):
-            continue
-        parameters = context.get("parameters")
-        if parameters is None:
-            parameters = {}
-            context["parameters"] = parameters
-        elif not isinstance(parameters, dict):
-            continue
+        parameters = evaluation["context"].setdefault("parameters", {})
         parameters[_ACTION_DERIVATION_KEY] = _ACTION_DERIVATION_POLICY
 
 
@@ -776,6 +611,74 @@ def _lift_external_id_filters(data: dict[str, Any]) -> None:
         del context["filters"]
 
 
+# One whole `resource.<property> = '<literal>'` term of a policy's Cypher WHERE: it must start the
+# WHERE, an AND or a group and end it, so `resource.code = 'A' + 'B'` is never read as `code = A`.
+_CONDITION_EQUALITY = re.compile(
+    r"""(?:\bWHERE|\bAND|\()\s*resource\.(?P<prop>\w+)\s*=\s*(?P<q>['"])(?P<value>[^'"]*)(?P=q)"""
+    r"""(?=\s*(?:$|\bAND\b|\bRETURN\b|\bWITH\b|\)))""",
+    re.IGNORECASE,
+)
+
+
+def _field(node: object, key: str) -> object:
+    """`node[key]` when node is an object, else None - policy entries are skipped, never trusted."""
+    return node.get(key) if isinstance(node, dict) else None
+
+
+def _policy_restrictions(policy: object) -> set[tuple[str, str]]:
+    """The (property, value) equalities a policy's condition always checks; none if it has OR, XOR or NOT."""
+    cypher = _field(_field(policy, "condition"), "cypher")
+    if not isinstance(cypher, str) or re.search(r"\b(?:X?OR|NOT)\b", cypher, re.IGNORECASE):
+        return set()
+    return {(m.group("prop"), m.group("value")) for m in _CONDITION_EQUALITY.finditer(cypher)}
+
+
+def _condition_restrictions(policies: list[dict[str, Any]] | None, evaluation: dict[str, Any]) -> set[tuple[str, str]]:
+    """The equalities every policy granting this evaluation checks - any other policy could grant it unchecked."""
+    key = (
+        _field(_field(evaluation, "subject"), "type"),
+        _field(_field(evaluation, "action"), "name"),
+        _field(_field(evaluation, "resource"), "type"),
+    )
+    granting = []
+    for entry in policies or []:
+        policy = _field(entry, "policy")
+        actions = _field(policy, "actions")
+        policy_key = (_field(_field(policy, "subject"), "type"), key[1], _field(_field(policy, "resource"), "type"))
+        if isinstance(actions, list) and key[1] in actions and policy_key == key:
+            granting.append(_policy_restrictions(policy))
+    return set.intersection(*granting) if granting else set()
+
+
+def _drop_condition_filters(data: dict[str, Any], policies: list[dict[str, Any]] | None) -> None:
+    """Drop the `&&` clauses of `filters` that repeat an equality the policy's condition already
+    checks: the platform evaluates the condition, and flash-lite copies it into the filter anyway.
+    """
+    for evaluation in data.get("evaluations", []):
+        context = evaluation.get("context") if isinstance(evaluation, dict) else None
+        filters = context.get("filters") if isinstance(context, dict) else None
+        if not isinstance(filters, str) or "||" in filters or "(" in filters:
+            continue
+        clauses = filters.split("&&")
+        # A quote split across clauses means an `&&` inside a string literal: leave the filter as written.
+        if any(clause.count("'") % 2 or clause.count('"') % 2 for clause in clauses):
+            continue
+        restrictions = _condition_restrictions(policies, evaluation)
+        kept = [clause for clause in clauses if _clause_equality(clause) not in restrictions]
+        # Untouched unless a clause actually goes: the filter is the caller's data, kept verbatim.
+        if len(kept) < len(clauses):
+            context["filters"] = "&&".join(kept).strip()
+
+
+def _clause_equality(clause: str) -> tuple[str, str] | None:
+    """(property, literal) when the whole clause is `resource.<property> == '<literal>'`, else None."""
+    match = _EQUALITY_CLAUSE.match(clause)
+    if match is None:
+        return None
+    value = match.group("a") if match.group("a") is not None else match.group("b")
+    return match.group("prop") or match.group("prop2"), value
+
+
 def _drop_duplicate_evaluations(data: dict[str, Any]) -> None:
     """Keep the first of any evaluations that are identical once bound and normalised. A
     repeated evaluation asks the exact same question twice, so it carries nothing for the
@@ -788,7 +691,7 @@ def _drop_duplicate_evaluations(data: dict[str, Any]) -> None:
     for index, evaluation in enumerate(evaluations):
         following = evaluations[index + 1] if index + 1 < len(evaluations) else None
         # A repeat that a dependent hop builds on stays: dropping it would make the hop read as
-        # depending on whatever precedes it instead, a chain the relationship check never saw.
+        # depending on whatever precedes it instead, a chain the model never wrote.
         anchors_a_dependent_hop = (
             isinstance(following, dict)
             and _subject_source_parameters(following).get("depends_on_previous_evaluations") is True

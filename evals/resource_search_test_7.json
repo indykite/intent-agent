@@ -1,0 +1,29 @@
+{
+  "prompt": "Which of my unpaid invoices can I view?",
+  "jwt_sub": "bob",
+  "expected": {
+    "prompt": "Which of my unpaid invoices can I view?",
+    "evaluations": [
+      {
+        "action": {
+          "name": "VIEW_UNPAID_INVOICE"
+        },
+        "resource": {
+          "type": "Invoice"
+        },
+        "context": {
+          "parameters": {
+            "action_derivation_rule": "policy_based"
+          }
+        },
+        "subject": {
+          "type": "Customer",
+          "id": "bob"
+        }
+      }
+    ]
+  },
+  "confidence": "high",
+  "category": "resource search",
+  "data_model": "customer_model"
+}
