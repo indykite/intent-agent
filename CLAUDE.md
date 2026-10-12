@@ -277,10 +277,11 @@ set, `normalize_intent_response` requires evaluations[0] to be the gate on that 
 evaluation marked for it, feeding back otherwise; the key is stripped like the rating.
 
 **Confidence rating.** Every answer with evaluations also carries the model's own rating:
-`explanation` (one short, plain sentence: the policy used, and what no policy covered) and
-`confidence` - `high` (the prompt matches the policies exactly), `medium` (it matches only
-through a synonym: a policy's resource type or action standing in for the one asked), `low` (only
-part of the prompt matched a policy). A refusal (empty evaluations) carries only the `explanation`
+`explanation` (one short, plain sentence: the policy used with its condition path, and what no
+policy covered) and `confidence`, rating the whole policy - action, resource type and
+`condition.cypher` path: `high` (together exactly what the prompt asks), `medium` (only through a
+synonym, with a path that still means what is asked), `low` (the condition matches only part of
+what is asked). A refusal (empty evaluations) carries only the `explanation`
 (why no policy fits).
 `normalize_intent_response` requires both on an answer with evaluations (missing/invalid is fed back like any other error) and
 strips them: they are **logged (at DEBUG), never returned or audited** - `subject_binding.rating`
