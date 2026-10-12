@@ -379,15 +379,13 @@ prompt's natural language turns into a graph query once that policy is chosen. U
 User prompt: *"Can I get the annual fee waived on my account since I've had it for over a year?"*
 (a policy grants `Customer -WAIVE_FEE-> Account` with a condition on how long the account has been
 held). No specific account is named, so this is a Resource Search (no `resource.id`); the "over a
-year" the prompt asks about is expressed as a `filters` clause over the account's own property:
+year" is the policy's condition to check, so it is not repeated as a filter:
 
 ```json
 {
   "action": { "name": "WAIVE_FEE" },
   "resource": { "type": "Account" },
-  "context": {
-    "filters": "resource.create_time < timestamp('2024-09-23T00:00:00Z')"
-  }
+  "context": {}
 }
 ```
 

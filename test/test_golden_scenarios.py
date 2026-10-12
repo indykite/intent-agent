@@ -474,8 +474,8 @@ def test_golden_scenario_policy_derived_action_replays_a_real_captured_policy(mo
     """ENG-9671 end to end, replaying a policy actually captured from a live RC environment's
     GET /access/v1/policies (not a synthetic shape): a KBAC policy defines "WAIVE_FEE", an
     action that is not one of the CanBank schema's own edge relations at all. The prompt names
-    no specific account, so this is a Resource Search (no resource.id) with the "over a year"
-    condition expressed as a filters CEL clause, mirroring the policy's own cypher condition.
+    no specific account, so this is a Resource Search (no resource.id), and the "over a year"
+    condition is left to the policy's own cypher condition rather than repeated as a filter.
     It is accepted without a retry, and the caller gets it marked action_derivation_rule=
     "policy_based" - the system's own statement, whatever the model wrote there.
     """
@@ -499,7 +499,6 @@ def test_golden_scenario_policy_derived_action_replays_a_real_captured_policy(mo
         "resource": {"type": "Account"},
         "context": {
             "parameters": {"action_derivation_rule": "policy_based"},
-            "filters": "resource.create_time < timestamp('2024-09-23T00:00:00Z')",
         },
     }
     agent, mock_ainvoke = _agent_with_policies(monkeypatch, mocker, baseline_env, [_answer(answer)], policies)
@@ -515,7 +514,6 @@ def test_golden_scenario_policy_derived_action_replays_a_real_captured_policy(mo
             "resource": {"type": "Account"},
             "context": {
                 "parameters": {"action_derivation_rule": "policy_based"},
-                "filters": "resource.create_time < timestamp('2024-09-23T00:00:00Z')",
             },
             "subject": {"type": "Customer", "id": "rebecca"},
         },
