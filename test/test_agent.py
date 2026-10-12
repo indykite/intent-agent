@@ -2194,6 +2194,42 @@ def test_normalize_intent_response_drops_filter_clauses_the_policy_condition_che
     assert data["evaluations"][0]["context"] == _stamped(expected)
 
 
+def _ford_policy(cypher="MATCH (subject:Customer), (resource:Car) WHERE resource.make = 'Ford'"):
+    policy = _policy("Customer", "RENT", "Car")
+    policy["policy"]["condition"] = {"cypher": cypher}
+    return policy
+
+
+_FORD_FILTER = {"filters": "resource.make == 'Ford'"}
+
+
+@pytest.mark.parametrize(
+    ("policies", "expected"),
+    [
+        pytest.param([_ford_policy(), _policy("Customer", "RENT", "Car")], _FORD_FILTER, id="another_policy_unchecked"),
+        pytest.param(
+            [
+                _ford_policy(
+                    "MATCH (subject:Customer), (resource:Car) WHERE resource.make = 'Ford' OR resource.year > 1"
+                )
+            ],
+            _FORD_FILTER,
+            id="disjunctive_condition",
+        ),
+        pytest.param(
+            [{"policy": {"subject": "Customer", "actions": ["RENT"], "condition": "x"}}, _ford_policy()],
+            {},
+            id="malformed_entry_skipped",
+        ),
+    ],
+)
+def test_normalize_intent_response_drops_a_filter_only_when_every_granting_condition_checks_it(policies, expected):
+    evaluation = {"action": {"name": "RENT"}, "resource": {"type": "Car"}, "context": dict(_FORD_FILTER)}
+    policy_context = PolicyContext(policies=policies, fetch_failed=False)
+    data = json.loads(_normalize(json.dumps({"evaluations": [evaluation]}), "cars", policy_context=policy_context))
+    assert data["evaluations"][0]["context"] == _stamped(expected)
+
+
 def test_activate_skill_injects_the_schema_vocabulary_summary_not_the_raw_jgf(monkeypatch, mocker, baseline_env):
     """extract-intent's activation carries render_schema_summary's node/edge listing inside the
     data_schema block - complete for a schema whose raw JSON would exceed SCHEMA_PREVIEW_CHARS -

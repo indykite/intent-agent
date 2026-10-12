@@ -19,7 +19,8 @@ examples:
 
 Turn the prompt into [AuthZEN](https://openid.github.io/authzen/) evaluations: a **subject** doing
 an **action** on a **resource**. The data schema and the caller's access policies are in the blocks
-above and are complete - don't call `get_data_schema` or `get_policies`.
+above - don't call `get_data_schema`. Call `get_policies` only when the policies block says some
+policies were not shown; otherwise it is complete.
 
 The caller is always "I" / "me" / "my". You never know the caller's identity: the system adds it
 as the subject of every evaluation that has no `subject` key.
@@ -340,7 +341,8 @@ User prompt: _"Are there any Decisions that incorporated the refund policy docum
 
 A condition already checks what it matches - relationships and property restrictions alike - so
 don't repeat it as a hop or a `filters` expression; the platform evaluates it. **If a criterion of
-the prompt is in the condition's `WHERE` clause, leave it out of `filters`.** A criterion the
+the prompt is in the condition's `WHERE` clause, leave it out of `filters`** - unless another policy
+grants the same combination without it, or the condition is an `OR`; then keep it. A criterion the
 condition doesn't check ("priced under 100" on a policy with no price restriction) still goes in
 `filters`. _"Can I get the annual fee waived on my account since I've had it for over a year?"_ (`Customer -WAIVE_FEE-> Account`,
 conditioned on how long the account has been held) is a Resource Search with no filter:

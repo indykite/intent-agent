@@ -129,12 +129,14 @@ SCHEMA_VALUE_SUFFIXES = (
 )
 
 _FEEDBACK_OBLIGATION = (
-    'Return a corrected JSON object with the same {"evaluations"} shape, where every evaluation\'s '
-    "subject type, action name and resource type together form one subject -ACTION-> resource "
-    "combination listed under Policies, with context.filters a valid CEL expression over "
-    "resource.<property> only, under 1000 characters, and context.parameters / context.qualifiers "
-    "objects. A graph edge is never an action name. If no policy covers the prompt, return an empty "
-    "evaluations array instead."
+    "Return a corrected JSON object with the same keys: second_subject (or null), explanation, "
+    "evaluations and confidence - explanation and confidence are required whenever evaluations is "
+    "not empty. Every evaluation's subject type, action name and resource type together form one "
+    "subject -ACTION-> resource combination listed under Policies; an Action Search keeps its "
+    "action omitted. context.filters is a valid CEL expression over resource.<property> only, under "
+    "1000 characters, and context.parameters / context.qualifiers are objects. A graph edge is never "
+    "an action name. If no policy covers the prompt, return an empty evaluations array with an "
+    "explanation instead."
 )
 
 

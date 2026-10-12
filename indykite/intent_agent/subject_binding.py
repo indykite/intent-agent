@@ -615,25 +615,34 @@ def _lift_external_id_filters(data: dict[str, Any]) -> None:
 _CONDITION_EQUALITY = re.compile(r"""resource\.(?P<prop>\w+)\s*=\s*(?P<q>['"])(?P<value>[^'"]*)(?P=q)""")
 
 
+def _field(node: object, key: str) -> object:
+    """`node[key]` when node is an object, else None - policy entries are skipped, never trusted."""
+    return node.get(key) if isinstance(node, dict) else None
+
+
+def _policy_restrictions(policy: object) -> set[tuple[str, str]]:
+    """The (property, value) equalities a policy's condition always checks; none for an OR condition."""
+    cypher = _field(_field(policy, "condition"), "cypher")
+    if not isinstance(cypher, str) or re.search(r"\bOR\b", cypher, re.IGNORECASE):
+        return set()
+    return {(m.group("prop"), m.group("value")) for m in _CONDITION_EQUALITY.finditer(cypher)}
+
+
 def _condition_restrictions(policies: list[dict[str, Any]] | None, evaluation: dict[str, Any]) -> set[tuple[str, str]]:
-    """The (property, value) equalities the conditions of the policies granting this evaluation check."""
+    """The equalities every policy granting this evaluation checks - any other policy could grant it unchecked."""
     key = (
-        (evaluation.get("subject") or {}).get("type"),
-        (evaluation.get("action") or {}).get("name"),
-        (evaluation.get("resource") or {}).get("type"),
+        _field(_field(evaluation, "subject"), "type"),
+        _field(_field(evaluation, "action"), "name"),
+        _field(_field(evaluation, "resource"), "type"),
     )
-    restrictions: set[tuple[str, str]] = set()
+    granting = []
     for entry in policies or []:
-        policy = entry.get("policy") if isinstance(entry, dict) else None
-        if not isinstance(policy, dict) or not isinstance(policy.get("actions"), list):
-            continue
-        subject, resource = policy.get("subject") or {}, policy.get("resource") or {}
-        if (subject.get("type"), resource.get("type")) != (key[0], key[2]) or key[1] not in policy["actions"]:
-            continue
-        cypher = (policy.get("condition") or {}).get("cypher")
-        if isinstance(cypher, str):
-            restrictions.update((m.group("prop"), m.group("value")) for m in _CONDITION_EQUALITY.finditer(cypher))
-    return restrictions
+        policy = _field(entry, "policy")
+        actions = _field(policy, "actions")
+        policy_key = (_field(_field(policy, "subject"), "type"), key[1], _field(_field(policy, "resource"), "type"))
+        if isinstance(actions, list) and key[1] in actions and policy_key == key:
+            granting.append(_policy_restrictions(policy))
+    return set.intersection(*granting) if granting else set()
 
 
 def _drop_condition_filters(data: dict[str, Any], policies: list[dict[str, Any]] | None) -> None:
