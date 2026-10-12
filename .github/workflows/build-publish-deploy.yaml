@@ -58,7 +58,7 @@ jobs:
       PYTHONUNBUFFERED: 1
     steps:
       - name: actions/checkout
-        uses: indykite/.github/.github/actions/git-checkout@db523df1024e797b232faefcb9835954734d1331 # master
+        uses: indykite/.github/.github/actions/git-checkout@761ebb8b79f5a3302c7fa8c2144494fc4d4528b0 # master
 
       - name: Extract version name
         id: extract-version
@@ -81,7 +81,7 @@ jobs:
       # Building project only for release to ensure it definitely passes quality gates before publishing image & chart
       - name: Build project using composite action
         if: github.event_name == 'release'
-        uses: indykite/.github/.github/actions/python-build@db523df1024e797b232faefcb9835954734d1331 # master
+        uses: indykite/.github/.github/actions/python-build@761ebb8b79f5a3302c7fa8c2144494fc4d4528b0 # master
         id: build_python
         with:
           codecov-token: ${{ secrets.CODECOV_TOKEN }}
@@ -127,7 +127,7 @@ jobs:
       image-tag: ${{ needs.version.outputs.image-tag }}
     steps:
       - name: Check out repo
-        uses: indykite/.github/.github/actions/git-checkout@db523df1024e797b232faefcb9835954734d1331 # master
+        uses: indykite/.github/.github/actions/git-checkout@761ebb8b79f5a3302c7fa8c2144494fc4d4528b0 # master
 
       - name: Determine target registries
         id: registries
@@ -163,7 +163,7 @@ jobs:
             type=raw,value=${{ needs.version.outputs.image-tag }},enable=${{ needs.version.outputs.image-tag != '' }}
 
       - name: Setup Docker
-        uses: indykite/.github/.github/actions/docker-setup@db523df1024e797b232faefcb9835954734d1331 # master
+        uses: indykite/.github/.github/actions/docker-setup@761ebb8b79f5a3302c7fa8c2144494fc4d4528b0 # master
         with:
           workload-identity-provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER_MGMT }}
           gcp-service-account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
@@ -193,7 +193,7 @@ jobs:
     needs: [version]
     steps:
       - name: actions/checkout
-        uses: indykite/.github/.github/actions/git-checkout@db523df1024e797b232faefcb9835954734d1331 # master
+        uses: indykite/.github/.github/actions/git-checkout@761ebb8b79f5a3302c7fa8c2144494fc4d4528b0 # master
 
       # chart/Chart.yaml's appVersion is release-please-managed and only correct for an actual
       # release - a PR/master package still carries the base release appVersion at this point.
@@ -232,7 +232,7 @@ jobs:
         run: helm dependency build chart/
 
       - name: Publish chart
-        uses: indykite/.github/.github/actions/chart-publish@db523df1024e797b232faefcb9835954734d1331 # master
+        uses: indykite/.github/.github/actions/chart-publish@761ebb8b79f5a3302c7fa8c2144494fc4d4528b0 # master
         with:
           workload-identity-provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER_MGMT }}
           gcp-service-account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
