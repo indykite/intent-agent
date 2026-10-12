@@ -2167,6 +2167,33 @@ def test_normalize_intent_response_leaves_every_other_filter_alone(resource, fil
     assert data["evaluations"][0]["context"] == _stamped({"filters": filters})
 
 
+@pytest.mark.parametrize(
+    ("filters", "expected"),
+    [
+        pytest.param("resource.make == 'Ford'", {}, id="repeats_the_condition"),
+        pytest.param(
+            "resource.make == 'Ford' && resource.model == 'kitt'",
+            {"filters": "resource.model == 'kitt'"},
+            id="keeps_the_rest",
+        ),
+        pytest.param("resource.make == 'Fiat'", {"filters": "resource.make == 'Fiat'"}, id="other_value"),
+        pytest.param(
+            "resource.make == 'Ford' || resource.model == 'kitt'",
+            {"filters": "resource.make == 'Ford' || resource.model == 'kitt'"},
+            id="disjunction",
+        ),
+    ],
+)
+def test_normalize_intent_response_drops_filter_clauses_the_policy_condition_checks(filters, expected):
+    policy = _policy("Customer", "RENT", "Car")
+    policy["policy"]["condition"] = {"cypher": "MATCH (subject:Customer), (resource:Car) WHERE resource.make = 'Ford'"}
+    llm_text = json.dumps(
+        {"evaluations": [{"action": {"name": "RENT"}, "resource": {"type": "Car"}, "context": {"filters": filters}}]}
+    )
+    data = json.loads(_normalize(llm_text, "cars", policy_context=PolicyContext(policies=[policy], fetch_failed=False)))
+    assert data["evaluations"][0]["context"] == _stamped(expected)
+
+
 def test_activate_skill_injects_the_schema_vocabulary_summary_not_the_raw_jgf(monkeypatch, mocker, baseline_env):
     """extract-intent's activation carries render_schema_summary's node/edge listing inside the
     data_schema block - complete for a schema whose raw JSON would exceed SCHEMA_PREVIEW_CHARS -
@@ -2386,6 +2413,38 @@ def test_normalize_intent_response_completes_a_second_subjects_type_from_the_gat
     assert data["evaluations"][0]["subject"] == {"type": "Customer", "id": "user-1"}
     assert data["evaluations"][1]["subject"] == {"type": "Customer", "id": "alison"}
     assert data["evaluations"][1]["context"] == _stamped({"parameters": {"depends_on_previous_evaluations": True}})
+
+
+_GATED_ALISON = [
+    {"action": {"name": "CAN_ACCESS"}, "resource": {"type": "Customer", "id": "alison"}, "context": {}},
+    {
+        "subject": {"type": "Customer", "id": "alison"},
+        "action": {"name": "RENT"},
+        "resource": {"type": "Car", "id": "kitt"},
+        "context": {"parameters": {"subject_source": "prompt"}},
+    },
+]
+_UNGATED = [{"action": {"name": "RENT"}, "resource": {"type": "Car", "id": "kitt"}, "context": {}}]
+
+
+@pytest.mark.parametrize(
+    ("second_subject", "evaluations", "accepted"),
+    [
+        pytest.param("alison", _GATED_ALISON, True, id="gated"),
+        pytest.param(None, _UNGATED, True, id="none_named"),
+        pytest.param("alison", _UNGATED, False, id="answered_as_the_caller"),
+        pytest.param("bob", _GATED_ALISON, False, id="gate_on_someone_else"),
+    ],
+)
+def test_normalize_intent_response_requires_the_named_second_subject_to_be_gated(second_subject, evaluations, accepted):
+    llm_text = json.dumps({"second_subject": second_subject, "evaluations": evaluations})
+    policy_context = PolicyContext(policies=_ACCESS_CUSTOMERS, fetch_failed=False)
+    if not accepted:
+        with pytest.raises(IntentValidationError, match="second_subject"):
+            _normalize(llm_text, "can alison rent kitt?", policy_context=policy_context)
+        return
+    data = json.loads(_normalize(llm_text, "can alison rent kitt?", policy_context=policy_context))
+    assert "second_subject" not in data
 
 
 @pytest.mark.parametrize(

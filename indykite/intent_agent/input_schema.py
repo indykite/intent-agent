@@ -142,10 +142,19 @@ class _Evaluation(BaseModel):
 
 class _IntentInput(BaseModel):
     """The LLM's whole structured output. No error shape or prompt echo - the system builds those.
-    Gemini writes fields in order, so `explanation` comes first: the model names its policy
-    before writing the evaluations.
+    Gemini writes fields in order: `second_subject` first, so the model decides whose access is asked
+    before choosing a policy, then `explanation`, so it names its policy before the evaluations.
     """
 
+    second_subject: str | None = Field(
+        default=None,
+        description=(
+            "Written first, always. Who performs the action asked about? If it is a named person, not "
+            "I/me/my, their id exactly as written ('does omar lead...' -> omar). null when I perform it - "
+            "including when a named person is only what I act on ('do I report to omar?' -> null) - and "
+            "for a 'who can' search."
+        ),
+    )
     # Optional: a refusal (empty evaluations) gives only an explanation; subject_binding requires
     # both on an answer with evaluations.
     explanation: str | None = Field(

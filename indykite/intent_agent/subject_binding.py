@@ -337,14 +337,19 @@ def normalize_intent_response(
     _lift_external_id_filters(data)
     _complete_second_subject_types(data)
     _bind_caller_resources(data, subject_id=subject.id, subject_type=subject.type)
-    errors = rating_errors + validate_evaluations(
-        schema, evaluations, policy_context.policies, caller_type=subject.type
+    # After the second-subject types are completed, which the gate match reads.
+    errors = (
+        rating_errors
+        + _second_subject_errors(data)
+        + validate_evaluations(schema, evaluations, policy_context.policies, caller_type=subject.type)
     )
     if errors:
         raise IntentValidationError(errors)
 
     _mark_second_subjects_dependent(data)
     _bind_subject(data, subject_id=subject.id, subject_type=subject.type)
+    # After binding (reads the subject type); an emptied filter is dropped by _normalize_contexts.
+    _drop_condition_filters(data, policy_context.policies)
     _normalize_contexts(data)
     # Marked before the drops, so they compare evaluations in their final shape.
     _mark_policy_based(data)
@@ -352,12 +357,12 @@ def normalize_intent_response(
     _drop_repeated_hops(data)
     _drop_first_dependency(data)
     _set_policy_fetch_failed(data, fetch_failed=policy_context.fetch_failed)
-    # The model's rating is only logged (see rating()), never returned.
-    data = {key: value for key, value in data.items() if key not in _RATING_KEYS}
+    # The model's own notes: the rating is only logged (see rating()), none is returned.
+    data = {key: value for key, value in data.items() if key not in _MODEL_NOTE_KEYS}
     return json.dumps(data, indent=2, ensure_ascii=False)
 
 
-_RATING_KEYS = frozenset({"confidence", "explanation"})
+_MODEL_NOTE_KEYS = frozenset({"confidence", "explanation", "second_subject"})
 
 
 def rating(llm_text: str) -> tuple[str, str]:
@@ -380,6 +385,22 @@ def _rating_errors(data: dict[str, Any]) -> list[str]:
     if _blank(data.get("explanation")):
         errors.append("explanation is missing or blank")
     return errors
+
+
+def _second_subject_errors(data: dict[str, Any]) -> list[str]:
+    """The second subject the model named, unless the evaluations gate on it and ask about it."""
+    named = data.get("second_subject")
+    if _blank(named):
+        return []
+    evaluations = data.get("evaluations", [])
+    gate = _gate_resource(data)
+    if gate and gate[1] == named and any(_subject_from_prompt(e, gate) for e in evaluations[1:] if isinstance(e, dict)):
+        return []
+    message = (
+        f"second_subject is {named!r}, so evaluations[0] must be the gate on {named!r} (resource.id) and "
+        f'the evaluations after it must have subject.id {named!r} marked subject_source "prompt"'
+    )
+    return [message]
 
 
 def _mark_second_subjects_dependent(data: dict[str, Any]) -> None:
@@ -588,6 +609,50 @@ def _lift_external_id_filters(data: dict[str, Any]) -> None:
             continue
         resource["id"] = lifted
         del context["filters"]
+
+
+# One `resource.<property> = '<literal>'` restriction in a policy's Cypher condition.
+_CONDITION_EQUALITY = re.compile(r"""resource\.(?P<prop>\w+)\s*=\s*(?P<q>['"])(?P<value>[^'"]*)(?P=q)""")
+
+
+def _condition_restrictions(policies: list[dict[str, Any]] | None, evaluation: dict[str, Any]) -> set[tuple[str, str]]:
+    """The (property, value) equalities the conditions of the policies granting this evaluation check."""
+    key = (
+        (evaluation.get("subject") or {}).get("type"),
+        (evaluation.get("action") or {}).get("name"),
+        (evaluation.get("resource") or {}).get("type"),
+    )
+    restrictions: set[tuple[str, str]] = set()
+    for entry in policies or []:
+        policy = entry.get("policy") if isinstance(entry, dict) else None
+        if not isinstance(policy, dict) or not isinstance(policy.get("actions"), list):
+            continue
+        subject, resource = policy.get("subject") or {}, policy.get("resource") or {}
+        if (subject.get("type"), resource.get("type")) != (key[0], key[2]) or key[1] not in policy["actions"]:
+            continue
+        cypher = (policy.get("condition") or {}).get("cypher")
+        if isinstance(cypher, str):
+            restrictions.update((m.group("prop"), m.group("value")) for m in _CONDITION_EQUALITY.finditer(cypher))
+    return restrictions
+
+
+def _drop_condition_filters(data: dict[str, Any], policies: list[dict[str, Any]] | None) -> None:
+    """Drop the `&&` clauses of `filters` that repeat an equality the policy's condition already
+    checks: the platform evaluates the condition, and flash-lite copies it into the filter anyway.
+    """
+    for evaluation in data.get("evaluations", []):
+        context = evaluation.get("context") if isinstance(evaluation, dict) else None
+        filters = context.get("filters") if isinstance(context, dict) else None
+        if not isinstance(filters, str) or "||" in filters or "(" in filters:
+            continue
+        restrictions = _condition_restrictions(policies, evaluation)
+        kept = []
+        for clause in filters.split("&&"):
+            match = _EQUALITY_CLAUSE.match(clause)
+            value = match and (match.group("a") if match.group("a") is not None else match.group("b"))
+            if not match or (match.group("prop") or match.group("prop2"), value) not in restrictions:
+                kept.append(clause.strip())
+        context["filters"] = " && ".join(kept)
 
 
 def _drop_duplicate_evaluations(data: dict[str, Any]) -> None:

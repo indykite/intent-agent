@@ -126,10 +126,10 @@ def test_build_input_schema_context_has_exactly_the_tdd_keys():
     _variant(context_properties["qualifiers"], "object")
 
 
-def test_build_input_schema_top_level_is_explanation_evaluations_confidence():
+def test_build_input_schema_top_level_is_second_subject_explanation_evaluations_confidence():
     schema = build_input_schema(_load_schema_fixture())
     assert schema["required"] == ["evaluations"]
-    assert list(schema["properties"]) == ["explanation", "evaluations", "confidence"]
+    assert list(schema["properties"]) == ["second_subject", "explanation", "evaluations", "confidence"]
     assert {"type": "string"} in schema["properties"]["explanation"]["anyOf"]
     assert {"type": "string", "enum": ["high", "medium", "low"]} in schema["properties"]["confidence"]["anyOf"]
 
