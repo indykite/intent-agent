@@ -2217,6 +2217,11 @@ _FORD_FILTER = {"filters": "resource.make == 'Ford'"}
             id="disjunctive_condition",
         ),
         pytest.param(
+            [_ford_policy("MATCH (subject:Customer), (resource:Car) WHERE NOT resource.make = 'Ford'")],
+            _FORD_FILTER,
+            id="negated_condition",
+        ),
+        pytest.param(
             [{"policy": {"subject": "Customer", "actions": ["RENT"], "condition": "x"}}, _ford_policy()],
             {},
             id="malformed_entry_skipped",

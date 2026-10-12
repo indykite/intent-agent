@@ -282,7 +282,8 @@ policy covered) and `confidence`, rating the whole policy - action, resource typ
 `condition.cypher` path: `high` (together exactly what the prompt asks), `medium` (only through a
 synonym, with a path that still means what is asked), `low` (the condition matches only part of
 what is asked). A refusal (empty evaluations) carries only the `explanation`
-(why no policy fits).
+(why no policy fits), best effort: it is never validated, since a refusal is never retried (a retry
+was seen to force a match).
 `normalize_intent_response` requires both on an answer with evaluations (missing/invalid is fed back like any other error) and
 strips them: they are **logged (at DEBUG), never returned or audited** - `subject_binding.rating`
 reads them back onto `ExtractionResult.confidence`/`.explanation`, and the eval suite reports `confidence` next to

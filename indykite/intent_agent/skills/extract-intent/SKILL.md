@@ -342,7 +342,7 @@ User prompt: _"Are there any Decisions that incorporated the refund policy docum
 A condition already checks what it matches - relationships and property restrictions alike - so
 don't repeat it as a hop or a `filters` expression; the platform evaluates it. **If a criterion of
 the prompt is in the condition's `WHERE` clause, leave it out of `filters`** - unless another policy
-grants the same combination without it, or the condition is an `OR`; then keep it. A criterion the
+grants the same combination without it, or the condition uses `OR` or `NOT`; then keep it. A criterion the
 condition doesn't check ("priced under 100" on a policy with no price restriction) still goes in
 `filters`. _"Can I get the annual fee waived on my account since I've had it for over a year?"_ (`Customer -WAIVE_FEE-> Account`,
 conditioned on how long the account has been held) is a Resource Search with no filter:

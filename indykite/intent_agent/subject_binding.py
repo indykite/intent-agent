@@ -621,9 +621,9 @@ def _field(node: object, key: str) -> object:
 
 
 def _policy_restrictions(policy: object) -> set[tuple[str, str]]:
-    """The (property, value) equalities a policy's condition always checks; none for an OR condition."""
+    """The (property, value) equalities a policy's condition always checks; none if it has OR, XOR or NOT."""
     cypher = _field(_field(policy, "condition"), "cypher")
-    if not isinstance(cypher, str) or re.search(r"\bOR\b", cypher, re.IGNORECASE):
+    if not isinstance(cypher, str) or re.search(r"\b(?:X?OR|NOT)\b", cypher, re.IGNORECASE):
         return set()
     return {(m.group("prop"), m.group("value")) for m in _CONDITION_EQUALITY.finditer(cypher)}
 
