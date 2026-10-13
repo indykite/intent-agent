@@ -1,0 +1,98 @@
+---
+name: Bug report
+description: A wrong, missing or invalid extraction, or a service error
+title: "bug: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Security-sensitive reports** (authentication bypass, prompt injection that changes the subject, leaked
+        credentials) must not be opened as a public issue. Report them privately instead: by email as described in the
+        [responsible disclosure policy](https://github.com/indykite/intent-agent/blob/master/responsible_disclosure.md),
+        or, once private vulnerability reporting is enabled on this repository, with
+        [Report a vulnerability](https://github.com/indykite/intent-agent/security/advisories/new).
+
+        Redact tokens, API keys and real customer data before posting.
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: >-
+        The prompt sent, the `subject_type` / `subject_id` in the message metadata, the schema the agent was
+        serving, and the access policies active for that `subject_type` - every answer comes from them. If a data
+        model under `evals/schema/` reproduces it, name its `<model>_schema.json` and `<model>_policies.json`
+        instead of pasting them.
+      placeholder: |
+        Prompt: "Which reports can I edit?"
+        Message metadata: {"subject_type": "User", "subject_id": "alice"}
+        Data model: evals/schema/user_model_schema.json + evals/schema/user_model_policies.json
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual response
+      description: The response you got - the `{prompt, evaluations}` or the error shape.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log lines or audit record
+      description: >-
+        The relevant log lines or the audit record for the request, if you have them. Remove bearer tokens, keys and
+        real customer data first.
+      render: text
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected response
+      description: The response you expected instead.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why you expected it
+      description: The skill rule or the access policy that should have applied.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: intent-agent version or commit
+      description: >-
+        The Docker image tag (e.g. `indykite/intent-agent:0.3.0`), the chart's app version from `helm list`, or
+        `git rev-parse --short HEAD` when running from source.
+      placeholder: "0.3.0 / a008e1a"
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model (GEMINI_MODEL)
+      description: The value of `GEMINI_MODEL`, or `gemini-3.5-flash-lite` (the default) if you didn't set it.
+      placeholder: "gemini-3.5-flash-lite"
+    validations:
+      required: true
+  - type: textarea
+    id: settings
+    attributes:
+      label: Relevant settings
+      description: >-
+        Timeouts, retries, cache backend - anything you changed from the defaults. **No keys or secrets:** leave out
+        `GEMINI_API_KEY`, `IK_APP_AGENT_KEY`, `INTROSPECT_CLIENT_SECRET` and `AUDIT_HTTP_API_KEY`, or replace their
+        values with `***`.
+  - type: dropdown
+    id: run
+    attributes:
+      label: How it was run
+      options:
+        - uv
+        - Docker
+        - docker-compose
+        - Helm
+        - Other

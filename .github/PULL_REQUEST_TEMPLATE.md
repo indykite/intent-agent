@@ -9,6 +9,12 @@ If anything here doesn't apply (e.g. doc-only change), say so explicitly rather
 than deleting the section.
 -->
 
+## Related issue
+
+<!-- `Fixes #N` for the accepted issue this PR addresses - it closes the issue on merge.
+     A trivial change or a bot PR doesn't need one: write "trivial" (see
+     CONTRIBUTING.md § What counts as trivial). -->
+
 ## What this PR does
 
 <!-- One sentence. Lead with the verb: "Add ...", "Fix ...", "Tighten ...".
@@ -44,6 +50,7 @@ than deleting the section.
 
 ## Checklist
 
+- [ ] References an accepted issue (`Fixes #N`), or the change is trivial - see [`CONTRIBUTING.md` § What counts as trivial](https://github.com/indykite/intent-agent/blob/master/CONTRIBUTING.md#what-counts-as-trivial).
 - [ ] One fix or feature per PR - no unrelated changes bundled in.
 - [ ] PR title follows the existing convention (e.g. `feat: accept policy-granted action names`, `fix: drop blank action instead of retrying`) - see [`CONTRIBUTING.md` § Pull requests](https://github.com/indykite/intent-agent/blob/master/CONTRIBUTING.md#pull-requests).
 - [ ] No new entries in `pyproject.toml` dependencies unless agreed in an issue first; if there are, `uv.lock` is updated.
