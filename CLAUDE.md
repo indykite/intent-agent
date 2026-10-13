@@ -27,16 +27,20 @@ same ground, the human doc is the source of truth; keep them in step when you ch
 - `CONTRIBUTING.md` — prerequisites and setup, the make targets, running the agent locally (mock
   introspection, Docker, the docker-compose multi-instance stack), the commit-message rules the
   shared commitlint config enforces, the ground rules (`Settings` fields, `errors.py`, fixtures
-  are the spec, no silent `# noqa`) and the list of shared tooling/CI config files that are
-  ops-owned and never changed in a feature PR.
+  are the spec, no silent `# noqa`), the list of shared tooling/CI config files that are
+  ops-owned and never changed in a feature PR, and the issue-first rule (a non-trivial PR needs an
+  `accepted` issue, `Fixes #N`) with what counts as trivial.
 - `docs/testing.md` — the golden eval suite in full (gates, fixture format, CI), and the hands-on
   walkthroughs: audit log by hand, end-to-end against a real IndyKite environment, Subject Search.
+- `docs/maintainers.md` — the maintainer side: triage labels, running the eval suite on a copy of
+  a fork pull request before merging it, squash-merge, fix-forward or revert when the eval run on
+  `master` fails, no release while it is red, and the labels the bots depend on.
 - `README.md` — the overview, quick start and the common configuration reference (required and
   commonly tuned `Settings` fields, the audit record's fields and the `AUDIT_*` variables). The
   complete list of fields with their defaults is `config.py` itself; `.env.example` lists every
   variable.
-- `.github/PULL_REQUEST_TEMPLATE.md` — what a PR must state: effect on requests, responses and
-  the audit record, how it was tested, the checklist.
+- `.github/PULL_REQUEST_TEMPLATE.md` — what a PR must state: the related issue (`Fixes #N`, or
+  "trivial"), effect on requests, responses and the audit record, how it was tested, the checklist.
 - `SECURITY.md` / `responsible_disclosure.md` — a security-sensitive finding is never filed as a
   public issue or described in a PR; it goes to the address in those files.
 

@@ -1,6 +1,12 @@
 ---
-blank_issues_enabled: true
+blank_issues_enabled: false
 contact_links:
-  - name: Security report
+  - name: Feature idea or question
+    url: https://github.com/indykite/intent-agent/discussions
+    about: Ideas for new prompts, rules or options, and questions about using the agent - start a discussion; accepted ideas become issues.
+  - name: Security report by email
     url: https://github.com/indykite/intent-agent/blob/master/responsible_disclosure.md
-    about: Please report security-sensitive issues privately - see the responsible disclosure policy, not a public issue.
+    about: Report a security issue privately, never as a public issue - the responsible disclosure policy has the address, what to include and response times.
+  - name: Report a vulnerability
+    url: https://github.com/indykite/intent-agent/security/advisories/new
+    about: Once private vulnerability reporting is enabled on this repository, report privately with GitHub's form; until then, use email (above).

@@ -1,8 +1,10 @@
 # Contributing
 
-Thanks for your interest in improving the Intent Agent. When contributing to this repository,
-please first discuss any non-trivial change via an issue before opening a pull request. A short
-sanity check from a maintainer can save you an afternoon of work.
+Thanks for your interest in improving the Intent Agent. A non-trivial change needs an issue that a
+maintainer has labelled `accepted` before you open a pull request; ideas and questions start in
+[Discussions](https://github.com/indykite/intent-agent/discussions). Pull requests for non-trivial
+changes without an accepted issue may be closed. A short sanity check from a maintainer can save
+you an afternoon of work.
 
 ## Before you start
 
@@ -11,6 +13,51 @@ sanity check from a maintainer can save you an afternoon of work.
 - Check open issues and PRs to make sure the change isn't already in flight.
 - Read [`responsible_disclosure.md`](./responsible_disclosure.md) if your contribution touches
   anything security-sensitive. Do **not** open a public issue for security reports.
+
+### What counts as trivial
+
+A trivial change needs no issue; anything else needs an accepted one (see above).
+
+- **Trivial:** typos and docs wording, formatting or lint fixes, test additions under `test/` or
+  `integration/`, an obvious one-line fix that changes no behaviour, response or error, docs-only
+  changes outside `skills/`, dependency bumps by bots.
+- **Not trivial:** any change in behaviour, response, status or error; prompts
+  (`skills/**/SKILL.md`); the golden eval fixtures (`evals/*.json`) and the data models and
+  policies under `evals/schema/` - they are the spec for the model's behaviour, so changing a
+  golden answer changes what the agent must answer; the `Settings`, A2A or audit interfaces; new
+  dependencies; cross-module refactors; anything touching authentication, audit or security; CI,
+  Docker or the Helm chart.
+- When in doubt, open an issue first.
+
+## From issue to merge
+
+1. **Issue.** Open it with the **Bug report** form; a new bug report is labelled `needs-triage`.
+   Ideas and questions go to [Discussions](https://github.com/indykite/intent-agent/discussions),
+   not to an issue - there is no feature request form. When a maintainer accepts an idea, they open
+   the issue themselves from the discussion, labelled `enhancement` and `accepted`, so the
+   conversation stays linked; you then continue from step 3.
+2. **Triage.** A maintainer (someone with write access - the code owners in
+   [`CODEOWNERS`](./.github/CODEOWNERS)) replaces `needs-triage` with one of:
+    - `accepted`: the change is agreed; a pull request may reference it.
+    - `help wanted` (together with `accepted`): open for an outside contributor to pick up;
+      `good first issue` marks small, self-contained ones.
+    - `needs-info`: waiting for an answer from the reporter; once it comes, the maintainer triages
+      the issue again. It may be closed if none comes.
+    - `wontfix`, `duplicate` or `invalid`: closed, with a short reason.
+
+   This applies to bug reports too: confirming a bug is part of triage, so wait for `accepted`
+   before opening a pull request that fixes it - unless the fix is
+   [trivial](#what-counts-as-trivial).
+3. **Take it.** Comment on the issue that you are working on it, so nobody else starts the same
+   change. If you stop, say so there too.
+4. **Pull request.** Make the change as described in [Making changes](#making-changes) and open the
+   pull request as described in [Pull requests](#pull-requests), with `Fixes #N`.
+5. **Review.** The code owners review it, and the build, tests and SAST Linting run. If the pull
+   request changes the service code, the dependency pins, `evals/` or
+   `.github/workflows/eval-suite.yaml`, a maintainer also runs the eval suite on a copy of your
+   reviewed commit before merging (see Making changes, step 5).
+6. **Merge.** A maintainer squash-merges the pull request: its title and description become the
+   commit on `master`, the issue closes automatically, and the change ships in the next release.
 
 ## Ground rules
 
@@ -195,13 +242,16 @@ pre-commit install -t commit-msg
    eval-suite workflow needs the project's Gemini key, which is never given to code from a fork,
    so its check is skipped on your PR (skipped counts as passing) and the suite runs on `master`
    once the change is merged. For pull requests from branches of this repository the suite is a
-   required check whenever the PR touches the service code, the dependency pins or `evals/`. For
-   a change that is likely to move the results, a maintainer may copy your reviewed commit to a
-   branch of this repository to run the suite before merging, and post the result.
+   required check whenever the PR touches the service code, the dependency pins, `evals/` or the
+   eval workflow itself (`.github/workflows/eval-suite.yaml`). For a pull request from a fork
+   that touches those files, a maintainer copies your reviewed commit
+   to a branch of this repository, runs the suite there before merging, and posts the result.
 
 ## Pull requests
 
 - Keep one fix or feature per PR; reviewers should not have to evaluate unrelated changes together.
+- Reference the accepted issue in the PR description with `Fixes #N`, so it closes when the PR is
+  merged. A [trivial change](#what-counts-as-trivial) or a bot PR doesn't need one; say so instead.
 - Commit messages and PR titles follow [Conventional Commits](https://www.conventionalcommits.org/),
   e.g. `feat: accept policy-granted action names` or `fix: drop blank action instead of retrying`.
   Releases and the changelog are generated from them. The shared commitlint rules additionally
@@ -222,11 +272,14 @@ pre-commit install -t commit-msg
 
 ## Reporting bugs
 
-A good bug report contains:
+Use the **Bug report** form under "New issue"; it asks for everything below. A good bug report
+contains:
 
-1. The prompt, the `subject_type` and `subject_id` sent, and the schema (or the `evals/schema/`
-   data model) the agent was serving.
-2. The response you got and the response you expected.
+1. The prompt, the `subject_type` and `subject_id` sent, the schema the agent was serving and the
+   access policies active for that `subject_type` (or the `evals/schema/` data model's
+   `<model>_schema.json` and `<model>_policies.json`) - every answer comes from those policies.
+2. The response you got, the response you expected and why, and the relevant log lines or audit
+   record if you have them.
 3. The configuration that matters (model name, timeouts, retry settings) and the version or commit.
 
 Please redact tokens, API keys and any real customer data before posting.

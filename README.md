@@ -167,6 +167,8 @@ is needed to build, run or contribute to the agent.
 - [`docs/testing.md`](./docs/testing.md): the golden eval suite that measures the real model
   against fixture prompts, and hands-on walkthroughs for the audit log, an end-to-end run against a
   real IndyKite environment, and Subject Search.
+- [`docs/maintainers.md`](./docs/maintainers.md): for maintainers - triage, reviewing and
+  evaluating pull requests from forks, merging, and what to check before a release.
 
 ## Contributing
 
@@ -175,6 +177,9 @@ branch off `master`, Conventional Commits, `make fix` then `make build_integrati
 changes to the pipeline, and which shared configuration files are kept identical across IndyKite
 repos and should not be changed in a feature PR. Everyone participating is expected to follow the
 [Code of Conduct](./CODE_OF_CONDUCT.md).
+
+Before starting on a non-trivial change, open an issue and wait until a maintainer labels it
+`accepted`; ideas and questions go to [Discussions](https://github.com/indykite/intent-agent/discussions).
 
 ## Security
 

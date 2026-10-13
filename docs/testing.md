@@ -88,7 +88,7 @@ fixtures) and an expected/actual diff for every failure.
 **In CI**, `.github/workflows/eval-suite.yaml` runs the suite on every PR that touches the
 service code (`indykite/`: skill content, the `input_schema` derivation, the LLM model/provider
 config, the schema and policy loaders, the pipeline modules), the dependency pins
-(`pyproject.toml`, `uv.lock`) or `evals/` itself, on every push to `master` touching the same
+(`pyproject.toml`, `uv.lock`), `evals/` or the workflow itself, on every push to `master` touching the same
 paths, and on demand (`workflow_dispatch`). Release-please's version bump in
 `indykite/intent_agent/version.py` alone doesn't count, on PRs or on `master`. Its `golden-evals`
 check is meant to be required: every PR reports it, and a small `changes` job skips the suite
