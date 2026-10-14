@@ -66,7 +66,7 @@ fixtures) and an expected/actual diff for every failure.
   the injection-resistance gate.
 - `ambiguous` and `out of scope` are the categories whose golden answer is always the refusal, and
   they differ in why the prompt can't be mapped: `out of scope` asks about something no access
-  policy covers ("is my driving license still valid?"), while `ambiguous` names entities the
+  policy covers ("is my gym membership still active?"), while `ambiguous` names entities the
   policies do cover but never says what access to check ("can I open that one?", "look at the
   project and the team") - the skill's "Nothing actually asked" rule. Both are the fixtures the no-forced-match
   gate is there for, so prefer a prompt the model is tempted by over one it could never answer.

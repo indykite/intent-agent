@@ -291,8 +291,7 @@ def test_shipped_suite_loads_and_covers_the_gated_categories():
     assert len(fixtures) >= 20  # noqa: PLR2004 - the suite as first committed; only ever grows
     categories = {fixture.category for fixture in fixtures}
     assert categories <= set(CATEGORIES)
-    # Welcome, not required: out of scope is a refusal the unit tests replay (test_golden_scenarios).
-    assert categories >= set(CATEGORIES) - {AMBIGUOUS, OUT_OF_SCOPE}
+    assert categories >= set(CATEGORIES) - {AMBIGUOUS}  # ambiguous fixtures are welcome, not yet required
     assert any(fixture.category == ADVERSARIAL_SUBJECT_SPOOF for fixture in fixtures)
     assert any(fixture.expects_refusal for fixture in fixtures)
     for fixture in fixtures:
