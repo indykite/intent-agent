@@ -110,9 +110,14 @@ def _evaluations_mismatch(fixture: Fixture, actual: dict[str, Any]) -> str:
     return "evaluations differ from the golden answer"
 
 
-def _order_free(evaluations: list[Any]) -> list[str]:
-    """`evaluations` in a fixed order, so two lists holding the same evaluations compare equal."""
-    return sorted(json.dumps(evaluation, sort_keys=True) for evaluation in evaluations)
+def _same_evaluations(expected: list[Any], actual: list[Any]) -> bool:
+    """The same evaluations in any order, each matched once with plain equality (so 1 == 1.0)."""
+    remaining = list(actual)
+    for evaluation in expected:
+        if evaluation not in remaining:
+            return False
+        remaining.remove(evaluation)
+    return not remaining
 
 
 def _same_response(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
@@ -123,9 +128,8 @@ def _same_response(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
     if not isinstance(expected_evaluations, list) or not isinstance(actual_evaluations, list):
         return False
     rest = {key: value for key, value in expected.items() if key != "evaluations"}
-    return rest == {key: value for key, value in actual.items() if key != "evaluations"} and _order_free(
-        expected_evaluations
-    ) == _order_free(actual_evaluations)
+    same_rest = rest == {key: value for key, value in actual.items() if key != "evaluations"}
+    return same_rest and _same_evaluations(expected_evaluations, actual_evaluations)
 
 
 def judge(fixture: Fixture, actual: dict[str, Any], confidence: str = "") -> Verdict:

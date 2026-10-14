@@ -372,8 +372,16 @@ _FOLDER, _NOTE = _evaluation("Folder"), _evaluation("Note")
         pytest.param([_FOLDER, _NOTE], [_NOTE, _FOLDER], True, id="swapped"),
         pytest.param([_FOLDER, _NOTE], [_FOLDER, _NOTE, _NOTE], False, id="extra_evaluation"),
         pytest.param([_FOLDER, _NOTE], [_FOLDER], False, id="missing_evaluation"),
+        pytest.param([_FOLDER, _NOTE, _NOTE], [_NOTE, _FOLDER, _FOLDER], False, id="same_types_other_counts"),
     ],
 )
 def test_judge_ignores_evaluation_order(eval_fixture, golden, actual, passed):
     fixture = replace(eval_fixture(), expected={"prompt": _PROMPT, "evaluations": golden})
     assert judge(fixture, {"prompt": _PROMPT, "evaluations": actual}).passed is passed
+
+
+def test_judge_compares_reordered_numbers_by_value(eval_fixture):
+    whole = {**_FOLDER, "context": {"parameters": {"amount": 2}}}
+    decimal = {**_FOLDER, "context": {"parameters": {"amount": 2.0}}}
+    fixture = replace(eval_fixture(), expected={"prompt": _PROMPT, "evaluations": [_NOTE, whole]})
+    assert judge(fixture, {"prompt": _PROMPT, "evaluations": [decimal, _NOTE]}).passed
