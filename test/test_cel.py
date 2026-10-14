@@ -1,6 +1,6 @@
 import pytest
 
-from indykite.intent_agent.cel import MAX_FILTER_LENGTH, filter_errors
+from indykite.intent_agent.cel import MAX_FILTER_LENGTH, conjuncts, filter_errors
 
 
 @pytest.mark.parametrize(
@@ -175,3 +175,22 @@ def test_filter_errors_rejects_properties_the_resource_type_lacks(expression, ex
     rather than waved through.
     """
     assert filter_errors(expression, _CAR_PROPERTIES) == expected
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        pytest.param("resource.a == 'x'", ["resource.a == 'x'"], id="single_term"),
+        pytest.param(
+            "resource.a == 'x'&&size(resource.b) > 2", ["resource.a == 'x'", "size(resource.b) > 2"], id="call"
+        ),
+        pytest.param(
+            "(resource.a || resource.b) && resource.c", ["(resource.a || resource.b)", "resource.c"], id="group"
+        ),
+        pytest.param("resource.a || resource.b && resource.c", ["resource.a || resource.b && resource.c"], id="top_or"),
+        pytest.param("resource.a == 'x && y'", ["resource.a == 'x && y'"], id="and_in_literal"),
+        pytest.param("resource.a contains 'x'", None, id="not_cel"),
+    ],
+)
+def test_conjuncts_splits_only_the_top_level_and_chain(expression, expected):
+    assert conjuncts(expression) == expected

@@ -291,7 +291,8 @@ def test_shipped_suite_loads_and_covers_the_gated_categories():
     assert len(fixtures) >= 20  # noqa: PLR2004 - the suite as first committed; only ever grows
     categories = {fixture.category for fixture in fixtures}
     assert categories <= set(CATEGORIES)
-    assert categories >= set(CATEGORIES) - {AMBIGUOUS}  # ambiguous fixtures are welcome, not yet required
+    # Welcome, not required: out of scope is a refusal the unit tests replay (test_golden_scenarios).
+    assert categories >= set(CATEGORIES) - {AMBIGUOUS, OUT_OF_SCOPE}
     assert any(fixture.category == ADVERSARIAL_SUBJECT_SPOOF for fixture in fixtures)
     assert any(fixture.expects_refusal for fixture in fixtures)
     for fixture in fixtures:
@@ -444,7 +445,7 @@ _CALLER = {"type": "User", "id": "leslie"}
 
 
 _MARKED = {"parameters": {"action_derivation_rule": "policy_based"}}
-_DEPENDENT = {"parameters": {"depends_on_previous_evaluations": True, "action_derivation_rule": "policy_based"}}
+_SECOND_HOP = {"parameters": {"action_derivation_rule": "policy_based"}}
 _FOLDER_MODEL = {
     "resources": ("Folder", "Document"),
     "relations": [("User", "CAN_ACCESS", "Folder"), ("Folder", "CONTAINS", "Document")],
@@ -460,7 +461,7 @@ def _search(resource_type):
     return {
         "subject": {"type": "User"},
         "action": {"name": "CAN_ACCESS"},
-        "resource": {"type": resource_type},
+        "resource": {"type": resource_type, "id": "doc-1"},
         "context": _MARKED,
     }
 
@@ -500,19 +501,19 @@ def _search(resource_type):
             (
                 _FOLDER_MODEL,
                 _FOLDER_POLICIES,
-                [_hop("CAN_ACCESS", "Folder", _MARKED), _hop("CAN_ACCESS", "Document", _DEPENDENT)],
+                [_hop("CAN_ACCESS", "Folder", _MARKED), _hop("CAN_ACCESS", "Document", _SECOND_HOP)],
                 None,
             ),
-            id="dependent_hop_with_its_own_policy",
+            id="second_hop_with_its_own_policy",
         ),
         pytest.param(
             (
                 _FOLDER_MODEL,
                 _FOLDER_POLICIES,
-                [_hop("CAN_ACCESS", "Folder", _MARKED), _hop("CONTAINS", "Document", _DEPENDENT)],
+                [_hop("CAN_ACCESS", "Folder", _MARKED), _hop("CONTAINS", "Document", _SECOND_HOP)],
                 r"evaluations\[1\] names action 'CONTAINS', which no policy",
             ),
-            id="dependent_hop_over_an_edge",
+            id="second_hop_over_an_edge",
         ),
     ],
 )

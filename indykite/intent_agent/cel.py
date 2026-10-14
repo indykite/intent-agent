@@ -170,6 +170,29 @@ def _walk(node: object, bound: frozenset[str], findings: _Findings) -> None:
             _walk(child, bound, findings)
 
 
+def _conjunction_terms(node: Tree) -> list[Tree]:
+    """The operands of a top-level `&&` chain (the grammar nests it to the left); `[node]` otherwise."""
+    while node.data in {"expr", "conditionalor"} and len(node.children) == 1:
+        node = node.children[0]
+    if node.data != "conditionaland":
+        return [node]
+    terms: list[Tree] = []
+    for child in node.children:
+        terms += _conjunction_terms(child) if isinstance(child, Tree) and child.data == "conditionaland" else [child]
+    return terms
+
+
+def conjuncts(expression: str) -> list[str] | None:
+    """The top-level `&&` terms of `expression`, each exactly as written; None if it doesn't parse.
+    Parsed, not split on the text: a call, a group or a string literal stays inside its term.
+    """
+    try:
+        tree = _environment.compile(expression)
+    except celpy.CELParseError:
+        return None
+    return [expression[term.meta.start_pos : term.meta.end_pos] for term in _conjunction_terms(tree)]
+
+
 def filter_errors(expression: str, properties: set[str] | None = None) -> list[str]:
     """Every reason `expression` isn't an acceptable `context.filters` value; empty if it is.
 

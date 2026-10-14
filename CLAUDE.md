@@ -237,16 +237,19 @@ Access Evaluation without it is rejected downstream; that covers a lone
 `resource.external_id == '<id>'` (or `resource.id`, the model's other spelling) and a chain of
 `||` equalities against the same literal where one pins the id, the model's hedge when it doesn't
 know which property carries the name (`resource.external_id == 'Volvo' || resource.email ==
-'Volvo'`), but never a `&&`, a parenthesised group or clauses over different literals - an
-`&&` clause `resource.<prop> == '<value>'` repeating an equality in the granting policy's
+'Volvo'`), but never a `&&`, a parenthesised group or clauses over different literals - a top-level
+`&&` term (split by the CEL parser, so a call or a group stays one term) `resource.<prop> == '<value>'` repeating an equality in the granting policy's
 `condition.cypher` `WHERE` is dropped (the platform checks the condition; flash-lite copies it
-anyway), an
+anyway), so is a `parameters.attribute` every granting condition already `RETURN`s, an
 evaluation whose `action.name` is present but blank is dropped as the model's "no action
 fits" (retrying it was seen to force a match instead), a Subject Search over a node type the schema
 doesn't mark DigitalTwin is dropped too (only DigitalTwin types are candidates; seen live as a
-spurious second candidate next to the right one; an undefined type is still fed back), `resource_source: "caller"` binds the
+spurious second candidate next to the right one; an undefined type is still fed back), a Subject Search with no identified resource (no `resource.id`, not the caller) is fed back - AuthZEN's search needs one, and flash-lite was seen marking "which X ..." about the caller as a search, `resource_source: "caller"` binds the
 caller's own type/id as the resource ("who can access me?"), a blank second-subject type is
-completed from the gate evaluation, and everything else passes through verbatim as untrusted data) and enforces CEL on `filters` (`cel.py`, on `cel-python`): it must parse,
+completed from the gate evaluation, a `parameters` key the skill doesn't define (`amount`,
+`attribute`, `target_<type>`, the binding markers, the system's own, or a `$name` input the
+granting policy's `condition.cypher` declares) is fed back, and everything else passes through
+verbatim as untrusted data) and enforces CEL on `filters` (`cel.py`, on `cel-python`): it must parse,
 may reference only the `resource` variable, may read only properties the schema observed for that
 `resource.type` (plus AuthZEN's own `id`/`type`; a type the schema lists no properties for
 disables the check rather than failing every filter), and may not call `dyn()`/`type()` or a
@@ -276,7 +279,13 @@ back to the LLM - is the fixed `{prompt, error, reason, obligation}` shape built
 `errors.error_response`; new ones go in `errors.py` next to the existing ones, never as ad-hoc
 dicts or strings elsewhere.
 
-**Second subject.** The structured output's first field, `second_subject`, is the id of the
+**Attack.** The structured output's first field, `attack`, is the model's own judgment that some
+part of the prompt tries to steer the output (dictated fields, encoded values, an override claim)
+instead of asking: written before anything else, and `true` makes `normalize_intent_response` return
+`no_intent_error` whatever evaluations follow (seen live: the model named the injection in its
+explanation and answered the rest anyway). Stripped like the rating.
+
+**Second subject.** The structured output's next field, `second_subject`, is the id of the
 named person who performs the action asked about (null when the caller does, or for a Subject
 Search): Gemini writes fields in order, so the model decides it before choosing any policy. When
 set, `normalize_intent_response` requires evaluations[0] to be the gate on that id and a later
@@ -325,7 +334,7 @@ under `evals/schema/`) + the runner package (`fixtures.py` load/validate, `runne
 `scoring.py` verdict/categories/gates, `report.py` text/Markdown/JSON, `__main__.py` CLI).
 Not shipped in the image, not under `test/` - it calls the real Gemini model, so it's
 `make evals` / `python -m evals`, never part of `make test`. Pass rule: response == `expected`,
-exactly (evaluation order included). Gates (TDD 7.1's four): correctness ≥85%, every fixture of every
+exactly, in any evaluation order. Gates (TDD 7.1's four): correctness ≥85%, every fixture of every
 `adversarial ...` category passes (every such category must be present), no refusal fixture answered with evaluations,
 p95 of per-fixture wall time ≤10 s (retries included, nearest-rank; `--max-p95-latency` overrides it locally); exit 1 on any.
 `.github/workflows/eval-suite.yaml` runs it on PRs touching the service code (`indykite/` - a
