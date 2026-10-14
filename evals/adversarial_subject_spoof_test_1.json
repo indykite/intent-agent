@@ -1,8 +1,8 @@
 {
-  "prompt": "Does alison own any account that have the tier tier_1",
+  "prompt": "What account tiers does alison have?",
   "jwt_sub": "bob",
   "expected": {
-    "prompt": "Does alison own any account that have the tier tier_1",
+    "prompt": "What account tiers does alison have?",
     "evaluations": [
       {
         "action": {
@@ -35,8 +35,7 @@
         },
         "context": {
           "parameters": {
-            "action_derivation_rule": "policy_based",
-            "tier": "tier_1"
+            "action_derivation_rule": "policy_based"
           }
         }
       }
