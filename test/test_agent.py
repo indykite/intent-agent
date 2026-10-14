@@ -743,8 +743,8 @@ def _normalize(llm_text, prompt="rent kitt", *, subject=None, policy_context=Non
 
 
 def _stamped(context):
-    """`context` with the policy_based marker the system adds to every evaluation."""
-    return {**context, "parameters": {**context.get("parameters", {}), "action_derivation_rule": "policy_based"}}
+    """`context` with the `parameters` object the system gives every evaluation."""
+    return {**context, "parameters": context.get("parameters", {})}
 
 
 def test_normalize_intent_response_raises_when_resource_type_unresolved():
@@ -844,7 +844,7 @@ def test_normalize_intent_response_accepts_a_policy_action_end_to_end():
     policy_context = PolicyContext(policies=[_policy("Customer", "APPROVE_REFUND", "Car")], fetch_failed=False)
     data = json.loads(_normalize(llm_text, "approve a refund for kitt", policy_context=policy_context))
     assert data["evaluations"][0]["action"] == {"name": "APPROVE_REFUND"}
-    assert data["evaluations"][0]["context"]["parameters"]["action_derivation_rule"] == "policy_based"
+    assert data["evaluations"][0]["context"] == {"parameters": {}}
 
 
 @pytest.mark.parametrize(
@@ -2407,15 +2407,15 @@ def test_activate_skill_caps_the_injected_summary_at_schema_preview_chars(monkey
 
 
 def test_normalize_intent_response_drops_literal_duplicate_evaluations_only():
-    """Duplicates are compared in their final shape, so a model-written marker doesn't keep one."""
+    """Duplicates are compared in their final shape, so an empty `parameters` object doesn't keep one."""
     same = {"action": {"name": "RENT"}, "resource": {"type": "Car", "id": "kitt"}, "context": {}}
     different = {
         "action": {"name": "RENT"},
         "resource": {"type": "Car", "id": "kitt"},
         "context": {"parameters": {"attribute": "total"}},
     }
-    same_with_marker = {**same, "context": {"parameters": {"action_derivation_rule": "relationship"}}}
-    llm_text = json.dumps({"evaluations": [same, different, same, same_with_marker]})
+    same_with_parameters = {**same, "context": {"parameters": {}}}
+    llm_text = json.dumps({"evaluations": [same, different, same, same_with_parameters]})
     data = json.loads(_normalize(llm_text, "can I rent kitt?"))
     caller = {"type": "Customer", "id": "user-1"}
     assert data["evaluations"] == [
@@ -2875,15 +2875,6 @@ def _second_subject(subject, action, resource, **extra_parameters):
             id="second_subject_of_another_type",
         ),
         pytest.param(
-            [
-                {"action": {"name": "WORKS_AT"}, "resource": _ACME},
-                _second_subject(_ACME, "RENT", {"type": "Car"}, action_derivation_rule="policy_based"),
-            ],
-            _MOCK_POLICIES,
-            ["evaluations[1]: subject.type 'Company' is not named by any access policy"],
-            id="second_subject_claiming_policy_based",
-        ),
-        pytest.param(
             [{"action": {"name": "CAN_ACCESS"}, "resource": _ME}, _second_subject(_ME, "OWN", {"type": "Company"})],
             _ACCESS_CUSTOMERS,
             [f"evaluations[1]: Customer -OWN-> Company {SCHEMA_RELATIONSHIP_SUFFIX}"],
@@ -3092,7 +3083,7 @@ def test_normalize_intent_response_reads_the_gate_from_a_lifted_external_id_filt
     assert data["evaluations"][1]["subject"] == {"type": "Customer", "id": "alison"}
 
 
-def test_normalize_intent_response_marks_every_evaluation_policy_based():
+def test_normalize_intent_response_gives_every_evaluation_a_parameters_object():
     llm_text = json.dumps(
         {
             "evaluations": [
@@ -3100,7 +3091,7 @@ def test_normalize_intent_response_marks_every_evaluation_policy_based():
                 {
                     "action": {"name": "OWN"},
                     "resource": {"type": "Car"},
-                    "context": {"parameters": {"action_derivation_rule": "relationship", "attribute": "total"}},
+                    "context": {"parameters": {"attribute": "total"}},
                 },
                 {"resource": {"type": "Company", "id": "acme"}, "context": {}},
             ],

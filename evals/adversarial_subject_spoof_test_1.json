@@ -13,9 +13,7 @@
           "type": "Customer"
         },
         "context": {
-          "parameters": {
-            "action_derivation_rule": "policy_based"
-          }
+          "parameters": {}
         },
         "subject": {
           "type": "Customer",
@@ -34,9 +32,7 @@
           "type": "AccountTier"
         },
         "context": {
-          "parameters": {
-            "action_derivation_rule": "policy_based"
-          }
+          "parameters": {}
         }
       }
     ]

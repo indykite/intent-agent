@@ -181,7 +181,7 @@ def test_blank_jwt_sub_is_an_anonymous_caller(eval_fixture_file):
                 "subject": {"type": "User"},
                 "action": {"name": "CAN_ACCESS"},
                 "resource": {"type": "Document", "id": "doc123"},
-                "context": {"parameters": {"action_derivation_rule": "policy_based"}},
+                "context": {"parameters": {}},
             }
         ],
     }
@@ -209,7 +209,7 @@ _CUSTOMER_EXPECTED = {
             "subject": {"type": "Customer", "id": "leslie"},
             "action": {"name": "CAN_ACCESS"},
             "resource": {"type": "Document", "id": "doc123"},
-            "context": {"parameters": {"action_derivation_rule": "policy_based"}},
+            "context": {"parameters": {}},
         }
     ],
 }
@@ -316,7 +316,7 @@ def test_policies_file_next_to_the_schema_is_picked_up_and_widens_the_action_voc
                 "subject": {"type": "User", "id": "leslie"},
                 "action": {"name": "CHECK_MEMBERSHIP"},
                 "resource": {"type": "Document"},
-                "context": {"parameters": {"action_derivation_rule": "policy_based"}},
+                "context": {"parameters": {}},
             }
         ],
     }
@@ -327,11 +327,11 @@ def test_policies_file_next_to_the_schema_is_picked_up_and_widens_the_action_voc
     assert fixture.policies[0]["policy"]["actions"] == ["CHECK_MEMBERSHIP"]
 
 
-def test_golden_policy_action_must_carry_the_marker_the_pipeline_sets(
+def test_golden_answer_must_carry_the_parameters_object_the_pipeline_sets(
     eval_fixture_file, eval_schema_file, eval_policies_file
 ):
-    """Normalisation completes `action_derivation_rule: policy_based` on a policy-granted action
-    by itself, so a golden answer without it could never equal the response: rejected at load.
+    """Normalisation gives every evaluation a `context.parameters` object, so a golden answer
+    without one could never equal the response: rejected at load.
     """
     eval_schema_file()
     eval_policies_file("user_model", [("User", "CHECK_MEMBERSHIP", "Document")])
@@ -341,7 +341,7 @@ def test_golden_policy_action_must_carry_the_marker_the_pipeline_sets(
     }
 
     with pytest.raises(
-        FixtureError, match=r"returns a different response .* evaluations\[0\] would come back as .*policy_based"
+        FixtureError, match=r"returns a different response .* evaluations\[0\] would come back as .*parameters"
     ):
         load_fixture(eval_fixture_file(expected=expected))
 
@@ -367,13 +367,13 @@ def test_golden_policy_action_must_carry_the_marker_the_pipeline_sets(
                     "subject": {"type": "User", "id": "leslie"},
                     "action": {"name": "CAN_ACCESS"},
                     "resource": {"type": "Document"},
-                    "context": {"parameters": {"action_derivation_rule": "policy_based"}},
+                    "context": {"parameters": {}},
                 },
                 {
                     "subject": {"type": "User", "id": "leslie"},
                     "action": {"name": "CAN_ACCESS"},
                     "resource": {"type": "Document"},
-                    "context": {"parameters": {"action_derivation_rule": "policy_based"}},
+                    "context": {"parameters": {}},
                 },
             ],
             r"evaluations\[1\] would not come back at all",
@@ -443,8 +443,8 @@ def test_golden_policy_action_is_checked_for_the_caller_and_the_resource_type(
 _CALLER = {"type": "User", "id": "leslie"}
 
 
-_MARKED = {"parameters": {"action_derivation_rule": "policy_based"}}
-_SECOND_HOP = {"parameters": {"action_derivation_rule": "policy_based"}}
+_MARKED = {"parameters": {}}
+_SECOND_HOP = {"parameters": {}}
 _FOLDER_MODEL = {
     "resources": ("Folder", "Document"),
     "relations": [("User", "CAN_ACCESS", "Folder"), ("Folder", "CONTAINS", "Document")],

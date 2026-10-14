@@ -32,7 +32,7 @@ _EVALUATION = {
     "subject": {"type": "User", "id": "leslie"},
     "action": {"name": "CAN_ACCESS"},
     "resource": {"type": "Document", "id": "doc123"},
-    "context": {"parameters": {"action_derivation_rule": "policy_based"}},
+    "context": {"parameters": {}},
 }
 _OTHER_EVALUATION = {**_EVALUATION, "resource": {"type": "Document"}}
 
@@ -359,7 +359,7 @@ def _evaluation(resource_type):
     return {
         **_EVALUATION,
         "resource": {"type": resource_type},
-        "context": {"parameters": {"action_derivation_rule": "policy_based"}},
+        "context": {"parameters": {}},
     }
 
 

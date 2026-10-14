@@ -13,7 +13,6 @@
         },
         "context": {
           "parameters": {
-            "action_derivation_rule": "policy_based",
             "tier": "tier_2"
           }
         },

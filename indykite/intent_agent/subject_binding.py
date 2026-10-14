@@ -112,9 +112,6 @@ def _vocabulary_reason(
     return None
 
 
-# Set by the system on every evaluation (_mark_policy_based), never taken from the model.
-_ACTION_DERIVATION_KEY = "action_derivation_rule"
-_ACTION_DERIVATION_POLICY = "policy_based"
 _POLICY_FETCH_FAILED_KEY = "policy_fetch_failed"
 
 
@@ -131,7 +128,6 @@ _ALLOWED_PARAMETERS = frozenset(
         "attribute",
         "subject_source",
         "resource_source",
-        "action_derivation_rule",
         "policy_fetch_failed",
     }
 )
@@ -423,8 +419,8 @@ def normalize_intent_response(
     _drop_condition_filters(data, policy_context.policies)
     _drop_returned_attributes(data, policy_context.policies)
     _normalize_contexts(data)
-    # Marked before the duplicate drop, so it compares evaluations in their final shape.
-    _mark_policy_based(data)
+    # Before the duplicate drop, so it compares evaluations in their final shape.
+    _ensure_parameters(data)
     _drop_duplicate_evaluations(data)
     _set_policy_fetch_failed(data, fetch_failed=policy_context.fetch_failed)
     # The model's own notes: the rating is only logged (see rating()), none is returned.
@@ -492,13 +488,12 @@ def _open_subject_search_errors(data: dict[str, Any]) -> list[str]:
     return errors
 
 
-def _mark_policy_based(data: dict[str, Any]) -> None:
-    """Set `action_derivation_rule: "policy_based"` on every (validated, normalised) evaluation."""
+def _ensure_parameters(data: dict[str, Any]) -> None:
+    """Give every evaluation a `context.parameters` object, so the response shape never depends on
+    whether the model wrote one."""
     for evaluation in data.get("evaluations", []):
-        if not isinstance(evaluation, dict):
-            continue
-        parameters = evaluation["context"].setdefault("parameters", {})
-        parameters[_ACTION_DERIVATION_KEY] = _ACTION_DERIVATION_POLICY
+        if isinstance(evaluation, dict):
+            evaluation["context"].setdefault("parameters", {})
 
 
 def _drop_unnamed_actions(data: dict[str, Any]) -> list[object]:

@@ -13,9 +13,7 @@
         },
         "context": {
           "filters": "double(resource.amount) > 500.0",
-          "parameters": {
-            "action_derivation_rule": "policy_based"
-          }
+          "parameters": {}
         },
         "subject": {
           "type": "Customer",

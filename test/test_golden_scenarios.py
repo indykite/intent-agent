@@ -134,7 +134,7 @@ _SCENARIOS = [
                 {
                     "action": {"name": "CAN_RETRIEVE"},
                     "resource": {"type": "Quote", "id": "stock_quote"},
-                    "context": {"parameters": {"attribute": "price", "action_derivation_rule": "policy_based"}},
+                    "context": {"parameters": {"attribute": "price"}},
                     "subject": _USER,
                 },
             ],
@@ -160,7 +160,6 @@ _SCENARIOS = [
                         "parameters": {
                             "target_customer": "ted",
                             "attribute": "balance",
-                            "action_derivation_rule": "policy_based",
                         },
                     },
                     "subject": _USER,
@@ -186,7 +185,7 @@ _SCENARIOS = [
                     "resource": {"type": "Invoice"},
                     "context": {
                         "filters": "resource.status in ['open', 'pending']",
-                        "parameters": {"action_derivation_rule": "policy_based"},
+                        "parameters": {},
                     },
                     "subject": _CUSTOMER,
                 },
@@ -211,7 +210,7 @@ _SCENARIOS = [
                     "resource": {"type": "Account"},
                     "context": {
                         "filters": _ACTIVE_SINCE_FILTER,
-                        "parameters": {"action_derivation_rule": "policy_based"},
+                        "parameters": {},
                     },
                     "subject": _CUSTOMER,
                 },
@@ -236,7 +235,7 @@ _SCENARIOS = [
                     "resource": {"type": "Quote", "id": "stock_quote"},
                     "context": {
                         "qualifiers": {"location": "Toronto branch", "time": "this afternoon"},
-                        "parameters": {"action_derivation_rule": "policy_based"},
+                        "parameters": {},
                     },
                     "subject": _USER,
                 },
@@ -260,7 +259,7 @@ _SCENARIOS = [
                 {
                     "action": {"name": "CAN_ACCESS"},
                     "resource": {"type": "Decision"},
-                    "context": {"parameters": {"action_derivation_rule": "policy_based"}},
+                    "context": {"parameters": {}},
                     "subject": _USER,
                 },
                 {
@@ -268,7 +267,7 @@ _SCENARIOS = [
                     "resource": {"type": "Document"},
                     "context": {
                         "filters": "resource.name.contains('refund policy')",
-                        "parameters": {"action_derivation_rule": "policy_based"},
+                        "parameters": {},
                     },
                     "subject": _USER,
                 },
@@ -288,13 +287,13 @@ _SCENARIOS = [
                 {
                     "action": {"name": "WORKS_IN"},
                     "resource": {"type": "Department"},
-                    "context": {"parameters": {"action_derivation_rule": "policy_based"}},
+                    "context": {"parameters": {}},
                     "subject": _USER,
                 },
                 {
                     "action": {"name": "MADE"},
                     "resource": {"type": "Decision"},
-                    "context": {"parameters": {"action_derivation_rule": "policy_based"}},
+                    "context": {"parameters": {}},
                     "subject": _USER,
                 },
             ],
@@ -317,7 +316,7 @@ _SCENARIOS = [
                 {
                     "action": {"name": "OWNS"},
                     "resource": {"type": "Account"},
-                    "context": {"parameters": {"target_customer": "ted", "action_derivation_rule": "policy_based"}},
+                    "context": {"parameters": {"target_customer": "ted"}},
                     "subject": _CUSTOMER,
                 },
             ],
@@ -331,8 +330,8 @@ _SCENARIOS = [
 def test_golden_scenario_extracts_context_sub_shapes(monkeypatch, mocker, baseline_env, scenario):
     """One golden prompt per context sub-shape and per PRD example pattern, plus the two
     multi-evaluation shapes and the subject spoof: the model's answer comes back with the
-    context passed through as-is (nulls pruned; every evaluation gains the system's policy_based
-    marker), the caller bound as subject on every evaluation, no retry spent, and audited as a
+    context passed through as-is (nulls pruned; every evaluation gets a `parameters` object),
+    the caller bound as subject on every evaluation, no retry spent, and audited as a
     success.
 
     `scenario` is (prompt, subject to bind, the evaluations the LLM answered, the evaluations
@@ -406,7 +405,7 @@ def test_golden_scenario_mis_typed_filters_is_retried_with_shape_feedback(monkey
     assert result.validation_retries == 1
     assert result.evaluations[0]["context"] == {
         **right["context"],
-        "parameters": {"action_derivation_rule": "policy_based"},
+        "parameters": {},
     }
     assert mock_ainvoke.call_count == _LLM_CALLS_WITH_ONE_RETRY
     feedback = json.loads(mock_ainvoke.call_args_list[-1].args[0][-1].content)
@@ -439,7 +438,7 @@ def test_golden_scenario_non_cel_filter_is_retried_until_it_parses(monkeypatch, 
     # Every accepted evaluation is policy-derived, so the system stamps the marker on it.
     assert result.evaluations[0]["context"] == {
         **cel["context"],
-        "parameters": {"action_derivation_rule": "policy_based"},
+        "parameters": {},
     }
     assert mock_ainvoke.call_count == _LLM_CALLS_WITH_ONE_RETRY
     feedback = json.loads(mock_ainvoke.call_args_list[-1].args[0][-1].content)
@@ -477,8 +476,7 @@ def test_golden_scenario_policy_derived_action_replays_a_real_captured_policy(mo
     action that is not one of the CanBank schema's own edge relations at all. The prompt names
     no specific account, so this is a Resource Search (no resource.id), and the "over a year"
     condition is left to the policy's own cypher condition rather than repeated as a filter.
-    It is accepted without a retry, and the caller gets it marked action_derivation_rule=
-    "policy_based" - the system's own statement, whatever the model wrote there.
+    It is accepted without a retry.
     """
     policies = [
         {
@@ -499,7 +497,7 @@ def test_golden_scenario_policy_derived_action_replays_a_real_captured_policy(mo
         "action": {"name": "WAIVE_FEE"},
         "resource": {"type": "Account"},
         "context": {
-            "parameters": {"action_derivation_rule": "policy_based"},
+            "parameters": {},
         },
     }
     agent, mock_ainvoke = _agent_with_policies(monkeypatch, mocker, baseline_env, [_answer(answer)], policies)
@@ -514,7 +512,7 @@ def test_golden_scenario_policy_derived_action_replays_a_real_captured_policy(mo
             "action": {"name": "WAIVE_FEE"},
             "resource": {"type": "Account"},
             "context": {
-                "parameters": {"action_derivation_rule": "policy_based"},
+                "parameters": {},
             },
             "subject": {"type": "Customer", "id": "rebecca"},
         },

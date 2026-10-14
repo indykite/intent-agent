@@ -174,8 +174,7 @@ Eight modules carry whole service:
   schema still decides which labels exist): `build_input_schema` builds all three enums from them,
   `render_schema_summary` lists them under "Policies", `agent._policy_block` injects the raw list
   so the model can choose by each policy's `condition.cypher`, and `subject_binding` requires every
-  evaluation to be one granted combination, then stamps `action_derivation_rule: "policy_based"` on
-  every evaluation itself. No policy is handled like no schema: a failed fetch with nothing cached, or
+  evaluation to be one granted combination. No policy is handled like no schema: a failed fetch with nothing cached, or
   none existing for the caller's type, is `policy_unavailable_error` before any LLM call (distinct
   warnings for the two), retried on the next request; a failed refresh serves the
   last known-good policies with `policy_fetch_failed` set on the audit record and the response

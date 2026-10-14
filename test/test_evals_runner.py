@@ -20,11 +20,11 @@ from indykite.intent_agent.errors import no_intent_error
 _ACTIVATE_EXTRACT_INTENT = {"name": "activate_skill", "args": {"name": "extract-intent"}, "id": "call-1"}
 _PROMPT = "Can I access the document doc123?"
 # What the model answers (no subject - the pipeline binds the caller) and what the caller gets
-# (the caller bound, and the policy_based marker the pipeline sets on every evaluation).
+# (the caller bound, and the `parameters` object the pipeline gives every evaluation).
 _MODEL_EVALUATION = {"action": {"name": "CAN_ACCESS"}, "resource": {"type": "Document", "id": "doc123"}, "context": {}}
 _BOUND_EVALUATION = {
     **_MODEL_EVALUATION,
-    "context": {"parameters": {"action_derivation_rule": "policy_based"}},
+    "context": {"parameters": {}},
     "subject": {"type": "User", "id": "leslie"},
 }
 
@@ -89,7 +89,7 @@ _CUSTOMER_EXPECTED = {
             "subject": {"type": "Customer", "id": "leslie"},
             "action": {"name": "CAN_ACCESS"},
             "resource": {"type": "Document", "id": "doc123"},
-            "context": {"parameters": {"action_derivation_rule": "policy_based"}},
+            "context": {"parameters": {}},
         }
     ],
 }

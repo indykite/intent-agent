@@ -101,9 +101,7 @@ def test_gemini_send_message_end_to_end(monkeypatch, mocker, tmp_path):
     assert list(result_data) == ["prompt", "evaluations"]
     assert result_data["prompt"] == "Can I buy 50 shares of AAPL?"
     assert result_data["evaluations"][0]["subject"] == {"type": "Customer", "id": "test-subject"}
-    assert result_data["evaluations"][0]["context"] == {
-        "parameters": {"amount": 50, "action_derivation_rule": "policy_based"}
-    }
+    assert result_data["evaluations"][0]["context"] == {"parameters": {"amount": 50}}
 
     audit_files = list((tmp_path / "audit").glob("audit-intent_agent-*.json"))
     assert len(audit_files) == 1

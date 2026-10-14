@@ -14,8 +14,7 @@
         },
         "context": {
           "parameters": {
-            "system": "sys123",
-            "action_derivation_rule": "policy_based"
+            "system": "sys123"
           }
         },
         "subject": {
