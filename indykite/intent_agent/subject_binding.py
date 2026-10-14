@@ -139,6 +139,13 @@ _THIRD_PARTY_PREFIX = "target_"
 
 
 _CYPHER_PARAMETER = re.compile(r"\$(\w+)")
+# String literals and comments, whose text is no input: '...', "...", // to end of line, /* ... */.
+_CYPHER_NON_CODE = re.compile(r"""'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|//[^\n]*|/\*.*?\*/""", re.DOTALL)
+
+
+def _declared_inputs(cypher: str) -> set[str]:
+    """The `$name` inputs a condition declares, outside its string literals and comments."""
+    return set(_CYPHER_PARAMETER.findall(_CYPHER_NON_CODE.sub(" ", cypher)))
 
 
 def _condition_parameters(policies: list[dict[str, Any]] | None) -> dict[tuple[object, object], set[str]]:
@@ -151,8 +158,11 @@ def _condition_parameters(policies: list[dict[str, Any]] | None) -> dict[tuple[o
         if not isinstance(cypher, str) or not isinstance(actions, list):
             continue
         resource_type = _field(_field(policy, "resource"), "type")
+        if not isinstance(resource_type, str) or _blank(resource_type):
+            continue
         for action in actions:
-            declared.setdefault((action, resource_type), set()).update(_CYPHER_PARAMETER.findall(cypher))
+            if isinstance(action, str) and not _blank(action):
+                declared.setdefault((action, resource_type), set()).update(_declared_inputs(cypher))
     return declared
 
 

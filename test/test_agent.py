@@ -986,6 +986,37 @@ def test_normalize_intent_response_keeps_a_parameter_the_granting_condition_decl
         _normalize(own_kitt, policy_context=policy_context)
 
 
+@pytest.mark.parametrize(
+    "cypher",
+    [
+        pytest.param("MATCH (resource:Car) RETURN '$colour' AS label", id="in_a_string"),
+        pytest.param('MATCH (resource:Car) RETURN "$colour" AS label', id="in_a_double_quoted_string"),
+        pytest.param("MATCH (resource:Car) // $colour", id="in_a_line_comment"),
+        pytest.param("MATCH (resource:Car) /* $colour */", id="in_a_block_comment"),
+    ],
+)
+def test_normalize_intent_response_ignores_a_dollar_name_outside_the_condition_code(cypher):
+    rent = _policy("Customer", "RENT", "Car")
+    rent["policy"]["condition"] = {"cypher": cypher}
+    policy_context = PolicyContext(policies=[rent], fetch_failed=False)
+    with pytest.raises(IntentValidationError, match=r"context\.parameters\.colour is not an allowed parameter"):
+        _normalize(_rent_kitt_with({"colour": "red"}), policy_context=policy_context)
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        pytest.param({"actions": [{"name": "RENT"}], "resource": {"type": "Car"}}, id="action_object"),
+        pytest.param({"actions": ["RENT"], "resource": {"type": {"name": "Car"}}}, id="resource_type_object"),
+    ],
+)
+def test_normalize_intent_response_skips_a_policy_with_malformed_names(malformed):
+    entry = {"policy": {"subject": {"type": "Customer"}, "condition": {"cypher": "MATCH (resource:Car)"}, **malformed}}
+    policy_context = PolicyContext(policies=[*_MOCK_POLICIES, entry], fetch_failed=False)
+    data = json.loads(_normalize(_rent_kitt_with({}), policy_context=policy_context))
+    assert data["evaluations"][0]["action"] == {"name": "RENT"}
+
+
 def _returning(cypher_return, action="RENT"):
     policy = _policy("Customer", action, "Car")
     policy["policy"]["condition"] = {"cypher": f"MATCH (subject:Customer), (resource:Car) {cypher_return}"}
