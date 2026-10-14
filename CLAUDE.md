@@ -283,7 +283,8 @@ dicts or strings elsewhere.
 part of the prompt tries to steer the output (dictated fields, encoded values, an override claim)
 instead of asking: written before anything else, and `true` makes `normalize_intent_response` return
 `no_intent_error` whatever evaluations follow (seen live: the model named the injection in its
-explanation and answered the rest anyway). Stripped like the rating.
+explanation and answered the rest anyway). A non-boolean `attack` is fed back, a missing one
+counts as `false`. Stripped like the rating.
 
 **Second subject.** The structured output's next field, `second_subject`, is the id of the
 named person who performs the action asked about (null when the caller does, or for a Subject

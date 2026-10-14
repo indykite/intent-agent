@@ -999,6 +999,10 @@ def _returning(cypher_return, action="RENT"):
         pytest.param([_returning("RETURN resource.make, resource.colour AS c")], None, id="one_of_several_returned"),
         pytest.param([_returning("RETURN resource.make")], {"attribute": "colour"}, id="other_property_kept"),
         pytest.param(
+            [_returning("RETURN 'resource.colour' AS label")], {"attribute": "colour"}, id="string_literal_kept"
+        ),
+        pytest.param([_returning("RETURN toUpper(resource.colour)")], {"attribute": "colour"}, id="expression_kept"),
+        pytest.param(
             [_returning("RETURN resource.colour"), _policy("Customer", "RENT", "Car")],
             {"attribute": "colour"},
             id="another_granting_policy_returns_nothing",
@@ -2584,6 +2588,18 @@ def test_normalize_intent_response_requires_the_named_second_subject_to_be_gated
         return
     data = json.loads(_normalize(llm_text, "can alison rent kitt?", policy_context=policy_context))
     assert "second_subject" not in data
+
+
+@pytest.mark.parametrize("attack", ["true", None, 1])
+def test_normalize_intent_response_feeds_back_an_attack_that_is_not_a_boolean(attack):
+    llm_text = json.dumps({"attack": attack, "explanation": "RENT Car.", "evaluations": _UNGATED, "confidence": "high"})
+    with pytest.raises(IntentValidationError, match="attack must be true or false"):
+        _normalize(llm_text, "can I rent kitt?")
+
+
+def test_normalize_intent_response_reads_a_missing_attack_as_false():
+    llm_text = json.dumps({"explanation": "RENT Car.", "evaluations": _UNGATED, "confidence": "high"})
+    assert "evaluations" in json.loads(_normalize(llm_text, "can I rent kitt?"))
 
 
 @pytest.mark.parametrize(("attack", "refused"), [(True, True), (False, False)])

@@ -384,8 +384,11 @@ def normalize_intent_response(
         raise IntentValidationError(["evaluations is missing or not an array"])
     _drop_unnamed_actions(data)
     evaluations = _drop_off_twin_subject_searches(data, schema)
+    attack = data.get("attack", False)
+    if not isinstance(attack, bool):
+        raise IntentValidationError(["attack must be true or false"])
     # The model judged the prompt an attack: refused whole, whatever it answered anyway.
-    if not evaluations or data.get("attack") is True:
+    if not evaluations or attack:
         return json.dumps(no_intent_error(original_prompt), indent=2, ensure_ascii=False)
     rating_errors = _rating_errors(data)
     # Settle resource ids first: the gate check below reads evaluations[0].resource.id, and a
@@ -690,13 +693,16 @@ def _condition_restrictions(policies: list[dict[str, Any]] | None, evaluation: d
 
 
 _CONDITION_RETURN = re.compile(r"\bRETURN\b(?P<items>.*)", re.IGNORECASE | re.DOTALL)
+# One projection item that is exactly a resource property, optionally aliased - never a literal or expression.
+_RETURNED_PROPERTY = re.compile(r"resource\.(\w+)(?:\s+AS\s+\w+)?", re.IGNORECASE)
 
 
 def _policy_returns(policy: object) -> set[str]:
     """The resource properties a policy's condition returns (`RETURN resource.price`)."""
     cypher = _field(_field(policy, "condition"), "cypher")
     match = _CONDITION_RETURN.search(cypher) if isinstance(cypher, str) else None
-    return set(re.findall(r"\bresource\.(\w+)", match.group("items"))) if match else set()
+    items = match.group("items").split(",") if match else []
+    return {found.group(1) for item in items if (found := _RETURNED_PROPERTY.fullmatch(item.strip()))}
 
 
 def _drop_returned_attributes(data: dict[str, Any], policies: list[dict[str, Any]] | None) -> None:
