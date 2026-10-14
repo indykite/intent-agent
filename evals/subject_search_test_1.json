@@ -9,7 +9,7 @@
           "type": "User"
         },
         "action": {
-          "name": "CAN_ACCESS"
+          "name": "CAN_ACCESS_FOLDER_DOCUMENT"
         },
         "resource": {
           "id": "doc123",

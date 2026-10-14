@@ -7,7 +7,7 @@
     "evaluations": [
       {
         "action": {
-          "name": "CAN_ACCESS"
+          "name": "CAN_ACCESS_CUSTOMER"
         },
         "resource": {
           "type": "Customer"

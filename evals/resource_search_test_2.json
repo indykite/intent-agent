@@ -6,15 +6,15 @@
     "evaluations": [
       {
         "action": {
-          "name": "CAN_ACCESS"
+          "name": "HAS"
         },
         "resource": {
-          "type": "AccountTier",
-          "id": "tier_2"
+          "type": "AccountTier"
         },
         "context": {
           "parameters": {
-            "action_derivation_rule": "policy_based"
+            "action_derivation_rule": "policy_based",
+            "tier": "tier_2"
           }
         },
         "subject": {

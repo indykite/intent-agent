@@ -30,7 +30,6 @@
         },
         "context": {
           "parameters": {
-            "depends_on_previous_evaluations": true,
             "action_derivation_rule": "policy_based"
           }
         },

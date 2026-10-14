@@ -6,7 +6,7 @@
     "evaluations": [
       {
         "action": {
-          "name": "WORKS_IN_PARENT_DEPT"
+          "name": "WORKS_IN"
         },
         "resource": {
           "id": "trading",

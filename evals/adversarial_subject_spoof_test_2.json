@@ -6,7 +6,7 @@
     "evaluations": [
       {
         "action": {
-          "name": "CAN_ACCESS"
+          "name": "CAN_QUERY_USER"
         },
         "resource": {
           "id": "roy",
@@ -28,7 +28,7 @@
           "type": "User"
         },
         "action": {
-          "name": "CAN_ACCESS"
+          "name": "CAN_ACCESS_FOLDER_DOCUMENT"
         },
         "resource": {
           "id": "doc123",
@@ -36,7 +36,6 @@
         },
         "context": {
           "parameters": {
-            "depends_on_previous_evaluations": true,
             "action_derivation_rule": "policy_based"
           }
         }

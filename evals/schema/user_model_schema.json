@@ -591,6 +591,15 @@
               ],
               "count": 1
             },
+            "price": {
+              "types": [
+                {
+                  "type": "FLOAT NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
             "update_time": {
               "types": [
                 {
@@ -1835,6 +1844,53 @@
             }
           },
           "count": 2
+        },
+        "directed": true
+      },
+      {
+        "source": "User",
+        "relation": "OWNS",
+        "target": "Account",
+        "metadata": {
+          "properties": {
+            "create_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "id": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "type": {
+              "types": [
+                {
+                  "type": "STRING NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            },
+            "update_time": {
+              "types": [
+                {
+                  "type": "ZONED DATETIME NOT NULL",
+                  "count": 1
+                }
+              ],
+              "count": 1
+            }
+          },
+          "count": 1
         },
         "directed": true
       }

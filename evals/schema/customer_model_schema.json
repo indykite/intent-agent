@@ -143,7 +143,7 @@
             "tier": {
               "types": [
                 {
-                  "type": "FLOAT NOT NULL",
+                  "type": "STRING NOT NULL",
                   "count": 4
                 }
               ],

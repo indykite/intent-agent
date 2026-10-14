@@ -6,7 +6,7 @@
     "evaluations": [
       {
         "action": {
-          "name": "REPORTS_TO"
+          "name": "REPORTS_TO_INDIRECTLY"
         },
         "resource": {
           "id": "flo",
@@ -14,7 +14,6 @@
         },
         "context": {
           "parameters": {
-            "direct": false,
             "action_derivation_rule": "policy_based"
           }
         },

@@ -6,16 +6,15 @@
     "evaluations": [
       {
         "action": {
-          "name": "WORKS_IN_PARENT_DEPT"
+          "name": "WORKS_UNDER_DEPARTMENT"
         },
         "resource": {
-          "type": "Department",
-          "id": "crm"
+          "type": "Department"
         },
         "context": {
           "parameters": {
-            "direct": false,
-            "action_derivation_rule": "policy_based"
+            "action_derivation_rule": "policy_based",
+            "department": "crm"
           }
         },
         "subject": {

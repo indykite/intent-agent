@@ -23,15 +23,14 @@
       },
       {
         "action": {
-          "name": "CAN_ACCESS"
+          "name": "CAN_ACCESS_FOLDER_DOCUMENT"
         },
         "resource": {
           "type": "Document"
         },
         "context": {
           "parameters": {
-            "action_derivation_rule": "policy_based",
-            "depends_on_previous_evaluations": true
+            "action_derivation_rule": "policy_based"
           }
         },
         "subject": {

@@ -6,7 +6,7 @@
     "evaluations": [
       {
         "action": {
-          "name": "CAN_RETRIEVE"
+          "name": "GET_PRICE"
         },
         "resource": {
           "type": "Quote",
@@ -14,7 +14,6 @@
         },
         "context": {
           "parameters": {
-            "attribute": "price",
             "action_derivation_rule": "policy_based"
           }
         },

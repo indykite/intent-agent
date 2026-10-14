@@ -6,7 +6,7 @@
     "evaluations": [
       {
         "action": {
-          "name": "CAN_ACCESS"
+          "name": "CAN_QUERY_CUSTOMER"
         },
         "resource": {
           "id": "alison",
@@ -28,16 +28,15 @@
           "type": "Customer"
         },
         "action": {
-          "name": "CAN_ACCESS"
+          "name": "HAS"
         },
         "resource": {
-          "id": "tier_1",
           "type": "AccountTier"
         },
         "context": {
           "parameters": {
-            "depends_on_previous_evaluations": true,
-            "action_derivation_rule": "policy_based"
+            "action_derivation_rule": "policy_based",
+            "tier": "tier_1"
           }
         }
       }
