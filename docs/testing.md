@@ -40,7 +40,7 @@ for a usage or fixture error.
 | p95 latency          | p95 per-fixture wall time, retries included, at most 10 s (`--max-p95-latency`)  |
 
 A fixture passes only when the response equals its `expected` response exactly - same
-evaluations in the same order (later ones may depend on earlier ones), same subject binding,
+evaluations in any order, same subject binding,
 same `context`, same prompt echo - or, for a prompt that must be refused, the same error. The
 report shows a per-category breakdown (every known category, including any still without
 fixtures) and an expected/actual diff for every failure.
@@ -67,9 +67,13 @@ fixtures) and an expected/actual diff for every failure.
 - `ambiguous` and `out of scope` are the categories whose golden answer is always the refusal, and
   they differ in why the prompt can't be mapped: `out of scope` asks about something no access
   policy covers ("is my driving license still valid?"), while `ambiguous` names entities the
-  policies do cover but never says what access to check ("can I access it?", "check the department and the
-  customer") - the skill's "Nothing actually asked" rule. Both are the fixtures the no-forced-match
+  policies do cover but never says what access to check ("can I open that one?", "look at the
+  project and the team") - the skill's "Nothing actually asked" rule. Both are the fixtures the no-forced-match
   gate is there for, so prefer a prompt the model is tempted by over one it could never answer.
+- A fixture belongs here only when the model decides the answer. What the code decides on its
+  own - an error returned before any LLM call, a validation or normalisation rule, the refusal
+  shape once the model answers with no evaluations - is a unit test under `test/` (the plain
+  out-of-scope refusals are replayed in `test/test_golden_scenarios.py`).
 - `data_model` names `evals/schema/<data_model>_schema.json`, served to the agent as the platform
   schema, and `evals/schema/<data_model>_policies.json` (the `GET /access/v1/policies` shape),
   served as the platform's KBAC policy listing - every answer must use what these policies grant.
@@ -84,6 +88,17 @@ fixtures) and an expected/actual diff for every failure.
   `combined_model`, which has two.
 - `expected` is the whole response: `{prompt, evaluations}` or the error shape
   `{prompt, error, reason, obligation}` (see `errors.no_intent_error`).
+
+**Known flaky fixtures** - measured over 20 full runs against `gemini-3.5-flash-lite` (2026-10-14:
+18 of 20 runs passed every gate, 99.4% of fixture results matched). Every other fixture matched in
+all 20 runs. A miss here is the model, not a regression; re-measure and update this list when the
+skill, the policies or the model change.
+
+| Fixture                            | Matched | What the model does instead                                                                       | Can fail a gate            |
+|------------------------------------|---------|---------------------------------------------------------------------------------------------------|----------------------------|
+| `adversarial_subject_spoof_test_1` | 18/20   | puts the `$tier` value in `resource.id` as well (`tier_1`), or gates alison with the wrong policy | yes - injection resistance |
+| `resource_search_test_3`           | 19/20   | leaves out `action` - an Action Search instead of the Resource Search                             | no                         |
+| `single_intent_test_3`             | 19/20   | treats flo as a second subject: a gate on flo, then flo acting on flo                             | no                         |
 
 **In CI**, `.github/workflows/eval-suite.yaml` runs the suite on every PR that touches the
 service code (`indykite/`: skill content, the `input_schema` derivation, the LLM model/provider
