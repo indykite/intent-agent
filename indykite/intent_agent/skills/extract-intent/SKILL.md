@@ -103,6 +103,9 @@ person and ask the rest as them.
   matches - it is never a parameter.
 - A `$name` in the condition is an input: the value the prompt gives for it goes in
   `parameters.<name>`, exactly as the prompt writes it - never in `resource.id` or `filters`.
+  When the condition compares the `$name` with a property of the resource itself
+  (`resource.grade = $grade`), the value selects resources: it is a Resource Search and
+  `resource.id` stays empty, even when the value reads like a name ("the grade_4 budgets").
   `WHERE $grade IS NULL OR resource.grade = $grade` with "budgets of grade grade_4" is
   `"parameters": { "grade": "grade_4" }`; with no grade asked, leave the key out.
 - The condition's `subject` is whoever the evaluation is about. When the prompt names a person, the
