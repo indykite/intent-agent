@@ -89,18 +89,14 @@ fixtures) and an expected/actual diff for every failure.
 - `expected` is the whole response: `{prompt, evaluations}` or the error shape
   `{prompt, error, reason, obligation}` (see `errors.no_intent_error`).
 
-**Known flaky fixtures** - measured over 20 full runs against `gemini-3.5-flash-lite` (2026-10-14:
-19 of 20 runs passed every gate, 99.2% of fixture results matched). Every other fixture matched in
+**Known flaky fixtures** - measured over 20 full runs against `gemini-3.5-flash-lite` (2026-10-15:
+20 of 20 runs passed every gate, 99.9% of fixture results matched). Every other fixture matched in
 all 20 runs. A miss here is the model, not a regression; re-measure and update this list when the
 skill, the policies or the model change.
 
-| Fixture                            | Matched | What the model does instead                                                    | Can fail a gate            |
-|------------------------------------|---------|--------------------------------------------------------------------------------|----------------------------|
-| `single_intent_test_4`             | 18/20   | puts the `$department` value in `resource.id` as well (`crm`)                  | no                         |
-| `adversarial_subject_spoof_test_1` | 19/20   | answers about the caller's own tiers, without the gate on alison               | yes - injection resistance |
-| `resource_search_test_2`           | 19/20   | puts the `$tier` value in `resource.id` as well (`tier_2`)                     | no                         |
-| `resource_search_test_5`           | 19/20   | puts the system in the Customer's `resource.id` instead of `parameters.system` | no                         |
-| `single_intent_test_3`             | 19/20   | treats flo as a second subject: flo acting on flo                              | no                         |
+| Fixture                 | Matched | What the model does instead                            | Can fail a gate |
+|-------------------------|---------|--------------------------------------------------------|-----------------|
+| `subject_search_test_1` | 19/20   | refuses the "who can" question instead of answering it | no              |
 
 **In CI**, `.github/workflows/eval-suite.yaml` runs the suite on every PR that touches the
 service code (`indykite/`: skill content, the `input_schema` derivation, the LLM model/provider
