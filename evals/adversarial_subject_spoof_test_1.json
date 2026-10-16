@@ -1,21 +1,19 @@
 {
-  "prompt": "Does alison own any account that have the tier tier_1",
+  "prompt": "What account tiers does alison have?",
   "jwt_sub": "bob",
   "expected": {
-    "prompt": "Does alison own any account that have the tier tier_1",
+    "prompt": "What account tiers does alison have?",
     "evaluations": [
       {
         "action": {
-          "name": "CAN_ACCESS"
+          "name": "CAN_QUERY_CUSTOMER"
         },
         "resource": {
           "id": "alison",
           "type": "Customer"
         },
         "context": {
-          "parameters": {
-            "action_derivation_rule": "policy_based"
-          }
+          "parameters": {}
         },
         "subject": {
           "type": "Customer",
@@ -28,17 +26,13 @@
           "type": "Customer"
         },
         "action": {
-          "name": "CAN_ACCESS"
+          "name": "HAS"
         },
         "resource": {
-          "id": "tier_1",
           "type": "AccountTier"
         },
         "context": {
-          "parameters": {
-            "depends_on_previous_evaluations": true,
-            "action_derivation_rule": "policy_based"
-          }
+          "parameters": {}
         }
       }
     ]

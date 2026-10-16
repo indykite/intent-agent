@@ -6,17 +6,14 @@
     "evaluations": [
       {
         "action": {
-          "name": "REPORTS_TO"
+          "name": "REPORTS_TO_INDIRECTLY"
         },
         "resource": {
           "id": "flo",
           "type": "User"
         },
         "context": {
-          "parameters": {
-            "direct": false,
-            "action_derivation_rule": "policy_based"
-          }
+          "parameters": {}
         },
         "subject": {
           "type": "User",

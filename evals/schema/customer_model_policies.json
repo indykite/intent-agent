@@ -9,7 +9,7 @@
           "type": "Customer"
         },
         "actions": [
-          "CAN_ACCESS"
+          "CAN_QUERY_CUSTOMER"
         ],
         "resource": {
           "type": "Customer"
@@ -29,13 +29,33 @@
           "type": "Customer"
         },
         "actions": [
-          "CAN_ACCESS"
+          "HAS"
         ],
         "resource": {
           "type": "AccountTier"
         },
         "condition": {
-          "cypher": "MATCH (subject:Customer)-[:OWNS]->(:Account)-[:IS_TIER]->(resource:AccountTier)"
+          "cypher": "MATCH (subject:Customer)-[:OWNS]->(:Account)-[:IS_TIER]->(resource:AccountTier) WHERE $tier IS NULL OR resource.tier = $tier"
+        }
+      },
+      "tags": []
+    },
+    {
+      "policy": {
+        "meta": {
+          "policy_version": "2.0-kbac"
+        },
+        "subject": {
+          "type": "Customer"
+        },
+        "actions": [
+          "HAS_CLOSED_ACCOUNT_TIER"
+        ],
+        "resource": {
+          "type": "AccountTier"
+        },
+        "condition": {
+          "cypher": "MATCH (subject:Customer)-[:OWNS]->(account:Account)-[:IS_TIER]->(resource:AccountTier) WHERE account.status = 'closed'"
         }
       },
       "tags": []

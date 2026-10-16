@@ -6,17 +6,14 @@
     "evaluations": [
       {
         "action": {
-          "name": "CAN_RETRIEVE"
+          "name": "GET_PRICE"
         },
         "resource": {
           "type": "Quote",
           "id": "stock_quote"
         },
         "context": {
-          "parameters": {
-            "attribute": "price",
-            "action_derivation_rule": "policy_based"
-          }
+          "parameters": {}
         },
         "subject": {
           "type": "User",

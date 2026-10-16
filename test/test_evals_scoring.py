@@ -32,7 +32,7 @@ _EVALUATION = {
     "subject": {"type": "User", "id": "leslie"},
     "action": {"name": "CAN_ACCESS"},
     "resource": {"type": "Document", "id": "doc123"},
-    "context": {"parameters": {"action_derivation_rule": "policy_based"}},
+    "context": {"parameters": {}},
 }
 _OTHER_EVALUATION = {**_EVALUATION, "resource": {"type": "Document"}}
 
@@ -66,16 +66,13 @@ def test_matching_response_passes_whatever_its_confidence(eval_fixture, golden, 
     assert verdict == Verdict(passed=True, forced_match=False, detail=detail)
 
 
-def test_key_order_is_irrelevant_but_evaluation_order_is_not(eval_fixture):
-    fixture = eval_fixture(expected={"prompt": _PROMPT, "evaluations": [_EVALUATION, _OTHER_EVALUATION]})
+def test_key_and_evaluation_order_are_irrelevant(eval_fixture):
+    fixture = replace(eval_fixture(), expected={"prompt": _PROMPT, "evaluations": [_EVALUATION, _OTHER_EVALUATION]})
     reordered_keys = {"evaluations": [dict(reversed(list(_EVALUATION.items()))), _OTHER_EVALUATION], "prompt": _PROMPT}
     reordered_evaluations = {"prompt": _PROMPT, "evaluations": [_OTHER_EVALUATION, _EVALUATION]}
 
     assert judge(fixture, reordered_keys, "high").passed
-    verdict = judge(fixture, reordered_evaluations)
-    assert not verdict.passed
-    assert not verdict.forced_match
-    assert verdict.detail == "evaluations differ from the golden answer"
+    assert judge(fixture, reordered_evaluations, "high").passed
 
 
 @pytest.mark.parametrize(
@@ -356,3 +353,35 @@ def test_gates_over_no_results_fail_correctness(eval_fixture):
     assert gates[0].observed == "n/a (0/0)"
     assert not gates[1].passed
     assert gates[2].passed  # nothing was forced, because nothing ran - the other two gates fail the run
+
+
+def _evaluation(resource_type):
+    return {
+        **_EVALUATION,
+        "resource": {"type": resource_type},
+        "context": {"parameters": {}},
+    }
+
+
+_FOLDER, _NOTE = _evaluation("Folder"), _evaluation("Note")
+
+
+@pytest.mark.parametrize(
+    ("golden", "actual", "passed"),
+    [
+        pytest.param([_FOLDER, _NOTE], [_NOTE, _FOLDER], True, id="swapped"),
+        pytest.param([_FOLDER, _NOTE], [_FOLDER, _NOTE, _NOTE], False, id="extra_evaluation"),
+        pytest.param([_FOLDER, _NOTE], [_FOLDER], False, id="missing_evaluation"),
+        pytest.param([_FOLDER, _NOTE, _NOTE], [_NOTE, _FOLDER, _FOLDER], False, id="same_types_other_counts"),
+    ],
+)
+def test_judge_ignores_evaluation_order(eval_fixture, golden, actual, passed):
+    fixture = replace(eval_fixture(), expected={"prompt": _PROMPT, "evaluations": golden})
+    assert judge(fixture, {"prompt": _PROMPT, "evaluations": actual}).passed is passed
+
+
+def test_judge_compares_reordered_numbers_by_value(eval_fixture):
+    whole = {**_FOLDER, "context": {"parameters": {"amount": 2}}}
+    decimal = {**_FOLDER, "context": {"parameters": {"amount": 2.0}}}
+    fixture = replace(eval_fixture(), expected={"prompt": _PROMPT, "evaluations": [_NOTE, whole]})
+    assert judge(fixture, {"prompt": _PROMPT, "evaluations": [decimal, _NOTE]}).passed

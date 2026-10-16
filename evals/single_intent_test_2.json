@@ -13,10 +13,7 @@
           "type": "User"
         },
         "context": {
-          "parameters": {
-            "direct": true,
-            "action_derivation_rule": "policy_based"
-          }
+          "parameters": {}
         },
         "subject": {
           "type": "User",

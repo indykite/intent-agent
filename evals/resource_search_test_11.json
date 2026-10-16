@@ -6,15 +6,13 @@
     "evaluations": [
       {
         "action": {
-          "name": "CAN_ACCESS"
+          "name": "HAS_CLOSED_ACCOUNT_TIER"
         },
         "resource": {
           "type": "AccountTier"
         },
         "context": {
-          "parameters": {
-            "action_derivation_rule": "policy_based"
-          }
+          "parameters": {}
         },
         "subject": {
           "type": "Customer",
@@ -23,7 +21,7 @@
       }
     ]
   },
-  "confidence": "low",
+  "confidence": "high",
   "category": "resource search",
   "data_model": "customer_model"
 }

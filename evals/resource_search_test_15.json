@@ -1,0 +1,45 @@
+{
+  "prompt": "Does alison own any account that have the tier tier_1",
+  "jwt_sub": "bob",
+  "expected": {
+    "prompt": "Does alison own any account that have the tier tier_1",
+    "evaluations": [
+      {
+        "action": {
+          "name": "CAN_QUERY_CUSTOMER"
+        },
+        "resource": {
+          "id": "alison",
+          "type": "Customer"
+        },
+        "context": {
+          "parameters": {}
+        },
+        "subject": {
+          "type": "Customer",
+          "id": "bob"
+        }
+      },
+      {
+        "subject": {
+          "id": "alison",
+          "type": "Customer"
+        },
+        "action": {
+          "name": "HAS"
+        },
+        "resource": {
+          "type": "AccountTier"
+        },
+        "context": {
+          "parameters": {
+            "tier": "tier_1"
+          }
+        }
+      }
+    ]
+  },
+  "confidence": "high",
+  "category": "resource search",
+  "data_model": "customer_model"
+}

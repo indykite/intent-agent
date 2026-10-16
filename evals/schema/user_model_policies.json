@@ -29,13 +29,13 @@
           "type": "User"
         },
         "actions": [
-          "WORKS_IN_PARENT_DEPT"
+          "WORKS_IN"
         ],
         "resource": {
           "type": "Department"
         },
         "condition": {
-          "cypher": "MATCH (subject:User) MATCH (resource:Department)"
+          "cypher": "MATCH (subject:User)-[:WORKS_IN]->(resource:Department)"
         }
       },
       "tags": []
@@ -49,7 +49,27 @@
           "type": "User"
         },
         "actions": [
-          "CAN_ACCESS"
+          "WORKS_UNDER_DEPARTMENT"
+        ],
+        "resource": {
+          "type": "Department"
+        },
+        "condition": {
+          "cypher": "MATCH (subject:User)-[:WORKS_IN]->(:Department)<-[:CONTAINS*1..]-(resource:Department) WHERE $department IS NULL OR resource.name = $department"
+        }
+      },
+      "tags": []
+    },
+    {
+      "policy": {
+        "meta": {
+          "policy_version": "2.0-kbac"
+        },
+        "subject": {
+          "type": "User"
+        },
+        "actions": [
+          "CAN_QUERY_USER"
         ],
         "resource": {
           "type": "User"
@@ -75,7 +95,7 @@
           "type": "Folder"
         },
         "condition": {
-          "cypher": "MATCH (subject:User) MATCH (resource:Folder)"
+          "cypher": "MATCH (subject:User)-[:WORKS_IN]->(:Department)-[:CAN_ACCESS]->(resource:Folder)"
         }
       },
       "tags": []
@@ -95,7 +115,27 @@
           "type": "Quote"
         },
         "condition": {
-          "cypher": "MATCH (subject:User) MATCH (resource:Quote)"
+          "cypher": "MATCH (subject:User)-[:WORKS_IN]->(:Department)-[:CAN_RETRIEVE]->(resource:Quote)"
+        }
+      },
+      "tags": []
+    },
+    {
+      "policy": {
+        "meta": {
+          "policy_version": "2.0-kbac"
+        },
+        "subject": {
+          "type": "User"
+        },
+        "actions": [
+          "GET_PRICE"
+        ],
+        "resource": {
+          "type": "Quote"
+        },
+        "condition": {
+          "cypher": "MATCH (subject:User)-[:WORKS_IN]->(:Department)-[:CAN_RETRIEVE]->(resource:Quote) RETURN resource.price"
         }
       },
       "tags": []
@@ -129,7 +169,7 @@
           "type": "User"
         },
         "actions": [
-          "CAN_ACCESS"
+          "CAN_ACCESS_FOLDER_DOCUMENT"
         ],
         "resource": {
           "type": "Document"
@@ -155,7 +195,27 @@
           "type": "User"
         },
         "condition": {
-          "cypher": "MATCH (subject:User)-[:REPORTS_TO*1..]->(resource:User)"
+          "cypher": "MATCH (subject:User)-[:REPORTS_TO]->(resource:User)"
+        }
+      },
+      "tags": []
+    },
+    {
+      "policy": {
+        "meta": {
+          "policy_version": "2.0-kbac"
+        },
+        "subject": {
+          "type": "User"
+        },
+        "actions": [
+          "REPORTS_TO_INDIRECTLY"
+        ],
+        "resource": {
+          "type": "User"
+        },
+        "condition": {
+          "cypher": "MATCH (subject:User)-[:REPORTS_TO*2..]->(resource:User)"
         }
       },
       "tags": []

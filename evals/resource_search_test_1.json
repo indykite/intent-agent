@@ -1,20 +1,18 @@
 {
-  "prompt": "What account tiers do my account span?",
+  "prompt": "What account tiers does my account span?",
   "jwt_sub": "bob",
   "expected": {
-    "prompt": "What account tiers do my account span?",
+    "prompt": "What account tiers does my account span?",
     "evaluations": [
       {
         "action": {
-          "name": "CAN_ACCESS"
+          "name": "HAS"
         },
         "resource": {
           "type": "AccountTier"
         },
         "context": {
-          "parameters": {
-            "action_derivation_rule": "policy_based"
-          }
+          "parameters": {}
         },
         "subject": {
           "type": "Customer",

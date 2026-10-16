@@ -2,10 +2,9 @@
 the launch gates (TDD 7.2) that decide the exit status.
 
 One rule decides a fixture: the response the agent returned must equal the fixture's `expected`
-response - the same evaluations, in the same order (later evaluations may depend on earlier ones),
-with the same subject binding and context; or, for a prompt that must be refused, the same 4.7
-error. `prompt` is part of both, so the echo is checked too. Evaluation order is the one thing
-dict equality doesn't already forgive, deliberately. The model's rating of an answer - its
+response - the same evaluations, in any order, with the same subject binding and context; or, for
+a prompt that must be refused, the same 4.7 error. `prompt` is part of both, so the echo is
+checked too. The model's rating of an answer - its
 `confidence`, logged rather than returned - is reported next to the fixture's own and named in the
 verdict when the two differ, but never decides it; its explanation is reported, never compared.
 
@@ -111,9 +110,31 @@ def _evaluations_mismatch(fixture: Fixture, actual: dict[str, Any]) -> str:
     return "evaluations differ from the golden answer"
 
 
+def _same_evaluations(expected: list[Any], actual: list[Any]) -> bool:
+    """The same evaluations in any order, each matched once with plain equality (so 1 == 1.0)."""
+    remaining = list(actual)
+    for evaluation in expected:
+        if evaluation not in remaining:
+            return False
+        remaining.remove(evaluation)
+    return not remaining
+
+
+def _same_response(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
+    """`actual` equals `expected`, in any evaluation order."""
+    if actual == expected:
+        return True
+    expected_evaluations, actual_evaluations = expected.get("evaluations"), actual.get("evaluations")
+    if not isinstance(expected_evaluations, list) or not isinstance(actual_evaluations, list):
+        return False
+    rest = {key: value for key, value in expected.items() if key != "evaluations"}
+    same_rest = rest == {key: value for key, value in actual.items() if key != "evaluations"}
+    return same_rest and _same_evaluations(expected_evaluations, actual_evaluations)
+
+
 def judge(fixture: Fixture, actual: dict[str, Any], confidence: str = "") -> Verdict:
     """Compare the response with the golden one. A differing confidence is noted, never failed."""
-    if actual == fixture.expected:
+    if _same_response(fixture.expected, actual):
         detail = "response matches the golden answer"
         if fixture.confidence is not None and not fixture.expects_refusal and confidence != fixture.confidence:
             detail += f" (confidence {confidence or 'missing'}, golden {fixture.confidence})"

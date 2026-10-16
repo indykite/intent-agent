@@ -6,16 +6,14 @@
     "evaluations": [
       {
         "action": {
-          "name": "CAN_ACCESS"
+          "name": "CAN_QUERY_CUSTOMER"
         },
         "resource": {
           "type": "Customer",
           "id": "alison"
         },
         "context": {
-          "parameters": {
-            "action_derivation_rule": "policy_based"
-          }
+          "parameters": {}
         },
         "subject": {
           "type": "Customer",
@@ -30,10 +28,7 @@
           "type": "InvestmentCategory"
         },
         "context": {
-          "parameters": {
-            "depends_on_previous_evaluations": true,
-            "action_derivation_rule": "policy_based"
-          }
+          "parameters": {}
         },
         "subject": {
           "type": "Customer",
