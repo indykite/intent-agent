@@ -50,8 +50,8 @@ class AuditMessage(BaseModel):
     llm_model: str
     latency_ms: int
     validation_retries: int
-    # None means no policy fetch was ever attempted for this request (review) - the fail-fast
-    # paths in run_extraction that never reach get_cached_policies at all (schema unavailable,
+    # None means no policy fetch was ever attempted for this request - the fail-fast paths in
+    # run_extraction that never reach get_cached_policies at all (schema unavailable,
     # a timeout mid-schema-fetch). Distinct from False (attempted and succeeded, possibly with
     # zero policies) - collapsing "never attempted" into False would make it indistinguishable
     # from a real success, understating how often policy fetches actually happen versus how
@@ -77,8 +77,8 @@ FIELD_NAMES: tuple[str, ...] = tuple(AuditMessage.model_fields)
 def _cell(value: object) -> str:
     """Stringify one field value for CSV/TXT output.
 
-    None (review: policy_fetch_failed's "no fetch attempted" state) renders as "" rather than
-    falling through to str(None) -> the literal text "None", inconsistent with every other
+    None (policy_fetch_failed's "no fetch attempted" state) renders as "" rather than falling
+    through to str(None) -> the literal text "None", inconsistent with every other
     "not applicable" field here (schema_version/policy_version already use "" for their own
     unavailable case) and liable to break a downstream CSV consumer expecting this column to be
     strictly "True"/"False".
@@ -113,8 +113,8 @@ def schema_version(schema: Mapping[str, Any] | None) -> str:
 def policy_version(policies: Sequence[Mapping[str, Any]] | None) -> str:
     """Hash of the fetched KBAC policies - "what policies were in effect for this
     request", schema_version's companion field. Same stability guarantee regardless of
-    key/entry order - unlike schema_version, this also sorts the top-level list itself
-    (review): sort_keys=True alone only canonicalizes dict keys within each entry, so if the
+    key/entry order - unlike schema_version, this also sorts the top-level list itself:
+    sort_keys=True alone only canonicalizes dict keys within each entry, so if the
     endpoint ever returns the same policies in a different order, the naive approach would
     still hash to a different value for identical policy state. Each entry is first
     canonicalized on its own (sort_keys=True), then the entries themselves are sorted by that

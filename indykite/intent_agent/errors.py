@@ -170,8 +170,8 @@ def llm_timeout_error(prompt: str) -> dict[str, str]:
     """Build the 4.7 error shape for a timeout during the LLM interaction phase of
     run_extraction: a single call past LLM_TIMEOUT_SECONDS, or the whole tool-call/retry
     sequence past REQUEST_TIMEOUT_SECONDS. The server log tells the two apart; the caller's
-    remedy is the same either way. Reserved for that phase specifically (review, ENG-9671) -
-    the deadline firing during the schema or policy fetch instead is request_timeout_error,
+    remedy is the same either way. Reserved for that phase specifically (ENG-9671) - the
+    deadline firing during the schema or policy fetch instead is request_timeout_error,
     since "the model did not respond" would misattribute a slow platform dependency to Gemini.
     """
     return error_response(
@@ -183,8 +183,8 @@ def llm_timeout_error(prompt: str) -> dict[str, str]:
 
 def request_timeout_error(prompt: str) -> dict[str, str]:
     """Build the 4.7 error shape for REQUEST_TIMEOUT_SECONDS firing during the schema or policy
-    fetch phase of run_extraction (review, ENG-9671), before the LLM interaction it precedes
-    ever starts - genuinely distinct from llm_timeout_error (the model itself was slow) and
+    fetch phase of run_extraction (ENG-9671), before the LLM interaction it precedes ever
+    starts - genuinely distinct from llm_timeout_error (the model itself was slow) and
     from schema_unavailable_error (the fetch tried and failed outright, not just ran out of
     the request's own time budget while a platform dependency was slow). The remedy is the
     same as llm_timeout_error's either way, so only the reason differs.

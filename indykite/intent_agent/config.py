@@ -30,7 +30,7 @@ _AuditFileRotationStrategy = Literal["time", "size", "size-and-time"]
 
 
 class StorageBackendKind(StrEnum):
-    """Shared by cache_backend and a2a_task_store_backend - same memory/redis toggle shape."""
+    """The schema/policy cache's memory/redis toggle (cache_backend)."""
 
     MEMORY = "memory"
     REDIS = "redis"
@@ -55,12 +55,9 @@ class Settings(BaseSettings):
 
     gemini_api_key: SecretStr = Field(min_length=1)
     gemini_model: str = Field(min_length=1, default="gemini-3.5-flash-lite")
-    # Size of IntentAgent's dedicated schema/policy-fetch thread pool (review: was a hardcoded
-    # module constant). 8 is not a request-concurrency limit - it only bounds how many
-    # schema/policy fetches can be in flight at once; a slow/unreachable platform ties up a
-    # worker for its own timeout x retry course (see IntentAgent._run_in_fetch_executor), so
-    # this is sized to absorb a burst of concurrent cold caches without spending as many threads
-    # as the LLM client's own connection pool, not to cap overall request throughput.
+    # Size of IntentAgent's dedicated schema/policy-fetch thread pool, not a request-concurrency
+    # limit - a stuck fetch ties up one worker for its own timeout x retry course (see
+    # _run_in_fetch_executor), so this just absorbs a burst of concurrent cold caches.
     fetch_executor_max_workers: PositiveInt = 8
     tool_call_max_iterations: PositiveInt = 5
     schema_preview_chars: PositiveInt = 12000
@@ -99,20 +96,11 @@ class Settings(BaseSettings):
 
     cache_backend: StorageBackendKind = StorageBackendKind.MEMORY
     redis_url: RedisDsn | None = None
-
-    # A2A task store/queue manager (app.py's RedisTaskStore/RedisQueueManager vs. the a2a-sdk's
-    # own InMemoryTaskStore) - same memory/redis toggle shape as cache_backend/redis_url above.
-    a2a_task_store_backend: StorageBackendKind = StorageBackendKind.MEMORY
-    a2a_task_store_url: RedisDsn | None = None
-    a2a_task_store_ttl_minutes: PositiveFloat = 1440.0
-    # How long one RedisQueueManager dequeue_event() Streams read blocks waiting for a new
-    # entry before returning empty and retrying.
-    redis_queue_dequeue_block_seconds: PositiveFloat = 1.0
-    # How long an unacked Streams entry sits idle before dequeue_event() reclaims it from a
-    # crashed consumer - too short risks stealing a live consumer's still-in-flight work.
-    redis_queue_reclaim_min_idle_seconds: PositiveFloat = 30.0
-
     redis_socket_timeout_seconds: PositiveFloat = 2.0
+
+    # EvictingTaskStore (app.py): bounds how long a finished task's memory is held, since the
+    # SDK's own InMemoryTaskStore never evicts at all.
+    task_store_terminal_ttl_minutes: PositiveFloat = 5.0
 
     introspect_url: HttpUrl
     introspect_client_id: str = Field(min_length=1)
@@ -228,10 +216,10 @@ class Settings(BaseSettings):
     def _reject_fetch_timeouts_over_request_timeout(self) -> "Settings":
         """Reject a schema/policy fetch timeout longer than the whole-request deadline - same
         dead-config reasoning as _reject_llm_timeout_over_request_timeout, now that both fetches
-        run inside request_timeout_seconds too (ENG-9671, review).
+        run inside request_timeout_seconds too (ENG-9671).
 
-        Deliberately per-field only, not a combined/retry-multiplied budget (review: a prior
-        version of this validator also rejected schema_fetch_timeout_seconds +
+        Deliberately per-field only, not a combined/retry-multiplied budget: a prior version
+        of this validator also rejected schema_fetch_timeout_seconds +
         policy_fetch_timeout_seconds x policy_fetch_retry_attempts exceeding
         request_timeout_seconds - reverted, since that check was inconsistent with this exact
         sibling validator and every other budget knob here: LLM_TIMEOUT_SECONDS is checked the
@@ -256,28 +244,9 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def _reject_queue_block_at_or_over_socket_timeout(self) -> "Settings":
-        """RedisQueueManager's XREADGROUP BLOCK shares the task store's Redis client, so this
-        is a hard ceiling on it regardless of BLOCK - `>=` since it's a real race, not nesting."""
-        if self.redis_queue_dequeue_block_seconds >= self.redis_socket_timeout_seconds:
-            message = "REDIS_QUEUE_DEQUEUE_BLOCK_SECONDS must be less than REDIS_SOCKET_TIMEOUT_SECONDS"
-            raise ValueError(message)
-        return self
-
-    @model_validator(mode="after")
     def _require_redis_url_for_redis_backend(self) -> "Settings":
         """Reject CACHE_BACKEND=redis with no REDIS_URL - there'd be nothing to connect to."""
         if self.cache_backend == StorageBackendKind.REDIS and self.redis_url is None:
             message = "REDIS_URL is required when CACHE_BACKEND is 'redis'"
-            raise ValueError(message)
-        return self
-
-    @model_validator(mode="after")
-    def _require_a2a_task_store_url_for_redis_backend(self) -> "Settings":
-        """Reject A2A_TASK_STORE_BACKEND=redis with no A2A_TASK_STORE_URL - mirrors
-        _require_redis_url_for_redis_backend above.
-        """
-        if self.a2a_task_store_backend == StorageBackendKind.REDIS and self.a2a_task_store_url is None:
-            message = "A2A_TASK_STORE_URL is required when A2A_TASK_STORE_BACKEND is 'redis'"
             raise ValueError(message)
         return self

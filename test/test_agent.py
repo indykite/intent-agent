@@ -7,7 +7,7 @@ import httpx2
 import jwt
 import pytest
 from langchain_core.messages import HumanMessage, ToolMessage
-from redis.asyncio.connection import SSLConnection
+from redis.connection import SSLConnection
 from starlette.testclient import TestClient
 
 from indykite.intent_agent.agent import IntentAgent, RequestSubject, _policy_block
@@ -31,7 +31,7 @@ from indykite.intent_agent.errors import (
     validation_feedback_error,
 )
 from indykite.intent_agent.input_schema import build_input_schema, render_schema_summary
-from indykite.intent_agent.schema import build_schema_backend
+from indykite.intent_agent.schema import build_cache_backend
 from indykite.intent_agent.skills import discover_skills
 from indykite.intent_agent.subject_binding import (
     PolicyContext,
@@ -109,16 +109,15 @@ def _load_empty_schema_fixture():
 def _fake_schema_client(mocker, **kwargs):
     """A fake SchemaClient - run_extraction only ever calls get_cached() on it (dispatched
     through the fetch executor), never peek_cached(), so every behavior a test needs must be
-    configured via kwargs here (typically get_cached=...). aclose defaults to an AsyncMock -
-    IntentAgent.aclose() awaits it, and a build_app() test drives that through the ASGI
-    lifespan on shutdown even when schema/policy fetching itself is never exercised.
+    configured via kwargs here (typically get_cached=...). Injecting a fake client means
+    IntentAgent never builds a real cache backend, so there is nothing for aclose() to close.
     """
-    return mocker.Mock(aclose=mocker.AsyncMock(), **kwargs)
+    return mocker.Mock(**kwargs)
 
 
 def _fake_policy_client(mocker, **kwargs):
     """A fake PolicyClient - see _fake_schema_client."""
-    return mocker.Mock(aclose=mocker.AsyncMock(), **kwargs)
+    return mocker.Mock(**kwargs)
 
 
 def test_discovers_extract_intent_skill():
@@ -134,7 +133,6 @@ def test_build_app_registers_routes(monkeypatch, mocker):
     fake_schema_client = mocker.Mock(
         preload=mocker.Mock(),
         get_cached=mocker.Mock(return_value=_load_schema_fixture()),
-        aclose=mocker.AsyncMock(),
     )
 
     app, agent = build_app(settings, schema_client=fake_schema_client, audit_sender=_fake_audit_sender(mocker))
@@ -147,18 +145,16 @@ def test_build_app_registers_routes(monkeypatch, mocker):
 def test_build_app_closes_audit_sender_on_shutdown(monkeypatch, mocker):
     """The app's lifespan closes the audit sender on shutdown - that is what drains a buffered
     (AUDIT_ASYNC) queue before the process exits, so nothing audited is lost on a rollout. It
-    also shuts down the agent's own _fetch_executor (review) - each IntentAgent owns its own,
-    rather than sharing one process-wide singleton (review: a shared one would let one app's
+    also shuts down the agent's own _fetch_executor - each IntentAgent owns its own,
+    rather than sharing one process-wide singleton (a shared one would let one app's
     shutdown break every other IntentAgent/build_app instance in the same process, since
     ThreadPoolExecutor.shutdown() is not reversible), so asserting on this one instance's
-    executor cannot affect any other test. It also closes the schema/policy cache backends,
-    which is what actually closes a CACHE_BACKEND=redis client.
+    executor cannot affect any other test. With fakes injected for both clients here, IntentAgent
+    never builds a real cache backend (see test_aclose_closes_the_shared_cache_backend).
     """
     settings = _full_settings(monkeypatch)
-    fake_schema_client = mocker.Mock(
-        preload=mocker.Mock(), get_cached=mocker.Mock(return_value=_load_schema_fixture()), aclose=mocker.AsyncMock()
-    )
-    fake_policy_client = mocker.Mock(aclose=mocker.AsyncMock())
+    fake_schema_client = mocker.Mock(preload=mocker.Mock(), get_cached=mocker.Mock(return_value=_load_schema_fixture()))
+    fake_policy_client = mocker.Mock()
     sender = _fake_audit_sender(mocker)
     app, agent = build_app(
         settings, schema_client=fake_schema_client, policy_client=fake_policy_client, audit_sender=sender
@@ -166,13 +162,28 @@ def test_build_app_closes_audit_sender_on_shutdown(monkeypatch, mocker):
 
     with TestClient(app):
         sender.close.assert_not_awaited()
-        fake_schema_client.aclose.assert_not_awaited()
-        fake_policy_client.aclose.assert_not_awaited()
         assert not agent._fetch_executor._shutdown
     sender.close.assert_awaited_once()
-    fake_schema_client.aclose.assert_awaited_once()
-    fake_policy_client.aclose.assert_awaited_once()
     assert agent._fetch_executor._shutdown
+
+
+def test_aclose_closes_the_shared_cache_backend(monkeypatch, mocker):
+    """IntentAgent.aclose() must close the one real cache backend it builds and shares between
+    SchemaClient and PolicyClient - the path test_build_app_closes_audit_sender_on_shutdown
+    (fakes injected for both) never reaches.
+    """
+    monkeypatch.setenv("CACHE_BACKEND", "redis")
+    monkeypatch.setenv("REDIS_URL", "redis://redis.example.com:6379")
+    settings = _full_settings(monkeypatch)
+    agent = IntentAgent(settings, llm=mocker.Mock())
+    mocker.patch.object(agent._cache, "close", wraps=agent._cache.close)
+
+    assert agent._schema_client._cache is agent._cache
+    assert agent._policy_client._cache is agent._cache
+
+    asyncio.run(agent.aclose())
+
+    agent._cache.close.assert_called_once()
 
 
 def test_build_app_starts_when_schema_unavailable_at_cold_start(monkeypatch, mocker):
@@ -870,7 +881,7 @@ def test_normalize_intent_response_accepts_a_policy_action_end_to_end():
     ],
 )
 def test_normalize_intent_response_policy_fetch_failed_marker(fetch_failed, llm_supplied_value, expected_marker):
-    """policy_fetch_failed is a system-set flag, never the LLM's to produce (ENG-9671, review):
+    """policy_fetch_failed is a system-set flag, never the LLM's to produce (ENG-9671):
     context.parameters is an open object in the structured output, so the model could supply
     its own value there - it must never be trusted either way. A successful fetch strips it
     out even if the model set it to True (spoofing a failure that never happened); a failed
@@ -1099,8 +1110,6 @@ def _full_settings(monkeypatch):
     monkeypatch.setenv("AUDIT_FILE_STORAGE_PATH", "./.private/audit-never-created")
     monkeypatch.setenv("AUDIT_FILE_FORMAT", "json")
     monkeypatch.setenv("AUDIT_FILE_ROTATION_STRATEGY", "time")
-    # A2A_TASK_STORE_BACKEND defaults to "memory" (no Redis needed) - fine for these tests,
-    # which never exercise the task store/queue manager.
     return Settings(_env_file=None)
 
 
@@ -1109,13 +1118,13 @@ def _fake_audit_sender(mocker):
     return mocker.Mock(send=mocker.AsyncMock(), close=mocker.AsyncMock())
 
 
-def test_build_schema_backend_uses_memory_backend_by_default(monkeypatch):
+def test_build_cache_backend_uses_memory_backend_by_default(monkeypatch):
     """CACHE_BACKEND defaults to memory - the in-process Memory backend - with no REDIS_URL set."""
     settings = _full_settings(monkeypatch)
-    assert isinstance(build_schema_backend(settings), MemoryStorageBackend)
+    assert isinstance(build_cache_backend(settings), MemoryStorageBackend)
 
 
-def test_build_schema_backend_uses_redis_backend_when_configured(monkeypatch):
+def test_build_cache_backend_uses_redis_backend_when_configured(monkeypatch):
     """CACHE_BACKEND=redis must select the Redis-backed backend, passing REDIS_URL through as
     given (not decomposed into host/port) so username/password/db/TLS scheme survive.
     """
@@ -1123,7 +1132,7 @@ def test_build_schema_backend_uses_redis_backend_when_configured(monkeypatch):
     monkeypatch.setenv("CACHE_BACKEND", "redis")
     monkeypatch.setenv("REDIS_URL", redis_url)
     settings = _full_settings(monkeypatch)
-    backend = build_schema_backend(settings)
+    backend = build_cache_backend(settings)
     assert isinstance(backend, RedisStorageBackend)
     connection_kwargs = backend._client.connection_pool.connection_kwargs
     assert connection_kwargs["host"] == "redis.example.com"
@@ -1136,7 +1145,7 @@ def test_build_schema_backend_uses_redis_backend_when_configured(monkeypatch):
 
 def test_get_data_schema_tool_returns_cached_schema(monkeypatch, mocker):
     """The get_data_schema tool must return the exact schema snapshot it was built with, as
-    minified JSON - not an independently re-fetched one (review): run_extraction already used
+    minified JSON - not an independently re-fetched one: run_extraction already used
     this same snapshot to build the response schema's enums, so a fresh get_cached_schema()
     call here could return something the LLM's own enum and validate_evaluations were never
     built against.
@@ -1167,7 +1176,7 @@ def test_get_policies_tool_returns_the_request_snapshot(
     monkeypatch, mocker, policies, policy_fetch_failed, expected_json
 ):
     """The get_policies tool (ENG-9671) must return the exact policies snapshot it was built
-    with, as minified JSON - not an independently re-fetched one (review): run_extraction
+    with, as minified JSON - not an independently re-fetched one: run_extraction
     already used this same snapshot to build request.policy_context and the response schema's
     action enum, so a fresh get_cached_policies() call here could return a cache entry
     refreshed or evicted since, one that snapshot and validate_evaluations were never checked
@@ -1184,7 +1193,7 @@ def test_get_policies_tool_returns_the_request_snapshot(
 
 
 def test_get_policies_tool_logs_only_when_the_fetch_had_failed(monkeypatch, mocker, caplog):
-    """get_policies invoked against a failed fetch must log that server-side (review, High) -
+    """get_policies invoked against a failed fetch must log that server-side -
     keyed on policy_fetch_failed, not `policies is None`: PolicyClient can serve a real,
     non-None stale list even when the live fetch failed, so the log must still fire for that
     case, not just the "nothing to fall back on" one. The LLM still gets whatever policies
@@ -1304,7 +1313,7 @@ def test_run_extraction_fails_before_any_llm_call(monkeypatch, mocker, caplog, c
     assert json.loads(result.text) == expected_error("buy AAPL")
     assert result.outcome == Outcome.ERROR
     assert result.message == expected_error("buy AAPL")["reason"]
-    # None, not False (review): none of these three cases ever reach the policy-fetch phase, so
+    # None, not False: none of these three cases ever reach the policy-fetch phase, so
     # a fetch was never attempted at all - False would misrepresent that as a real success.
     assert result.policy_fetch_failed is None
     mock_ainvoke.assert_not_called()
@@ -1779,7 +1788,6 @@ def test_run_extraction_enforces_request_deadline_across_calls(monkeypatch, mock
         SCHEMA_FETCH_TIMEOUT_SECONDS=0.03,
         POLICY_FETCH_TIMEOUT_SECONDS=0.03,
         REDIS_SOCKET_TIMEOUT_SECONDS=0.03,
-        REDIS_QUEUE_DEQUEUE_BLOCK_SECONDS=0.02,
         POLICY_FETCH_RETRY_ATTEMPTS=1,
         TOOL_CALL_MAX_ITERATIONS=_UNREACHABLE_TOOL_BUDGET,
     )
@@ -1794,14 +1802,14 @@ def test_run_extraction_enforces_request_deadline_across_calls(monkeypatch, mock
 
 
 def test_run_extraction_timeout_mid_policy_fetch_reports_the_fetch_as_failed(monkeypatch, mocker):
-    """A request deadline firing while get_cached_policies() is still running (review) must not
+    """A request deadline firing while get_cached_policies() is still running must not
     report the audit's policy_context as a *successful* fetch that found no policies - it never
     finished at all. The real PolicyContext only replaces run_extraction's own default once that
     fetch actually returns, so a timeout mid-fetch falls back to the default instead; that
     default must itself already say fetch_failed=True, or the audit record would claim a policy
     fetch that never completed was healthy, with an empty policy hash to match.
 
-    The caller must also get request_timeout_error, not llm_timeout_error (review) - the model
+    The caller must also get request_timeout_error, not llm_timeout_error - the model
     was never even reached, so "The model did not respond in time." would misattribute a slow
     policy fetch to Gemini. schema_version is still reported, since the schema fetch that
     preceded this one already succeeded.
@@ -1811,7 +1819,6 @@ def test_run_extraction_timeout_mid_policy_fetch_reports_the_fetch_as_failed(mon
     monkeypatch.setenv("SCHEMA_FETCH_TIMEOUT_SECONDS", "0.005")
     monkeypatch.setenv("POLICY_FETCH_TIMEOUT_SECONDS", "0.005")
     monkeypatch.setenv("REDIS_SOCKET_TIMEOUT_SECONDS", "0.005")
-    monkeypatch.setenv("REDIS_QUEUE_DEQUEUE_BLOCK_SECONDS", "0.001")
     monkeypatch.setenv("POLICY_FETCH_RETRY_ATTEMPTS", "1")
     settings = _full_settings(monkeypatch)
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mocker.AsyncMock())))
@@ -1832,7 +1839,7 @@ def test_run_extraction_timeout_mid_policy_fetch_reports_the_fetch_as_failed(mon
 
 
 def test_run_extraction_timeout_mid_schema_fetch_reports_the_request_timeout(monkeypatch, mocker):
-    """A request deadline firing while get_cached_schema() is still running (review) must
+    """A request deadline firing while get_cached_schema() is still running must
     report request_timeout_error, not llm_timeout_error - the model was never even reached, so
     blaming it for a slow schema fetch would misattribute the failure. Unlike the mid-policy-
     fetch case, schema_version/policy_context are both still their unset defaults here: neither
@@ -1843,7 +1850,6 @@ def test_run_extraction_timeout_mid_schema_fetch_reports_the_request_timeout(mon
     monkeypatch.setenv("SCHEMA_FETCH_TIMEOUT_SECONDS", "0.005")
     monkeypatch.setenv("POLICY_FETCH_TIMEOUT_SECONDS", "0.005")
     monkeypatch.setenv("REDIS_SOCKET_TIMEOUT_SECONDS", "0.005")
-    monkeypatch.setenv("REDIS_QUEUE_DEQUEUE_BLOCK_SECONDS", "0.001")
     monkeypatch.setenv("POLICY_FETCH_RETRY_ATTEMPTS", "1")
     settings = _full_settings(monkeypatch)
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mocker.AsyncMock())))
@@ -1865,7 +1871,7 @@ def test_run_extraction_timeout_mid_schema_fetch_reports_the_request_timeout(mon
 def test_run_extraction_slow_schema_fetch_does_not_block_the_event_loop(monkeypatch, mocker):
     """SchemaClient/PolicyClient hit the platform over a synchronous httpx2.Client, so a
     slow/unreachable fetch run directly on the event loop would stall every concurrent request
-    this process is serving, not just this one (reported in review). Fetching via the
+    this process is serving, not just this one. Fetching via the
     dedicated _fetch_executor fixes that specific claim - proven here by a concurrent, unrelated
     coroutine completing well before the slow fetch does, rather than the whole loop stalling
     for its duration. (Python cannot preempt an already-running thread, so this request's own
@@ -1943,14 +1949,14 @@ def test_run_extraction_get_policies_tool_call_does_not_block_the_event_loop(mon
 
 def test_schema_and_policy_fetches_use_the_dedicated_fetch_executor(monkeypatch, mocker):
     """Schema/policy fetches must run on the agent's own dedicated _fetch_executor, not the
-    event loop's shared default one (review, ENG-9671): Python cannot preempt an already-running
+    event loop's shared default one (ENG-9671): Python cannot preempt an already-running
     synchronous call, so a stuck/unreachable endpoint's worker thread keeps running past this
     request's own REQUEST_TIMEOUT_SECONDS deadline. Enough concurrent requests hitting a
     genuinely down endpoint could otherwise pile up orphaned workers on the *shared* default
     executor and starve unrelated concurrent requests' tool calls and audit writes, which also
     use it - routing these two fetches through their own small, bounded pool instead contains
-    that pile-up to fetches specifically. Every IntentAgent owns its own such pool (review:
-    not a shared module-level one, see __init__'s docstring), so this drives it from a real
+    that pile-up to fetches specifically. Every IntentAgent owns its own such pool (not a
+    shared module-level one, see __init__'s docstring), so this drives it from a real
     instance rather than a module-level name.
     """
     settings = _full_settings(monkeypatch)
@@ -2057,7 +2063,6 @@ def test_build_app_starts_when_schema_not_yet_populated_at_cold_start(monkeypatc
     fake_schema_client = mocker.Mock(
         preload=mocker.Mock(),
         get_cached=mocker.Mock(return_value=empty_schema),
-        aclose=mocker.AsyncMock(),
     )
 
     app, agent = build_app(settings, schema_client=fake_schema_client, audit_sender=_fake_audit_sender(mocker))

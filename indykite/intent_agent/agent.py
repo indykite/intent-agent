@@ -40,8 +40,8 @@ from indykite.intent_agent.errors import (
     validation_feedback_error,
 )
 from indykite.intent_agent.input_schema import build_input_schema, render_schema_summary
-from indykite.intent_agent.policy import PolicyClient, build_policy_cache
-from indykite.intent_agent.schema import IkConnection, SchemaClient, build_schema_backend
+from indykite.intent_agent.policy import PolicyClient
+from indykite.intent_agent.schema import CacheConfig, IkConnection, SchemaClient, build_cache_backend
 from indykite.intent_agent.subject_binding import (
     PolicyContext,
     RequestSubject,
@@ -56,9 +56,9 @@ logger = logging.getLogger(__name__)
 
 
 class _Phase(StrEnum):
-    """Which of run_extraction's three sections was underway when a TimeoutError fired (review:
-    was three bare string literals) - see _timeout_result's docstring for why this needs to be
-    more specific than "the model". Values are the human-readable form logged/reported as-is
+    """Which of run_extraction's three sections was underway when a TimeoutError fired - see
+    _timeout_result's docstring for why this needs to be more specific than "the model".
+    Values are the human-readable form logged/reported as-is
     (e.g. via .capitalize()), not a separate code.
     """
 
@@ -139,7 +139,7 @@ def _policy_audit_fields(policy_context: PolicyContext | None) -> tuple[str, boo
     PolicyContext - None (for policy_context) when the result was built before any policy
     fetch was attempted (the fail-fast paths in run_extraction, before get_cached_policies is
     even called), same as schema_version defaulting to "" for those same paths. That case's
-    policy_fetch_failed is None too (review), not False - False means the fetch was actually
+    policy_fetch_failed is None too, not False - False means the fetch was actually
     attempted and succeeded, which "never attempted" is not, and collapsing the two would make
     an audit record indistinguishable from a real success it never was.
     """
@@ -274,7 +274,7 @@ class IntentAgent:
         schema, policies vary by the caller's subject_type, so there is nothing to bind them
         to until a request arrives.
 
-        `_fetch_executor` is owned by this instance, not a module-level singleton (review) - a
+        `_fetch_executor` is owned by this instance, not a module-level singleton - a
         shared one would tie every IntentAgent's schema/policy fetches to whichever instance's
         app.py lifespan happened to shut down first: ThreadPoolExecutor.shutdown() is not
         reversible, so a second app or embedded caller sharing that pool would fail with
@@ -290,19 +290,27 @@ class IntentAgent:
             temperature=0,
         )
         connection = IkConnection(str(settings.indykite_base_url), settings.ik_app_agent_key.get_secret_value())
+        # One shared backend for both clients, built only when at least one isn't injected
+        # (tests), so a fully-faked IntentAgent never opens a Redis connection it has no use for.
+        self._cache = build_cache_backend(settings) if schema_client is None or policy_client is None else None
         self._schema_client = schema_client or SchemaClient(
             connection,
             timeout_seconds=settings.schema_fetch_timeout_seconds,
-            cache=build_schema_backend(settings),
-            refresh_ttl_seconds=settings.schema_refresh_ttl_minutes * _SECONDS_PER_MINUTE,
-            executor=self._fetch_executor,
+            cache_config=CacheConfig(
+                cache=self._cache,
+                refresh_ttl_seconds=settings.schema_refresh_ttl_minutes * _SECONDS_PER_MINUTE,
+                executor=self._fetch_executor,
+            ),
         )
         self._policy_client = policy_client or PolicyClient(
             connection,
             timeout_seconds=settings.policy_fetch_timeout_seconds,
             retry_attempts=settings.policy_fetch_retry_attempts,
-            cache=build_policy_cache(settings),
-            refresh_ttl_seconds=settings.policy_refresh_ttl_minutes * _SECONDS_PER_MINUTE,
+            cache_config=CacheConfig(
+                cache=self._cache,
+                refresh_ttl_seconds=settings.policy_refresh_ttl_minutes * _SECONDS_PER_MINUTE,
+                executor=self._fetch_executor,
+            ),
         )
         self.discovered_skills = skills.discover_skills()
         self.system_prompt = skills.build_skill_catalog_prompt(self.discovered_skills)
@@ -312,7 +320,7 @@ class IntentAgent:
     async def _run_in_fetch_executor[T](self, func: Callable[..., T], *args: object) -> T:
         """Run a blocking schema/policy fetch call on this instance's dedicated
         `_fetch_executor`, not the event loop's shared default one that every tool call and the
-        audit sender's file write also use (review, ENG-9671). Python cannot preempt an
+        audit sender's file write also use (ENG-9671). Python cannot preempt an
         already-running synchronous call, so a stuck/unreachable schema or policy endpoint
         keeps its worker running for its own timeout x retry course even after asyncio.timeout
         has given up on the awaiting request - see run_extraction's docstring. Enough
@@ -353,17 +361,19 @@ class IntentAgent:
             )
 
     async def aclose(self) -> None:
-        """Close the schema/policy cache backends' own resources - called from app.py's
-        lifespan on shutdown.
+        """Close the shared cache backend's own resources - called from app.py's lifespan on
+        shutdown. Closed once here, not by SchemaClient/PolicyClient themselves, since both
+        share the same instance. None when both clients were injected (tests) and no real
+        backend was ever built.
         """
-        await self._schema_client.aclose()
-        await self._policy_client.aclose()
+        if self._cache is not None:
+            self._cache.close()
 
     def get_cached_schema(self) -> dict[str, Any] | None:
         """Return the cached schema, fetching it once if not already cached.
 
         Always dispatched through `_run_in_fetch_executor`, never called directly on the event
-        loop (review) - even a cache hit is a synchronous `self._cache.get(...)` call, and with
+        loop - even a cache hit is a synchronous `self._cache.get(...)` call, and with
         CACHE_BACKEND=redis that is real network I/O, not a bounded, in-process lookup. A slow
         or unreachable Redis would otherwise block the loop for every concurrent request this
         process is serving, and prevent REQUEST_TIMEOUT_SECONDS's own asyncio.timeout from ever
@@ -375,8 +385,8 @@ class IntentAgent:
     def get_cached_policies(self, subject_type: str) -> tuple[list[dict[str, Any]] | None, bool]:
         """Return (policies, fetch_failed) for this subject_type's cached AuthZEN policies
         (ENG-9671), fetching them once if not already cached. fetch_failed, not `policies is
-        None` (review, High) - PolicyClient.get_cached can serve a real, non-None stale policy
-        list even when the live fetch that would have refreshed it just failed, so `policies is
+        None`: PolicyClient.get_cached can serve a real, non-None stale policy list even when
+        the live fetch that would have refreshed it just failed, so `policies is
         None` alone is no longer a reliable failure signal; see that method's own docstring.
 
         Always dispatched through `_run_in_fetch_executor`, never called directly on the event
@@ -385,9 +395,9 @@ class IntentAgent:
         return self._policy_client.get_cached(subject_type)
 
     def _make_get_data_schema_tool(self, schema: dict[str, Any]) -> StructuredTool:
-        """Build the get_data_schema tool, returning this request's own schema snapshot
-        (review) - the exact one run_extraction already used to build the response schema's
-        enums - rather than an independent get_cached_schema() call. A fresh call could return
+        """Build the get_data_schema tool, returning this request's own schema snapshot - the
+        exact one run_extraction already used to build the response schema's enums - rather
+        than an independent get_cached_schema() call. A fresh call could return
         whatever the TTL has since refreshed to: a schema the bound response schema's enum and
         validate_evaluations were never built against, so the tool could show the LLM a type it
         can neither emit (outside its own structured-output enum) nor have accepted
@@ -417,15 +427,15 @@ class IntentAgent:
         """Build the get_policies tool (ENG-9671), returning this request's own policies
         snapshot - the exact one run_extraction already used to build request.policy_context
         and the response schema's action enum - rather than an independent
-        get_cached_policies() call (review). Same rationale as _make_get_data_schema_tool: a
-        fresh call could return a cache entry refreshed or evicted since that snapshot was
-        taken, showing the LLM a policy action neither in its own enum nor accepted by
-        validate_evaluations, with the audit's policy_version hash left describing a
-        different, stale policy set than what the tool actually told the model.
+        get_cached_policies() call. Same rationale as _make_get_data_schema_tool: a fresh call
+        could return a cache entry refreshed or evicted since that snapshot was taken, showing
+        the LLM a policy action neither in its own enum nor accepted by validate_evaluations,
+        with the audit's policy_version hash left describing a different, stale policy set
+        than what the tool actually told the model.
 
-        A failed fetch (policy_fetch_failed, not `policies is None` - review, High: the latter
-        misses PolicyClient's own stale-fallback case, where a real, non-None list is served
-        despite the live fetch having just failed) still returns whatever `policies` holds to
+        A failed fetch (policy_fetch_failed, not `policies is None` - the latter misses
+        PolicyClient's own stale-fallback case, where a real, non-None list is served despite
+        the live fetch having just failed) still returns whatever `policies` holds to
         the model - `[]` on a genuine failure with nothing to fall back on, or the stale list
         otherwise - same as _policy_block's own convention (see run_extraction's
         policy_fetch_failed handling for how the caller learns about the failure instead) - but
@@ -453,8 +463,8 @@ class IntentAgent:
         """Build this request's tool set, fresh each call from the exact schema/policies
         snapshot run_extraction already fetched once and built the response schema's enums,
         policy_context, and validate_evaluations from - every tool here returns that same
-        snapshot rather than an independently re-fetched one (review), so what the LLM is
-        shown, what gets validated, and what gets audited can never disagree.
+        snapshot rather than an independently re-fetched one, so what the LLM is shown, what
+        gets validated, and what gets audited can never disagree.
         """
         return [
             t
@@ -504,9 +514,7 @@ class IntentAgent:
 
         `schema`/`policies` are the exact snapshots run_extraction already fetched once and
         built the response_schema's enums, validate_evaluations, and request.policy_context
-        from - not fetched again here (review: this previously called get_cached_schema() again
-        for the schema half specifically, the one inconsistency left in an otherwise
-        snapshot-everywhere request). A second independent fetch could otherwise diverge from
+        from - not fetched again here. A second independent fetch could otherwise diverge from
         that snapshot (e.g. a refresh landing between run_extraction's own fetch and this call,
         or a first policy fetch that failed followed by a successful retry moments later): the
         LLM would see a schema or policies its own structured-output enum was never built for,
@@ -614,7 +622,7 @@ class IntentAgent:
         round bloats the context and is what an LLM stuck re-activating the skill until
         TOOL_CALL_MAX_ITERATIONS runs out looks like in practice.
 
-        Uses ainvoke, not invoke (review): every tool here (activate_skill, get_data_schema,
+        Uses ainvoke, not invoke: every tool here (activate_skill, get_data_schema,
         get_policies) can call into a synchronous SchemaClient/PolicyClient - StructuredTool's
         own ainvoke() runs a plain sync-defined tool via a thread-pool executor rather than
         directly on the event loop, so a slow/hung fetch triggered by an on-demand tool call
@@ -674,24 +682,24 @@ class IntentAgent:
         Schema/policy fetch, both moved inside REQUEST_TIMEOUT_SECONDS below, always run via
         `_run_in_fetch_executor` (see its docstring) rather than directly - including a cache
         hit, which is a synchronous call that can be real Redis network I/O depending on
-        CACHE_BACKEND, not a bounded in-process lookup (review) - folding the fetch into the
-        same deadline the LLM calls already share. Python cannot preempt an already-running
+        CACHE_BACKEND, not a bounded in-process lookup - folding the fetch into the same
+        deadline the LLM calls already share. Python cannot preempt an already-running
         synchronous call, so *this* request's own worst-case latency still tracks that client's
         own timeout x retry settings once a fetch has actually started, not a hard cutoff at
         REQUEST_TIMEOUT_SECONDS.
 
         `version`/`policy_context` are set before the `try` so the `except TimeoutError` block
         below has values even when the timeout fires mid-fetch, before either is assigned inside
-        it. `policy_context`'s default has `fetch_failed=True` (review): the real PolicyContext
-        further down only replaces it once get_cached_policies() actually returns, so a timeout
+        it. `policy_context`'s default has `fetch_failed=True`: the real PolicyContext further
+        down only replaces it once get_cached_policies() actually returns, so a timeout
         firing while that fetch is still in flight must fall back to a default that already
         says the fetch failed, not one that looks like a successful fetch that just found no
         policies.
 
         `phase` tracks which of the three sections below was underway when a TimeoutError is
         caught, so `_timeout_result` can tell a slow schema/policy fetch from a slow LLM
-        instead of blaming "the model" for either (review, ENG-9671) - see that method's
-        docstring for the full reasoning.
+        instead of blaming "the model" for either (ENG-9671) - see that method's docstring for
+        the full reasoning.
         """
         version = ""
         policy_context = PolicyContext(policies=None, fetch_failed=True)
@@ -793,8 +801,8 @@ class IntentAgent:
         policy_context: PolicyContext,
     ) -> ExtractionResult:
         """Build run_extraction's response to a TimeoutError, classified by which of its three
-        phases (schema fetch, policy fetch, LLM interaction) was underway when it fired (review,
-        ENG-9671) - see run_extraction's docstring for why that classification exists at all.
+        phases (schema fetch, policy fetch, LLM interaction) was underway when it fired
+        (ENG-9671) - see run_extraction's docstring for why that classification exists at all.
 
         Only the LLM-interaction phase uses llm_timeout_error ("The model did not respond in
         time.") - that text would misattribute a slow schema or policy fetch to the model, so

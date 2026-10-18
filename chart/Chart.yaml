@@ -7,7 +7,7 @@ type: application
 # extra-files) and always match the container image version for a real release. PR/master
 # builds don't touch this file - the build-publish-deploy workflow suffixes the packaged version
 # at publish time instead (see .github/workflows/build-publish-deploy.yaml).
-version: 0.3.1
+version: 0.3.2
 appVersion: "0.3.0"
 
 keywords:

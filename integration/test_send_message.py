@@ -40,8 +40,8 @@ def test_gemini_send_message_end_to_end(monkeypatch, mocker, tmp_path):
         "indykite.intent_agent.executor.auth.validate_access_token",
         return_value={"active": True, "sub": "test-subject"},
     )
-    # A2A_TASK_STORE_BACKEND defaults to "memory" (the a2a-sdk's own InMemoryTaskStore) - no
-    # Redis needed even though this test drives a real SendMessage through DefaultRequestHandler.
+    # The task store is always the in-process EvictingTaskStore - no Redis needed, even
+    # though this test drives a real SendMessage through DefaultRequestHandler.
     # aclose defaults to an AsyncMock - IntentAgent.aclose() awaits it via the ASGI lifespan
     # this TestClient request triggers on shutdown, even though neither fake ever fetches.
     fake_schema_client = mocker.Mock(

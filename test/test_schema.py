@@ -1,6 +1,5 @@
 """Tests for SchemaClient: fetching, caching, and TTL-driven on-demand refresh."""
 
-import asyncio
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -8,10 +7,10 @@ from concurrent.futures import ThreadPoolExecutor
 import httpx2
 import jwt
 import pytest
-from fakeredis import FakeAsyncRedis
+from fakeredis import FakeRedis
 
 from indykite.intent_agent.errors import InvalidAppAgentKeyError
-from indykite.intent_agent.schema import IkConnection, SchemaClient, _cache_key
+from indykite.intent_agent.schema import CacheConfig, IkConnection, SchemaClient, _cache_key
 from indykite.redis.storage import MemoryStorageBackend, RedisStorageBackend, StorageBackend
 
 _SCHEMA = {"graph": {"nodes": {}, "edges": []}}
@@ -42,7 +41,7 @@ def _redis_backend() -> RedisStorageBackend:
     serialize/deserialize path, only the network client itself is faked, no real Redis server
     needed.
     """
-    return RedisStorageBackend(FakeAsyncRedis())
+    return RedisStorageBackend(FakeRedis())
 
 
 def _client(
@@ -58,9 +57,11 @@ def _client(
     """
     return SchemaClient(
         IkConnection(base_url, app_agent_key),
-        cache=cache if cache is not None else _memory_backend(),
-        refresh_ttl_seconds=kwargs.pop("refresh_ttl_seconds", _DEFAULT_REFRESH_TTL_SECONDS),
-        executor=executor if executor is not None else ThreadPoolExecutor(max_workers=1),
+        cache_config=CacheConfig(
+            cache=cache if cache is not None else _memory_backend(),
+            refresh_ttl_seconds=kwargs.pop("refresh_ttl_seconds", _DEFAULT_REFRESH_TTL_SECONDS),
+            executor=executor if executor is not None else ThreadPoolExecutor(max_workers=1),
+        ),
         **kwargs,
     )
 
@@ -80,7 +81,7 @@ def _mock_response(mocker, schema=None):
     .raise_for_status(). status_code/text are real values (not further Mocks) since load()
     logs both verbatim, including a slice of .text - a bare Mock isn't subscriptable.
 
-    Defaults to None rather than the _SCHEMA dict directly (review, mirrors test_policy.py's
+    Defaults to None rather than the _SCHEMA dict directly (mirrors test_policy.py's
     _mock_response: mutable default) - load() returns this same object back to its caller with
     no copy, so aliasing the shared module-level constant into it would let any test that later
     mutates a get_cached() result corrupt _SCHEMA for every other test in the file.
@@ -109,7 +110,7 @@ def _mock_malformed_json_response(mocker):
 def _expire_freshness_marker(cache: StorageBackend, client: SchemaClient) -> None:
     """Delete the freshness marker - a deterministic "make this entry look expired" without
     sleeping past refresh_ttl_seconds; the schema itself is left untouched."""
-    asyncio.run(cache.delete(client._fresh_key))
+    cache.delete(client._fresh_key)
 
 
 def _wait_for_background_refresh(executor: ThreadPoolExecutor) -> None:
@@ -122,17 +123,18 @@ def _wait_for_background_refresh(executor: ThreadPoolExecutor) -> None:
     executor.shutdown(wait=True)
 
 
-@pytest.mark.parametrize(
-    ("base_url", "app_agent_key"),
-    [
-        pytest.param("", _APP_AGENT_KEY, id="blank_base_url"),
-        pytest.param("https://ikg.example.com", "", id="blank_app_agent_key"),
-    ],
-)
-def test_load_returns_none_when_config_incomplete(base_url, app_agent_key):
-    """Missing base_url or app_agent_key means schema unavailable, no request attempted."""
-    client = _client(base_url, app_agent_key)
+def test_load_returns_none_when_base_url_is_blank():
+    """A missing base_url means schema unavailable, no request attempted."""
+    client = _client("", _APP_AGENT_KEY)
     assert client.load() is None
+
+
+def test_construction_rejects_a_blank_app_agent_key():
+    """A blank app_agent_key must fail loudly at cache-key construction time, not fall back
+    to a shared "unconfigured" cache scope.
+    """
+    with pytest.raises(InvalidAppAgentKeyError):
+        _client("https://ikg.example.com", "")
 
 
 @pytest.mark.parametrize(
@@ -155,7 +157,7 @@ def test_load_returns_none_on_http_error(mocker, caplog, error):
 
 
 def test_load_returns_none_on_malformed_json_response(mocker, caplog):
-    """A 2xx response whose body is not valid JSON must return None, not raise (review):
+    """A 2xx response whose body is not valid JSON must return None, not raise:
     resp.json() itself raises ValueError, not httpx2.HTTPError, and must be treated as a
     failed load the same way an HTTP error is rather than escape uncaught - see load()'s
     docstring for why that matters beyond this direct call.
@@ -200,7 +202,7 @@ def test_load_logs_the_request_url_and_a_truncated_response_preview(mocker, capl
 @pytest.mark.parametrize("backend", ["memory", "redis"])
 def test_preload_and_get_cached_round_trip(mocker, caplog, backend):
     """preload() then get_cached() must return the same schema, on both the default in-process
-    Memory backend and a Redis-backed one (the real redis.asyncio client, faked at the network
+    Memory backend and a Redis-backed one (the real redis client, faked at the network
     level with fakeredis - only the network client is faked, so this exercises the actual
     encode/decode path). Must also log the cache key and hit flag at debug level for
     troubleshooting.
@@ -216,15 +218,15 @@ def test_preload_and_get_cached_round_trip(mocker, caplog, backend):
     assert f"cache_key={client._cache_key} hit=True" in caplog.text
 
 
-def test_cache_key_uses_jwt_sub_claim_blank_placeholder_or_raises(caplog):
-    """A well-formed JWT's sub claim is used directly; a blank key maps to a stable
-    placeholder. Anything else non-blank must be a valid JWT with a sub claim, or raise a
-    clear InvalidAppAgentKeyError - not degrade quietly to a hashed key.
+def test_cache_key_uses_jwt_sub_claim_or_raises(caplog):
+    """A well-formed JWT's sub claim is used directly; a blank key or anything else non-blank
+    that isn't a valid JWT must raise InvalidAppAgentKeyError, not a shared placeholder.
     """
     caplog.set_level("ERROR")
-    assert _cache_key(_fake_jwt("gid:AAAA123")) == "ikg_schema:gid:AAAA123"
-    assert _cache_key("") == "ikg_schema:unconfigured"
+    assert _cache_key(_fake_jwt("gid:AAAA123")) == "ikg:gid:AAAA123:schema"
 
+    with pytest.raises(InvalidAppAgentKeyError):
+        _cache_key("")
     with pytest.raises(InvalidAppAgentKeyError):
         _cache_key("not-a-jwt")
     with pytest.raises(InvalidAppAgentKeyError):
@@ -256,7 +258,7 @@ def test_schema_does_not_collide_across_different_environments(mocker):
 
 def test_get_cached_fetches_on_demand_when_not_already_cached(mocker, caplog):
     """get_cached() must fetch-and-cache on its own when nothing is cached yet: either because
-    preload() was never called (fetch succeeds) or because there's no config to fetch with at
+    preload() was never called (fetch succeeds) or because there's no base_url to fetch with at
     all (fetch fails, returns None instead of raising). Must also log the cache key and
     hit=False at debug level for troubleshooting.
     """
@@ -266,8 +268,8 @@ def test_get_cached_fetches_on_demand_when_not_already_cached(mocker, caplog):
     assert client.get_cached() == _SCHEMA
     assert f"cache_key={client._cache_key} hit=False" in caplog.text
 
-    unconfigured_client = _client("", "")
-    assert unconfigured_client.get_cached() is None
+    no_base_url_client = _client("", _APP_AGENT_KEY)
+    assert no_base_url_client.get_cached() is None
 
 
 def test_get_cached_coalesces_concurrent_cold_misses_into_one_fetch(mocker):
@@ -309,13 +311,25 @@ def test_get_cached_coalesces_concurrent_cold_misses_into_one_fetch(mocker):
     assert results == [_SCHEMA] * len(threads)
 
 
-def test_get_cached_treats_a_cache_backend_failure_as_schema_unavailable(mocker):
-    """A cache backend failure (e.g. CACHE_BACKEND=redis genuinely unreachable, not just a
-    miss) must be treated the same as an unavailable schema rather than escape as an unhandled
-    exception (review) - run_extraction's schema_unavailable_error path already exists to
-    answer exactly that.
+def test_get_cached_falls_back_to_a_direct_fetch_on_a_cache_backend_failure(mocker, caplog):
+    """A cache backend failure must fall back to a direct, uncached fetch rather than failing
+    the request - Redis being down should degrade latency, not availability.
+    """
+    caplog.set_level("ERROR")
+    cache = mocker.Mock(get=mocker.Mock(side_effect=ConnectionError("redis unreachable")))
+    _mock_sync_client(mocker, response=_mock_response(mocker))
+    client = _client("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
+
+    assert client.get_cached() == _SCHEMA
+    assert "falling back to a direct fetch" in caplog.text
+
+
+def test_get_cached_returns_none_when_cache_fails_and_the_direct_fetch_also_fails(mocker):
+    """If the cache backend is down *and* the direct fallback fetch fails too, get_cached()
+    must still return None rather than raise.
     """
     cache = mocker.Mock(get=mocker.Mock(side_effect=ConnectionError("redis unreachable")))
+    _mock_sync_client(mocker, side_effect=httpx2.ConnectTimeout("connect timed out"))
     client = _client("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
 
     assert client.get_cached() is None
@@ -325,11 +339,9 @@ def test_get_cached_treats_a_legacy_or_corrupted_cached_value_as_a_miss(mocker):
     """A stored value that fails to decode into JSON at all must be treated as a miss and
     self-heal via the ordinary cold-fetch-and-store path, not return None forever."""
     cache = _memory_backend()
-    asyncio.run(
-        cache.set(
-            _cache_key(_APP_AGENT_KEY),
-            b"\x80\x04not valid json, e.g. a leftover pickled value from a retired cache format",
-        )
+    cache.set(
+        _cache_key(_APP_AGENT_KEY),
+        b"\x80\x04not valid json, e.g. a leftover pickled value from a retired cache format",
     )
     client_mock = _mock_sync_client(mocker, response=_mock_response(mocker))
     client = _client("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
@@ -360,7 +372,7 @@ def test_get_cached_treats_a_malformed_cached_value_as_a_miss(mocker):
     """A syntactically valid JSON value that isn't an object (e.g. null) must self-heal via
     a fresh fetch, not be accepted as a resolved hit and handed back as-is."""
     cache = _memory_backend()
-    asyncio.run(cache.set(_cache_key(_APP_AGENT_KEY), json.dumps(None).encode()))
+    cache.set(_cache_key(_APP_AGENT_KEY), json.dumps(None).encode())
     client_mock = _mock_sync_client(mocker, response=_mock_response(mocker))
     client = _client("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
 
@@ -369,8 +381,8 @@ def test_get_cached_treats_a_malformed_cached_value_as_a_miss(mocker):
 
 
 def test_peek_cached_never_fetches(mocker):
-    """peek_cached() must return None on a miss without ever calling load() - a caller (review,
-    ENG-9671: run_extraction) uses this to skip the dedicated fetch executor entirely on a
+    """peek_cached() must return None on a miss without ever calling load() - a caller
+    (ENG-9671: run_extraction) uses this to skip the dedicated fetch executor entirely on a
     cache hit, so it must never itself trigger the fetch get_cached() would.
     """
     client_mock = _mock_sync_client(mocker, response=_mock_response(mocker))
@@ -462,15 +474,15 @@ class _SetFailsBackend(StorageBackend):
     def __init__(self, inner: StorageBackend) -> None:
         self._inner = inner
 
-    async def get(self, key: str) -> bytes | None:
-        return await self._inner.get(key)
+    def get(self, key: str) -> bytes | None:
+        return self._inner.get(key)
 
-    async def set(self, key: str, value: bytes, *, ttl_seconds: float | None = None) -> None:
+    def set(self, key: str, value: bytes, *, ttl_seconds: float | None = None) -> None:
         msg = "simulated Redis write failure"
         raise ConnectionError(msg)
 
-    async def delete(self, key: str) -> None:
-        await self._inner.delete(key)
+    def delete(self, key: str) -> None:
+        self._inner.delete(key)
 
 
 def test_background_refresh_logs_a_store_failure_instead_of_swallowing_it(mocker, caplog):
@@ -516,10 +528,8 @@ def test_preload_does_not_raise_when_store_fails(mocker, caplog):
 
 
 def test_get_cached_returns_freshly_loaded_schema_even_if_caching_it_fails(mocker, caplog):
-    """A cold get_cached() must still return the schema it just loaded, even if _store()
-    fails afterward (review: _store()'s two independent cache.set() calls can now partially
-    succeed - the primary write landing durably while only the fresh marker write fails -
-    and this request must not discard a schema it already has in hand because of that).
+    """A cold get_cached() must still return the schema it just loaded, even if _store()'s two
+    independent cache.set() calls partially fail (primary write lands, fresh-marker write fails).
     """
     caplog.set_level("ERROR")
     _mock_sync_client(mocker, response=_mock_response(mocker))
@@ -527,19 +537,3 @@ def test_get_cached_returns_freshly_loaded_schema_even_if_caching_it_fails(mocke
 
     assert client.get_cached() == _SCHEMA
     assert any("Failed to cache freshly loaded schema" in record.getMessage() for record in caplog.records)
-
-
-def test_get_cached_works_when_called_from_within_a_running_event_loop(mocker):
-    """SchemaClient's public API stays synchronous even though StorageBackend's Redis
-    implementation is asyncio-only - the actual production path (get_cached() calls happen
-    from inside the already-running Starlette/uvicorn event loop, not before it). Running the
-    call itself inside asyncio.run() here forces SchemaClient's internal sync/async bridge
-    (storage.run_sync) to be invoked from a context that already has its own running loop.
-    """
-    _mock_sync_client(mocker, response=_mock_response(mocker))
-    client = _client("https://ikg.example.com", _APP_AGENT_KEY, cache=_redis_backend())
-
-    async def _call_get_cached_from_inside_a_running_loop():
-        return client.get_cached()
-
-    assert asyncio.run(_call_get_cached_from_inside_a_running_loop()) == _SCHEMA

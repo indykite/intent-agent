@@ -12,10 +12,8 @@ _DEFAULT_LLM_TIMEOUT_SECONDS = 3.0
 _DEFAULT_SCHEMA_FETCH_TIMEOUT_SECONDS = 3.0
 _DEFAULT_POLICY_FETCH_TIMEOUT_SECONDS = 2.0
 _DEFAULT_VALIDATION_MAX_RETRIES = 1
-_DEFAULT_A2A_TASK_STORE_TTL_MINUTES = 1440.0
+_DEFAULT_TASK_STORE_TERMINAL_TTL_MINUTES = 5.0
 _DEFAULT_REDIS_SOCKET_TIMEOUT_SECONDS = 2.0
-_DEFAULT_REDIS_QUEUE_DEQUEUE_BLOCK_SECONDS = 1.0
-_DEFAULT_REDIS_QUEUE_RECLAIM_MIN_IDLE_SECONDS = 30.0
 # PRD: a request must be answered within 10s end to end. REQUEST_TIMEOUT_SECONDS enforces it;
 # the per-call default is sized so the common path (skill activation, answer, one retry
 # answer) fits inside it, with extra tool-call rounds still cut off by the request deadline.
@@ -85,12 +83,8 @@ def test_defaults(monkeypatch):
     assert str(settings.bind_host) == "0.0.0.0"  # noqa: S104 - asserting the default, not binding anything
     assert settings.log_level == "INFO"
     assert settings.expected_token_audience == "intent_agent"  # noqa: S105 - an aud value, not a secret
-    assert settings.a2a_task_store_backend == "memory"
-    assert settings.a2a_task_store_url is None
-    assert settings.a2a_task_store_ttl_minutes == _DEFAULT_A2A_TASK_STORE_TTL_MINUTES
+    assert settings.task_store_terminal_ttl_minutes == _DEFAULT_TASK_STORE_TERMINAL_TTL_MINUTES
     assert settings.redis_socket_timeout_seconds == _DEFAULT_REDIS_SOCKET_TIMEOUT_SECONDS
-    assert settings.redis_queue_dequeue_block_seconds == _DEFAULT_REDIS_QUEUE_DEQUEUE_BLOCK_SECONDS
-    assert settings.redis_queue_reclaim_min_idle_seconds == _DEFAULT_REDIS_QUEUE_RECLAIM_MIN_IDLE_SECONDS
 
 
 def test_rejects_blank_gemini_api_key(monkeypatch):
@@ -290,59 +284,13 @@ def test_accepts_redis_backend_with_redis_url(monkeypatch):
     assert settings.cache_backend == "redis"
 
 
-def test_rejects_a2a_task_store_redis_backend_without_url(monkeypatch):
-    """A2A_TASK_STORE_BACKEND=redis with no A2A_TASK_STORE_URL must fail fast - there's nothing
-    to connect to, the same rule CACHE_BACKEND=redis/REDIS_URL already enforces.
-    """
-    _set_baseline_env(monkeypatch)
-    monkeypatch.setenv("A2A_TASK_STORE_BACKEND", "redis")
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
-
-
-def test_accepts_a2a_task_store_redis_backend_with_url(monkeypatch):
-    """A2A_TASK_STORE_BACKEND=redis with an A2A_TASK_STORE_URL set must be accepted."""
-    _set_baseline_env(monkeypatch)
-    monkeypatch.setenv("A2A_TASK_STORE_BACKEND", "redis")
-    monkeypatch.setenv("A2A_TASK_STORE_URL", "redis://redis.example.com:6379")
-    settings = Settings(_env_file=None)
-    assert settings.a2a_task_store_backend == "redis"
-
-
-def test_rejects_unknown_a2a_task_store_backend(monkeypatch):
-    """A2A_TASK_STORE_BACKEND must be one of the two supported backends, not an arbitrary string."""
-    _set_baseline_env(monkeypatch)
-    monkeypatch.setenv("A2A_TASK_STORE_BACKEND", "postgres")
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
-
-
-@pytest.mark.parametrize(
-    "value",
-    [
-        pytest.param("not-a-real-url", id="malformed_url"),
-        pytest.param("redis://host:99999", id="port_too_large"),
-        pytest.param("http://host:6379", id="wrong_scheme"),
-        pytest.param("   ", id="whitespace_only"),
-    ],
-)
-def test_rejects_invalid_a2a_task_store_url(monkeypatch, value):
-    """A malformed/whitespace-only A2A_TASK_STORE_URL, an out-of-range port, or a non-redis
-    scheme must all fail validation, the same rules as REDIS_URL.
-    """
-    _set_baseline_env(monkeypatch)
-    monkeypatch.setenv("A2A_TASK_STORE_URL", value)
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
-
-
 @pytest.mark.parametrize("ttl", [0, -1])
-def test_rejects_non_positive_a2a_task_store_ttl_minutes(monkeypatch, ttl):
-    """A zero or negative A2A_TASK_STORE_TTL_MINUTES would expire a completed task immediately
-    or never - either way, not a usable TTL.
+def test_rejects_non_positive_task_store_terminal_ttl_minutes(monkeypatch, ttl):
+    """A zero or negative TASK_STORE_TERMINAL_TTL_MINUTES would expire a completed task
+    immediately or never - either way, not a usable TTL.
     """
     _set_baseline_env(monkeypatch)
-    monkeypatch.setenv("A2A_TASK_STORE_TTL_MINUTES", str(ttl))
+    monkeypatch.setenv("TASK_STORE_TERMINAL_TTL_MINUTES", str(ttl))
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
 
@@ -374,8 +322,6 @@ def test_rejects_non_positive_schema_refresh_ttl(monkeypatch, ttl):
         "LLM_TIMEOUT_SECONDS",
         "REQUEST_TIMEOUT_SECONDS",
         "REDIS_SOCKET_TIMEOUT_SECONDS",
-        "REDIS_QUEUE_DEQUEUE_BLOCK_SECONDS",
-        "REDIS_QUEUE_RECLAIM_MIN_IDLE_SECONDS",
     ],
 )
 @pytest.mark.parametrize("value", [0, -1])
@@ -439,9 +385,8 @@ def test_default_timeouts_match_prd_request_budget(monkeypatch):
 def test_rejects_a_fetch_or_llm_timeout_longer_than_request_timeout(monkeypatch, env_var, value):
     """A per-call limit above the whole-request deadline could never fire first - dead config,
     for the LLM call and, since ENG-9671 moved both inside the same deadline, the schema and
-    policy fetch too. REDIS_SOCKET_TIMEOUT_SECONDS is checked the same way, even though it also
-    bounds the A2A task store's Redis calls outside this deadline entirely - one shared setting,
-    one shared rule.
+    policy fetch too. REDIS_SOCKET_TIMEOUT_SECONDS (the schema/policy cache's Redis client) is
+    checked the same way.
     """
     _set_baseline_env(monkeypatch)
     monkeypatch.setenv(env_var, value)
@@ -450,32 +395,9 @@ def test_rejects_a_fetch_or_llm_timeout_longer_than_request_timeout(monkeypatch,
         Settings(_env_file=None)
 
 
-@pytest.mark.parametrize(("dequeue_block", "socket_timeout"), [("2", "2"), ("3", "2")])
-def test_rejects_queue_dequeue_block_at_or_over_socket_timeout(monkeypatch, dequeue_block, socket_timeout):
-    """RedisQueueManager's BLOCK shares the task store's Redis client, so a block at or above
-    the socket timeout races it - `>=`, not `>`, since these are independent clocks."""
-    _set_baseline_env(monkeypatch)
-    monkeypatch.setenv("REDIS_QUEUE_DEQUEUE_BLOCK_SECONDS", dequeue_block)
-    monkeypatch.setenv("REDIS_SOCKET_TIMEOUT_SECONDS", socket_timeout)
-    with pytest.raises(
-        ValidationError, match="REDIS_QUEUE_DEQUEUE_BLOCK_SECONDS must be less than REDIS_SOCKET_TIMEOUT_SECONDS"
-    ):
-        Settings(_env_file=None)
-
-
-def test_accepts_queue_dequeue_block_strictly_under_socket_timeout(monkeypatch):
-    """A dequeue block safely under the socket timeout (the default shape) must be accepted."""
-    _set_baseline_env(monkeypatch)
-    monkeypatch.setenv("REDIS_QUEUE_DEQUEUE_BLOCK_SECONDS", "1")
-    monkeypatch.setenv("REDIS_SOCKET_TIMEOUT_SECONDS", "2")
-    settings = Settings(_env_file=None)
-    assert settings.redis_queue_dequeue_block_seconds == 1.0
-    assert settings.redis_socket_timeout_seconds == 2.0  # noqa: PLR2004 - the env value just set
-
-
 def test_accepts_fetch_timeouts_whose_retry_multiplied_sum_exceeds_the_request_budget(monkeypatch):
     """The fetch-timeout validator is deliberately per-field only, not a combined/retry-
-    multiplied budget (review) - a schema timeout of 9s plus two 9s policy attempts (27s worst
+    multiplied budget - a schema timeout of 9s plus two 9s policy attempts (27s worst
     case) must be accepted here, same as LLM_TIMEOUT_SECONDS is never checked against
     TOOL_CALL_MAX_ITERATIONS/VALIDATION_MAX_RETRIES multiplying its own worst case either.
     asyncio.timeout(REQUEST_TIMEOUT_SECONDS) is what actually enforces the total budget by

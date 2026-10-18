@@ -1,7 +1,6 @@
 {{- include "service.validateCacheBackend" . }}
 {{- include "service.validateRedisConfig" . }}
 {{- include "service.validateTimeouts" . }}
-{{- include "service.validateTaskStoreConfig" . }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -97,17 +96,10 @@ spec:
             - name: CACHE_BACKEND
               value: {{ .Values.app.cacheBackend | quote }}
             {{- include "service.redisUrlEnvVar" (list . "REDIS_URL" .Values.app.redisUrlSecretRef) }}
-            - name: A2A_TASK_STORE_BACKEND
-              value: {{ .Values.app.a2aTaskStoreBackend | quote }}
-            {{- include "service.redisUrlEnvVar" (list . "A2A_TASK_STORE_URL" .Values.app.a2aTaskStoreUrlSecretRef) }}
-            - name: A2A_TASK_STORE_TTL_MINUTES
-              value: {{ .Values.app.a2aTaskStoreTtlMinutes | quote }}
             - name: REDIS_SOCKET_TIMEOUT_SECONDS
               value: {{ .Values.app.redisSocketTimeoutSeconds | quote }}
-            - name: REDIS_QUEUE_DEQUEUE_BLOCK_SECONDS
-              value: {{ .Values.app.redisQueueDequeueBlockSeconds | quote }}
-            - name: REDIS_QUEUE_RECLAIM_MIN_IDLE_SECONDS
-              value: {{ .Values.app.redisQueueReclaimMinIdleSeconds | quote }}
+            - name: TASK_STORE_TERMINAL_TTL_MINUTES
+              value: {{ .Values.app.taskStoreTerminalTtlMinutes | quote }}
             - name: INTROSPECT_URL
               value: {{ .Values.app.introspectUrl | quote }}
             - name: INTROSPECT_CLIENT_ID

@@ -12,7 +12,7 @@ import jwt
 from indykite.intent_agent.config import Settings, StorageBackendKind
 from indykite.intent_agent.errors import InvalidAppAgentKeyError
 from indykite.intent_agent.refresh_gate import RefreshGate
-from indykite.redis.storage import MemoryStorageBackend, StorageBackend, build_redis_storage_backend, run_sync
+from indykite.redis.storage import MemoryStorageBackend, StorageBackend, build_redis_storage_backend
 
 logger = logging.getLogger(__name__)
 
@@ -29,14 +29,25 @@ class IkConnection:
     app_agent_key: str
 
 
-def build_schema_backend(settings: Settings) -> StorageBackend:
-    """Pick the schema cache backend named by CACHE_BACKEND: Redis, or in-process memory (the
-    default). Settings rejects CACHE_BACKEND=redis with no REDIS_URL, so redis_url is
-    guaranteed set here. The freshness TTL (SCHEMA_REFRESH_TTL_MINUTES) is checked by
-    SchemaClient itself, not configured on the backend.
+@dataclass(frozen=True, slots=True)
+class CacheConfig:
+    """cache + refresh_ttl_seconds + executor, bundled like IkConnection bundles base_url/
+    app_agent_key, so SchemaClient/PolicyClient each take one param instead of three - cache
+    and executor are the same shared instances for both clients, refresh_ttl_seconds differs.
+    """
 
-    Never imports redis.asyncio directly - storage.py is the one place that knows how to
-    build a Redis-backed StorageBackend; this module only depends on the StorageBackend ABC.
+    cache: StorageBackend
+    refresh_ttl_seconds: float
+    executor: ThreadPoolExecutor
+
+
+def build_cache_backend(settings: Settings) -> StorageBackend:
+    """Pick the cache backend named by CACHE_BACKEND: Redis, or in-process memory (the default)
+    - shared by SchemaClient and PolicyClient, which used to each open their own Redis client
+    for the same Redis before IntentAgent started building this once for both.
+
+    Never imports redis directly - storage.py is the one place that knows how to build a
+    Redis-backed StorageBackend; this module only depends on the StorageBackend ABC.
     """
     logger.info("Using cache backend %r", settings.cache_backend)
     if settings.cache_backend == StorageBackendKind.REDIS:
@@ -49,8 +60,8 @@ def build_schema_backend(settings: Settings) -> StorageBackend:
 def app_agent_key_gid(app_agent_key: str) -> str | None:
     """Extract the stable, non-secret GID (the `sub` claim) from an IK_APP_AGENT_KEY JWT,
     without verifying its signature - the piece every per-environment cache key (schema,
-    policies, A2A task store/queue manager) is scoped by, so clients on different IndyKite
-    environments never overwrite each other's cached data on a shared Redis backend.
+    policies) is scoped by, so clients on different IndyKite environments never overwrite
+    each other's cached data on a shared Redis backend.
 
     None for a blank app_agent_key (the "IK not configured" state, see SchemaClient.load()).
     Any non-blank app_agent_key must be a valid JWT with a string `sub` claim - a malformed
@@ -72,12 +83,25 @@ def app_agent_key_gid(app_agent_key: str) -> str | None:
     return gid
 
 
-def _cache_key(app_agent_key: str) -> str:
-    """Build a cache key scoped to this specific IndyKite environment - see
-    app_agent_key_gid() for why. A blank app_agent_key hashes to a stable placeholder.
+def env_scope(app_agent_key: str) -> str:
+    """The per-environment scope every cache key is namespaced under - see app_agent_key_gid()
+    for why. Every key lives under `ikg:<scope>:*`, so one Redis ACL rule can isolate one
+    instance/credential, unlike the old unrelated `ikg_schema:`/`ikg_policies:` prefixes.
+
+    Raises InvalidAppAgentKeyError for a blank key rather than a shared "unconfigured" scope -
+    unreachable today (Settings requires it non-blank), but kept, a future no-key caller would
+    silently share a namespace with every other one instead of failing loudly like now.
     """
     gid = app_agent_key_gid(app_agent_key)
-    return "ikg_schema:unconfigured" if gid is None else f"ikg_schema:{gid}"
+    if gid is None:
+        message = "IK_APP_AGENT_KEY is required to scope a cache key, but none was configured"
+        raise InvalidAppAgentKeyError(message)
+    return gid
+
+
+def _cache_key(app_agent_key: str) -> str:
+    """Build the schema cache key scoped to this specific IndyKite environment."""
+    return f"ikg:{env_scope(app_agent_key)}:schema"
 
 
 # The freshness marker's value is never read for its content, only for whether get() still
@@ -108,16 +132,15 @@ class SchemaClient:
         connection: IkConnection,
         *,
         timeout_seconds: float = 30.0,
-        cache: StorageBackend,
-        refresh_ttl_seconds: float,
-        executor: ThreadPoolExecutor,
+        cache_config: CacheConfig,
     ) -> None:
         """Store the connection details; no request is made until preload()/get_cached().
 
-        refresh_ttl_seconds is how long a cached schema is served before get_cached() treats
-        it as due for a refresh. executor is where get_cached() dispatches a stale entry's
-        background refresh. cache/executor stay separate: both are constructed objects, not
-        connection details.
+        cache_config.refresh_ttl_seconds is how long a cached schema is served before
+        get_cached() treats it as due for a refresh. cache_config.executor is where
+        get_cached() dispatches a stale entry's background refresh. cache_config.cache may be
+        shared with a PolicyClient (see build_cache_backend) - this class never closes it
+        itself; see close()'s docstring.
 
         timeout_seconds/refresh_ttl_seconds are float like every Settings *_timeout_seconds
         field - schema_refresh_ttl_minutes is a fractional PositiveFloat; int would truncate it.
@@ -125,22 +148,14 @@ class SchemaClient:
         self._base_url = connection.base_url
         self._app_agent_key = connection.app_agent_key
         self._timeout_seconds = timeout_seconds
-        self._cache = cache
-        self._refresh_ttl_seconds = refresh_ttl_seconds
-        self._executor = executor
+        self._cache = cache_config.cache
+        self._refresh_ttl_seconds = cache_config.refresh_ttl_seconds
+        self._executor = cache_config.executor
         self._cache_key = _cache_key(connection.app_agent_key)
         # Separate key, not an envelope field: its own backend TTL answers "is this stale" -
         # see _store()/_load_schema().
         self._fresh_key = f"{self._cache_key}:fresh"
         self._gate = RefreshGate()
-
-    async def aclose(self) -> None:
-        """Close the cache backend's own resources - called from app.py's lifespan on shutdown.
-        Routed through run_sync like every other cache call: with CACHE_BACKEND=redis the
-        client's connections are bound to _SyncBridge's loop, so closing it on whichever loop
-        awaits this method instead would raise "attached to a different loop".
-        """
-        run_sync(self._cache.aclose())
 
     def load(self) -> dict[str, Any] | None:
         """Fetch the graph schema from the Indykite platform, or None on failure.
@@ -175,26 +190,17 @@ class SchemaClient:
         """Schema itself gets no TTL (a hard expiry could delete the last known-good copy
         during a traffic gap, breaking TDD 4.4) - freshness lives on _fresh_key instead.
         """
-
-        async def _write() -> None:
-            await self._cache.set(self._cache_key, json.dumps(schema, separators=(",", ":")).encode("utf-8"))
-            await self._cache.set(self._fresh_key, _FRESH_MARKER, ttl_seconds=self._refresh_ttl_seconds)
-
-        run_sync(_write())
+        self._cache.set(self._cache_key, json.dumps(schema, separators=(",", ":")).encode("utf-8"))
+        self._cache.set(self._fresh_key, _FRESH_MARKER, ttl_seconds=self._refresh_ttl_seconds)
 
     def _load_schema(self) -> tuple[dict[str, Any] | None, bool]:
         """(value, is_fresh) - value is None if absent/corrupted (self-heals as a miss);
         is_fresh is whether the freshness marker's own backend TTL has elapsed - see _store().
         """
-
-        async def _read() -> tuple[bytes | None, bytes | None]:
-            encoded = await self._cache.get(self._cache_key)
-            fresh_marker = await self._cache.get(self._fresh_key)
-            return encoded, fresh_marker
-
-        encoded, fresh_marker = run_sync(_read())
+        encoded = self._cache.get(self._cache_key)
         if encoded is None:
             return None, False
+        fresh_marker = self._cache.get(self._fresh_key)
         value = _decode_schema(encoded)
         return (value, fresh_marker is not None) if value is not None else (None, False)
 
@@ -237,37 +243,39 @@ class SchemaClient:
         Callers must always go through a thread executor: with CACHE_BACKEND=redis this is
         genuinely synchronous network I/O, not safe to call directly on the event loop.
 
-        Any cache backend failure is treated the same as an unavailable schema rather than
-        left to escape as an unhandled exception.
+        A cache-backend error falls through to a direct, uncached fetch instead of failing the
+        request outright - Redis being down should degrade latency, not availability. Only a
+        failure in that direct fetch is finally "schema unavailable".
         """
         try:
             value, fresh = self._load_schema()
-            if value is not None:
-                logger.debug("cache_key=%s hit=True fresh=%s", self._cache_key, fresh)
-                if not fresh:
-                    self._gate.refresh_in_background_if_free(self._cache_key, self._refresh, self._executor)
-                return value
-            logger.debug("cache_key=%s hit=False", self._cache_key)
-            with self._gate.acquire_blocking(self._cache_key):
-                value, _fresh = self._load_schema()
-                if value is not None:
-                    return value
-                schema = self.load()
-                if schema is not None:
-                    try:
-                        self._store(schema)
-                    except Exception:
-                        # A freshly loaded schema must still be served to this request even if
-                        # caching it failed (review: the old single-write _store() couldn't
-                        # partially succeed, but the current two-key one can - the primary
-                        # write may have already landed durably while only the fresh marker
-                        # failed, which must not turn into this request losing a schema it
-                        # just loaded).
-                        logger.exception("Failed to cache freshly loaded schema - serving it uncached this request")
-                return schema
         except Exception:
-            logger.exception("Cache backend failed while fetching the schema")
-            return None
+            logger.exception("Cache backend failed while reading the schema - falling back to a direct fetch")
+            return self.load()
+        if value is not None:
+            logger.debug("cache_key=%s hit=True fresh=%s", self._cache_key, fresh)
+            if not fresh:
+                self._gate.refresh_in_background_if_free(self._cache_key, self._refresh, self._executor)
+            return value
+        logger.debug("cache_key=%s hit=False", self._cache_key)
+        with self._gate.acquire_blocking(self._cache_key):
+            try:
+                value, _fresh = self._load_schema()
+            except Exception:
+                logger.exception("Cache backend failed while reading the schema - falling back to a direct fetch")
+                return self.load()
+            if value is not None:
+                return value
+            schema = self.load()
+            if schema is not None:
+                try:
+                    self._store(schema)
+                except Exception:
+                    # A freshly loaded schema must still be served even if caching it fails -
+                    # the two-key _store() can partially succeed (primary write landing, only
+                    # the fresh marker failing).
+                    logger.exception("Failed to cache freshly loaded schema - serving it uncached this request")
+            return schema
 
     def peek_cached(self) -> dict[str, Any] | None:
         """Return the cached schema if present and still fresh, without ever calling load() or

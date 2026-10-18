@@ -309,38 +309,11 @@
             }
           }
         },
-        "a2aTaskStoreBackend": {
-          "type": "string",
-          "enum": [
-            "memory",
-            "redis"
-          ]
-        },
-        "a2aTaskStoreUrlSecretRef": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "name": {
-              "type": "string"
-            },
-            "key": {
-              "type": "string"
-            }
-          }
-        },
-        "a2aTaskStoreTtlMinutes": {
-          "type": "number",
-          "exclusiveMinimum": 0
-        },
         "redisSocketTimeoutSeconds": {
           "type": "number",
           "exclusiveMinimum": 0
         },
-        "redisQueueDequeueBlockSeconds": {
-          "type": "number",
-          "exclusiveMinimum": 0
-        },
-        "redisQueueReclaimMinIdleSeconds": {
+        "taskStoreTerminalTtlMinutes": {
           "type": "number",
           "exclusiveMinimum": 0
         },

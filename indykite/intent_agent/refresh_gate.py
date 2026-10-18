@@ -4,14 +4,11 @@ Per-process only: one threading.Lock per key, created on first use and dropped o
 a striped (hash % N) table could deadlock the fetch executor on a stripe collision (see
 test_refresh_gate.py's deadlock regression test).
 
-A pure Python concurrency utility - stays here (not the Redis-backed a2a package) since it's
-backend-agnostic and only used by schema.py/policy.py today.
+A pure Python concurrency utility - stays here (not the a2a package) since it's backend-
+agnostic and only used by schema.py/policy.py today.
 
 Multi-replica: each replica has its own gate, so N replicas can redundantly refresh the same
 stale key concurrently - wasted calls, not a correctness bug; self-corrects next refresh.
-
-Not a new gap: the dogpile.cache this replaced had the same per-process-only behavior
-invisibly (distributed_lock=True was never enabled in this project's prior config).
 """
 
 import logging

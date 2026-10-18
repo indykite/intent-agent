@@ -1,76 +1,78 @@
-"""Regression test for PolicyClient.aclose() against a *real* Redis server - same bug class and
-same reasons (not test/, not fakeredis) as test_schema_redis_regression.py's module docstring.
+"""Smoke test for PolicyClient against a *real* Redis server - same reasons (not test/, not
+fakeredis) as test_schema_redis_regression.py's module docstring.
 """
 
-import asyncio
-import os
+from concurrent.futures import ThreadPoolExecutor
 
 import jwt
 import pytest
-import redis.exceptions
-from redis.asyncio import Redis
+import redis
 
 from indykite.intent_agent.policy import PolicyClient, _cache_key
-from indykite.intent_agent.schema import IkConnection
+from indykite.intent_agent.schema import CacheConfig, IkConnection
 from indykite.redis.storage import RedisStorageBackend
+from integration.conftest import REAL_REDIS_URL, real_redis_reachable
 
-_REAL_REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
+_REAL_REDIS_URL = REAL_REDIS_URL
 _POLICIES = [{"policy": {"subject": {"type": "Customer"}, "actions": ["RENT"], "resource": {"type": "Car"}}}]
-# Bounds the reachability probe below - see test_schema_redis_regression.py's matching constant.
-_PROBE_TIMEOUT_SECONDS = 2.0
-
-
-def _real_redis_reachable() -> bool:
-    """True if a real Redis actually answers PING at _REAL_REDIS_URL."""
-    try:
-        client = redis.Redis.from_url(
-            _REAL_REDIS_URL, socket_timeout=_PROBE_TIMEOUT_SECONDS, socket_connect_timeout=_PROBE_TIMEOUT_SECONDS
-        )
-        try:
-            return client.ping()
-        finally:
-            client.close()
-    except redis.exceptions.RedisError:
-        return False
-
+_REFRESH_TTL_SECONDS = 300.0
 
 pytestmark = pytest.mark.skipif(
-    not _real_redis_reachable(),
+    not real_redis_reachable(),
     reason=f"no real Redis reachable at {_REAL_REDIS_URL} - see module docstring",
 )
 
 
 @pytest.fixture
 def real_redis_backend():
-    """A RedisStorageBackend over a genuine redis.asyncio.Redis connection - see
-    test_schema_redis_regression.py's matching fixture for why cleanup opens a brand-new client.
+    """A RedisStorageBackend over a genuine redis.Redis connection - see
+    test_schema_redis_regression.py's matching fixture.
     """
     app_agent_key = jwt.encode({"sub": "policy-redis-regression-test"}, key="", algorithm="none")
-    client = Redis.from_url(_REAL_REDIS_URL)
+    client = redis.Redis.from_url(_REAL_REDIS_URL)
     backend = RedisStorageBackend(client)
     try:
         yield backend, app_agent_key
     finally:
-
-        async def _cleanup():
-            cleanup_client = Redis.from_url(_REAL_REDIS_URL)
-            try:
-                await cleanup_client.delete(_cache_key(app_agent_key, "Customer"))
-            finally:
-                await cleanup_client.aclose()
-
-        asyncio.run(_cleanup())
+        cache_key = _cache_key(app_agent_key, "Customer")
+        client.delete(cache_key, f"{cache_key}:fresh")
+        client.close()
 
 
-def test_aclose_against_real_redis_does_not_raise_attached_to_a_different_loop(mocker, real_redis_backend):
-    """aclose() must actually close the connection, not raise "Task ... got Future ... attached
-    to a different loop" - see module docstring.
+def test_get_cached_against_real_redis_round_trips(mocker, real_redis_backend):
+    """get_cached()'s cache-miss read, fetch, and store must all succeed against a real Redis
+    connection, and a second call must be a cache hit with no new fetch.
     """
     backend, app_agent_key = real_redis_backend
-    mocker.patch.object(PolicyClient, "_load", return_value=(_POLICIES, None))
+    load_mock = mocker.patch.object(PolicyClient, "_load", return_value=(_POLICIES, ""))
     client = PolicyClient(
-        IkConnection("https://ikg.example.com", app_agent_key), cache=backend, refresh_ttl_seconds=300.0
+        IkConnection("https://ikg.example.com", app_agent_key),
+        cache_config=CacheConfig(
+            cache=backend, refresh_ttl_seconds=_REFRESH_TTL_SECONDS, executor=ThreadPoolExecutor(max_workers=1)
+        ),
     )
+
+    assert client.get_cached("Customer") == (_POLICIES, False)
+    assert client.get_cached("Customer") == (_POLICIES, False)
+    assert load_mock.call_count == 1
+
+
+def test_fresh_marker_gets_a_real_ttl_and_primary_key_does_not(mocker, real_redis_backend):
+    """_store_success()'s two-key split must give real EXPIRE/TTL semantics: the primary key has
+    no expiry, only the fresh marker does - mirrors SchemaClient's guarantee.
+    """
+    backend, app_agent_key = real_redis_backend
+    mocker.patch.object(PolicyClient, "_load", return_value=(_POLICIES, ""))
+    client = PolicyClient(
+        IkConnection("https://ikg.example.com", app_agent_key),
+        cache_config=CacheConfig(
+            cache=backend, refresh_ttl_seconds=_REFRESH_TTL_SECONDS, executor=ThreadPoolExecutor(max_workers=1)
+        ),
+    )
+
     client.get_cached("Customer")
 
-    asyncio.run(client.aclose())
+    cache_key = _cache_key(app_agent_key, "Customer")
+    assert backend._client.ttl(cache_key) == -1  # noqa: SLF001 - no public TTL accessor on StorageBackend
+    fresh_ttl = backend._client.ttl(f"{cache_key}:fresh")  # noqa: SLF001 - same
+    assert 0 < fresh_ttl <= _REFRESH_TTL_SECONDS
