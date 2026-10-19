@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.4.0](https://github.com/indykite/intent-agent/compare/v0.3.0...v0.4.0) (2026-10-19)
+
+
+### Features
+
+* adjust skill for eval workflow ([#83](https://github.com/indykite/intent-agent/issues/83)) ([30f1d4f](https://github.com/indykite/intent-agent/commit/30f1d4f8b1119a4f1955e4b55ac345e632569037))
+* derive intent only from access policies ([#94](https://github.com/indykite/intent-agent/issues/94)) ([a008e1a](https://github.com/indykite/intent-agent/commit/a008e1ac2344b3f7ff5f8e5c8e1df869b6872609))
+* implement auth for every JSON-RPC method ([#102](https://github.com/indykite/intent-agent/issues/102)) ([184b2c3](https://github.com/indykite/intent-agent/commit/184b2c3d635385c82d8124cd8a45a9f2be55308a))
+* tighten intent validation and rework evals ([#100](https://github.com/indykite/intent-agent/issues/100)) ([3879824](https://github.com/indykite/intent-agent/commit/38798246bc5937fc4935c360e00e79fa35f03f70))
+
+
+### Documentation
+
+* document commit-type release versioning ([#92](https://github.com/indykite/intent-agent/issues/92)) ([9adfc72](https://github.com/indykite/intent-agent/commit/9adfc727c4a908ed0e17ad9b7d6ace28086e9367))
+* minor clarifications ([#105](https://github.com/indykite/intent-agent/issues/105)) ([343440f](https://github.com/indykite/intent-agent/commit/343440f4ce9433c112a5655bc4a5f8c8f6b737c4))
+* minor clarifications ([#107](https://github.com/indykite/intent-agent/issues/107)) ([8f9c35d](https://github.com/indykite/intent-agent/commit/8f9c35dfb8a99ef74b471df103f3272fc19d82bc))
+* minor clarifications ([#96](https://github.com/indykite/intent-agent/issues/96)) ([ce76cb8](https://github.com/indykite/intent-agent/commit/ce76cb8c703ea3aa09b6a5a4b4e4db32cd09a92b))
+
 ## 0.3.0 (2026-09-29)
 
 
