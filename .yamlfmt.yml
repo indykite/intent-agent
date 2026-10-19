@@ -2,6 +2,7 @@
 # https://github.com/google/yamlfmt/blob/main/docs/config-file.md
 exclude:
   - chart/templates
+  - chart/Chart.yaml
 formatter:
   type: basic
   indent: 2

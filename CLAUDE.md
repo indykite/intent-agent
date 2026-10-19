@@ -103,8 +103,7 @@ Dependency management: `uv` only (no pip/poetry). Prerequisites, versions and a 
 used make targets are in `CONTRIBUTING.md` (Development setup); don't duplicate them here. The ones that
 matter for finishing a task: `make fix` (ruff format + autofix), `make build` (the CI gate, see
 below), `make evals` (golden eval suite against the real Gemini model, needs `GEMINI_API_KEY`),
-`make build_integration` (build + integration tests). `make install_dev` only runs
-`uv lock --check`; the first `uv run` creates `.venv` and installs the locked dependencies.
+`make build_integration` (build + integration tests). `make install_dev` installs the locked dependencies.
 
 Run single test, plain pytest node-id syntax (Makefile only wraps whole-directory runs):
 

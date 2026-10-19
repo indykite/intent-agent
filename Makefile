@@ -25,10 +25,13 @@ install:
 	@set -e
 	# this would fail if uv.lock is outdated
 	uv lock --check
+	uv sync
 
 install_dev:
+	@set -e
 	# this would fail if uv.lock is outdated
 	uv lock --check
+	uv sync
 
 upgrade_dev:
 	uv lock --upgrade
