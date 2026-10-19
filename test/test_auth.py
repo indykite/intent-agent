@@ -1,9 +1,14 @@
 import asyncio
 from dataclasses import replace
-from unittest.mock import Mock
+from http import HTTPStatus
 
 import httpx2
 import pytest
+from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.responses import PlainTextResponse
+from starlette.routing import Route
+from starlette.testclient import TestClient
 
 from indykite.intent_agent import auth
 
@@ -13,13 +18,6 @@ _INTROSPECT_CONFIG = auth.IntrospectionConfig(
     client_secret="client-secret",  # noqa: S106 - test fixture value, not a real secret
     expected_audience="intent_agent",
 )
-
-
-def _context_with_headers(headers: dict) -> Mock:
-    """Build a minimal RequestContext-shaped mock carrying the given headers."""
-    context = Mock()
-    context.call_context.state = {"headers": headers}
-    return context
 
 
 def _mock_async_client(mocker, *, response=None, side_effect=None):
@@ -244,36 +242,125 @@ def test_wraps_network_failure_as_service_fault(mocker, error):
     assert excinfo.value.failure is auth.TokenFailure.SERVICE
 
 
-def test_get_access_token_from_context_extracts_bearer_token():
+def test_bearer_token_extracts_bearer_token():
     """A Bearer Authorization header must have its token extracted."""
-    context = _context_with_headers({"authorization": "Bearer abc123"})
-    assert auth.get_access_token_from_context(context) == "abc123"
+    assert auth.bearer_token({"authorization": "Bearer abc123"}) == "abc123"
 
 
-def test_get_access_token_from_context_no_context():
-    """A missing RequestContext must yield an empty token, not raise."""
-    assert auth.get_access_token_from_context(None) == ""
+def test_bearer_token_no_header():
+    """No Authorization header must yield an empty token, not raise."""
+    assert auth.bearer_token({}) == ""
 
 
-def test_get_access_token_from_context_no_call_context():
-    """A RequestContext with no call_context must yield an empty token."""
-    context = Mock(call_context=None)
-    assert auth.get_access_token_from_context(context) == ""
-
-
-def test_get_access_token_from_context_rejects_non_bearer_scheme():
+def test_bearer_token_rejects_non_bearer_scheme():
     """A non-Bearer Authorization header must yield an empty token, not be passed through as-is."""
-    context = _context_with_headers({"authorization": "Basic dXNlcjpwYXNz"})
-    assert auth.get_access_token_from_context(context) == ""
+    assert auth.bearer_token({"authorization": "Basic dXNlcjpwYXNz"}) == ""
 
 
-def test_get_access_token_from_context_uses_capitalized_header_fallback():
+def test_bearer_token_uses_capitalized_header_fallback():
     """The capitalized 'Authorization' header key must be used when lowercase 'authorization' is absent."""
-    context = _context_with_headers({"Authorization": "Bearer abc123"})
-    assert auth.get_access_token_from_context(context) == "abc123"
+    assert auth.bearer_token({"Authorization": "Bearer abc123"}) == "abc123"
 
 
-def test_get_access_token_from_context_scheme_match_is_case_insensitive():
+def test_bearer_token_scheme_match_is_case_insensitive():
     """The 'Bearer' scheme match must be case-insensitive, not just work by coincidence on the canonical case."""
-    context = _context_with_headers({"authorization": "BEARER abc123"})
-    assert auth.get_access_token_from_context(context) == "abc123"
+    assert auth.bearer_token({"authorization": "BEARER abc123"}) == "abc123"
+
+
+def _guarded_client(mocker, *, claims=None, failure=None):
+    """A route behind BearerAuthMiddleware echoing the caller name, the (body, message) pairs the
+    rejection hook saw, and the endpoint mock.
+    """
+    mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value=claims, side_effect=failure))
+    bodies = []
+
+    async def _on_rejected(request, message):
+        bodies.append((await request.body(), message))
+
+    endpoint = mocker.AsyncMock()
+
+    async def _echo_caller(request):
+        await endpoint(request)
+        return PlainTextResponse(request.user.display_name)
+
+    app = Starlette(
+        routes=[
+            Route(
+                "/",
+                _echo_caller,
+                methods=["POST"],
+                middleware=[Middleware(auth.BearerAuthMiddleware, config=_INTROSPECT_CONFIG, on_rejected=_on_rejected)],
+            ),
+        ],
+    )
+    return TestClient(app), bodies, endpoint
+
+
+@pytest.mark.parametrize(
+    ("claims", "caller"),
+    [
+        ({"active": True, "sub": "user-1", "client_id": "iag"}, "user-1"),
+        ({"active": True, "client_id": "iag"}, "iag"),
+        ({"active": True, "sub": "  ", "client_id": "iag"}, "iag"),
+    ],
+    ids=["sub", "client-id-without-sub", "blank-sub"],
+)
+def test_middleware_makes_the_tokens_caller_the_request_user(mocker, claims, caller):
+    """An accepted token's `sub`, else `client_id`, names `request.user`."""
+    client, bodies, _endpoint = _guarded_client(mocker, claims=claims)
+
+    response = client.post("/", headers={"Authorization": "Bearer good-token"})
+
+    assert response.status_code == HTTPStatus.OK
+    assert response.text == caller
+    assert bodies == []
+
+
+def test_middleware_refuses_a_missing_token_without_introspecting(mocker):
+    """No Bearer token is a 401 with a bare `Bearer` challenge (RFC 6750 3), reported to the hook."""
+    client, bodies, endpoint = _guarded_client(mocker)
+
+    response = client.post("/", content=b"the body", headers={"Authorization": "Basic dXNlcjpwYXNz"})
+
+    assert response.status_code == HTTPStatus.UNAUTHORIZED
+    assert response.headers["WWW-Authenticate"] == "Bearer"
+    assert response.text == "Authorization required"
+    assert bodies == [(b"the body", "Authorization required")]
+    endpoint.assert_not_awaited()
+    auth.validate_access_token.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("failure", "message", "status"),
+    [
+        (auth.TokenFailure.CALLER, "Token is not active", HTTPStatus.UNAUTHORIZED),
+        (auth.TokenFailure.SERVICE, "Token introspection request failed", HTTPStatus.INTERNAL_SERVER_ERROR),
+        (auth.TokenFailure.PROVIDER, "Introspection endpoint returned status 503", HTTPStatus.BAD_GATEWAY),
+    ],
+    ids=["caller-401", "service-500", "provider-502"],
+)
+def test_middleware_answers_token_failures_by_whose_fault_they_are(mocker, failure, message, status):
+    """401/500/502 by TokenFailure, only the 401 with a challenge, each reported to the hook."""
+    client, bodies, endpoint = _guarded_client(mocker, failure=auth.TokenValidationError(message, failure))
+
+    response = client.post("/", content=b"{}", headers={"Authorization": "Bearer some-token"})
+
+    assert response.status_code == status
+    assert response.text == message
+    assert response.headers.get("WWW-Authenticate") == (
+        'Bearer error="invalid_token"' if status == HTTPStatus.UNAUTHORIZED else None
+    )
+    assert bodies == [(b"{}", message)]
+    endpoint.assert_not_awaited()
+
+
+def test_middleware_refuses_a_token_that_names_no_caller(mocker):
+    """An active token with neither `sub` nor `client_id` is a 401."""
+    client, bodies, endpoint = _guarded_client(mocker, claims={"active": True, "aud": "intent_agent"})
+
+    response = client.post("/", headers={"Authorization": "Bearer good-token"})
+
+    assert response.status_code == HTTPStatus.UNAUTHORIZED
+    assert response.headers["WWW-Authenticate"] == 'Bearer error="invalid_token"'
+    assert bodies == [(b"", "Token does not identify its caller")]
+    endpoint.assert_not_awaited()

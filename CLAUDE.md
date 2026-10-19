@@ -151,13 +151,13 @@ Eight modules carry whole service:
   schema cache, tool bindings, tool-call loop, validation retries), plus the `RequestSubject` it
   takes and the `ExtractionResult` it returns. Delegates skill discovery to `skills.py`, schema
   fetch/cache to `schema.py`'s `SchemaClient`. Knows nothing of A2A transport or auditing.
-- **`executor.py`** — the A2A leg: `IntentExecutor` authenticates the caller (`auth.py`), reads
-  `subject_type`/`subject_id` off the message metadata, runs `IntentAgent.run_extraction`, emits
-  the task events, and audits every request exactly once (`_RequestAudit`). Depends on
-  `agent.py`, never the other way round.
+- **`executor.py`** — the A2A leg: `IntentExecutor` reads `subject_type`/`subject_id` off the
+  message metadata, runs `IntentAgent.run_extraction`, emits the task events, and audits every
+  request exactly once (`_RequestAudit`). Depends on `agent.py`, never the other way round.
 - **`app.py`** — `build_app(settings) -> (Starlette app, IntentAgent)`: wires `IntentAgent`,
   `IntentExecutor`, the audit sender and the A2A routes together = entrypoint for `__main__.py`
-  and the integration tests.
+  and the integration tests. Only `SendMessage` is served: `SendMessageOnlyHandler` answers
+  `GetTask`/`ListTasks`/`CancelTask` with `UnsupportedOperationError`.
 - **`skills.py`** — `SKILL.md` discovery/YAML-frontmatter parsing under `skills/`, builds the
   tier-1 system-prompt catalog (`skill_catalog_preamble.txt` + skill names/descriptions) and the
   A2A `AgentSkill` list for the agent card.
@@ -180,15 +180,17 @@ Eight modules carry whole service:
   context. Policies are fetched for the caller's type only, so a Subject Search or second subject
   can only be of that type. The eval runner serves fixture policies through
   `evals.runner.FixturePolicyClient` (same `get_cached(subject_type)` contract).
-- **`auth.py`** — pulls the Bearer `access_token` off the A2A request context and validates it via
-  RFC 7662 Token Introspection against the external IdP (no local JWT decode/signature check -
-  the introspection call itself is what covers signature validity). Every introspection refusal
+- **`auth.py`** — `BearerAuthMiddleware`, on the JSON-RPC route (every A2A method), pulls the
+  Bearer `access_token` off the request and validates it via RFC 7662 Token Introspection against
+  the external IdP (no local JWT decode/signature check - the introspection call itself is what
+  covers signature validity). The token's `sub` (else `client_id`, neither is a 401) becomes
+  `request.user`, which the SDK's task store keys tasks by, so a `SendMessage` naming another
+  caller's `taskId` is `TaskNotFound` rather than joining it. Every introspection refusal
   is a `TokenValidationError` classified by whose fault it is (`TokenFailure`), the IAG's split:
   `CALLER` (blank or inactive token, 401), `SERVICE` (the request never got an answer, 500),
   `PROVIDER` (any status instead of an answer, 4xx and 5xx alike, or a body that isn't an
-  RFC 7662 answer, 502) - `executor.py` maps the class to the status, so an IdP outage never
-  reads as a bad token. A missing `Authorization` header never reaches introspection: `executor.py`
-  answers that 401 itself.
+  RFC 7662 answer, 502) - `_TOKEN_FAILURE_STATUS` maps the class to the status, so an IdP outage
+  never reads as a bad token. Refusals are audited via `IntentExecutor.audit_rejected_request`.
 - **`__main__.py`** — process entrypoint (`python -m indykite.intent_agent`). Wires `Settings()`,
   calls `build_app`, starts background health server on `HEALTH_PORT` (default 8001) using
   stdlib `http.server` — deliberately **not** part of main Starlette app, second listener —

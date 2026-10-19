@@ -25,7 +25,7 @@ def test_gemini_send_message_end_to_end(monkeypatch, mocker, tmp_path):
     monkeypatch.setenv("AUDIT_FILE_FORMAT", "json")
     monkeypatch.setenv("AUDIT_FILE_ROTATION_STRATEGY", "time")
     mocker.patch(
-        "indykite.intent_agent.executor.auth.validate_access_token",
+        "indykite.intent_agent.auth.validate_access_token",
         return_value={"active": True, "sub": "test-subject"},
     )
     fake_schema_client = mocker.Mock(

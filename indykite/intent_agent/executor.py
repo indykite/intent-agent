@@ -1,22 +1,28 @@
-"""A2A executor: authenticates the caller, runs the extraction, emits the task events, and
-audits every request exactly once (TDD 4.9).
+"""A2A executor: runs the extraction, emits the task events, and audits every request exactly
+once (TDD 4.9).
 """
 
+import json
 import logging
 import time
+from collections.abc import Mapping
 from typing import Any
 
 from a2a.helpers import new_task_from_user_message, new_text_artifact, new_text_message
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
-from a2a.types import TaskArtifactUpdateEvent, TaskState, TaskStatus, TaskStatusUpdateEvent
-from starlette.exceptions import HTTPException
-from starlette.status import (
-    HTTP_400_BAD_REQUEST,
-    HTTP_401_UNAUTHORIZED,
-    HTTP_500_INTERNAL_SERVER_ERROR,
-    HTTP_502_BAD_GATEWAY,
+from a2a.types import (
+    Message,
+    SendMessageRequest,
+    TaskArtifactUpdateEvent,
+    TaskState,
+    TaskStatus,
+    TaskStatusUpdateEvent,
 )
+from google.protobuf.json_format import ParseDict, ParseError
+from starlette.exceptions import HTTPException
+from starlette.requests import Request
+from starlette.status import HTTP_400_BAD_REQUEST, HTTP_401_UNAUTHORIZED
 
 from indykite.intent_agent import auth
 from indykite.intent_agent.agent import ExtractionResult, IntentAgent, RequestSubject
@@ -30,26 +36,28 @@ _MILLISECONDS_PER_SECOND = 1000
 _EXTRACTION_SUCCEEDED_MESSAGE = "Intent extracted successfully."
 _EXTRACTION_FAILED_MESSAGE = "Failed to extract intent."
 
-# What each class of token failure (auth.TokenFailure) is answered with: 401 only
-# for what the caller got wrong, 500 for this service's own failure, 502 for an IdP that answered
-# something other than an RFC 7662 answer. A 401 for an IdP outage would send the caller off to
-# refresh a token that was never the problem.
-_TOKEN_FAILURE_STATUS = {
-    auth.TokenFailure.CALLER: HTTP_401_UNAUTHORIZED,
-    auth.TokenFailure.SERVICE: HTTP_500_INTERNAL_SERVER_ERROR,
-    auth.TokenFailure.PROVIDER: HTTP_502_BAD_GATEWAY,
-}
 
-
-def _prompt_from_context(context: RequestContext) -> str:
-    """Concatenate the text parts of the incoming A2A message."""
+def _prompt_from_message(message: Message | None) -> str:
+    """Concatenate the text parts of an A2A message."""
     raw_text = ""
-    if context.message:
-        for part in context.message.parts or []:
+    if message:
+        for part in message.parts or []:
             text = getattr(part, "text", None)
             if text:
                 raw_text += text
     return raw_text
+
+
+def _message_from_body(body: bytes) -> Message | None:
+    """The message of a SendMessage JSON-RPC body; None for anything else."""
+    try:
+        payload = json.loads(body)
+        if not isinstance(payload, dict) or payload.get("method") != "SendMessage":
+            return None
+        request = ParseDict(payload.get("params") or {}, SendMessageRequest(), ignore_unknown_fields=True)
+    except (ValueError, ParseError):
+        return None
+    return request.message if request.HasField("message") else None
 
 
 def _llm_provider(model: str) -> str:
@@ -68,16 +76,37 @@ class _RequestAudit:
     `record()`. Every request produces exactly one record (TDD 4.9).
     """
 
-    def __init__(self, settings: Settings, context: RequestContext) -> None:
-        """Capture what's known before authentication: ids, prompt, and the start time."""
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        headers: Mapping[str, str],
+        context_id: str,
+        prompt: str,
+        started: float | None = None,
+    ) -> None:
+        """Capture what's known before the request is handled: ids, prompt, and the start time
+        (auth.REQUEST_STARTED_KEY when the middleware set it, so latency includes authentication).
+        """
         self._settings = settings
-        self._started = time.perf_counter()
-        headers = context.call_context.state.get("headers") if context.call_context else None
-        self.request_id = request_id_from_headers(headers or {})
-        self.context_id = context.context_id or ""
-        self.prompt = _prompt_from_context(context)
+        self._started = time.perf_counter() if started is None else started
+        self.request_id = request_id_from_headers(headers)
+        self.context_id = context_id
+        self.prompt = prompt
         self.subject_id = ""
         self.subject_type = ""
+
+    @classmethod
+    def for_context(cls, settings: Settings, context: RequestContext) -> "_RequestAudit":
+        """The audit of a request that reached the executor."""
+        state = context.call_context.state if context.call_context else {}
+        return cls(
+            settings,
+            headers=state.get("headers") or {},
+            context_id=context.context_id or "",
+            prompt=_prompt_from_message(context.message),
+            started=state.get(auth.REQUEST_STARTED_KEY),
+        )
 
     def record(self, result: ExtractionResult) -> AuditMessage:
         """Build the audit record for this request from what the pipeline produced."""
@@ -115,7 +144,7 @@ class IntentExecutor(AgentExecutor):
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         """Handle one A2A task: extract intent, emit the result artifact, audit the outcome.
 
-        A rejected token is audited too, like the IAG audits every rejection - as
+        A rejected request is audited too, like the IAG audits every rejection - as
         `outcome = error` with the same reason the caller gets (TDD owner's decision) - and so
         is an unexpected exception, so a request can't slip through unrecorded. Auditing never
         changes the request's own outcome: see _audit.
@@ -131,9 +160,9 @@ class IntentExecutor(AgentExecutor):
         success. That is also why the audit itself has to happen between `_run_extraction` and
         `_emit_terminal_status`, not after both: see `_emit_terminal_status`'s docstring.
         """
-        audit_record = _RequestAudit(self._agent.settings, context)
+        audit_record = _RequestAudit.for_context(self._agent.settings, context)
         try:
-            await self._authenticate(context)
+            self._authenticate(context)
             audit_record.subject_type, audit_record.subject_id = self._subject_params(context)
             result = await self._run_extraction(context, event_queue, audit_record)
         except HTTPException as exc:
@@ -162,32 +191,31 @@ class IntentExecutor(AgentExecutor):
         except Exception:
             logger.exception("Failed to audit request %s (outcome %s)", audit_record.request_id, result.outcome)
 
-    async def _authenticate(self, context: RequestContext) -> None:
-        """Validate the Bearer token identifying the calling client; HTTPException otherwise -
-        401 when the token itself is missing or inactive, 500 when this service couldn't get an
-        answer about it, 502 when the IdP's answer can't be used (_TOKEN_FAILURE_STATUS). This
-        token authenticates the caller (IAG), not any subject - it no longer supplies
-        subject_id/subject_type, which now come from the caller-supplied message metadata
-        instead (see _subject_params).
-        """
-        access_token = auth.get_access_token_from_context(context)
-        if not access_token:
-            raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="Authorization required")
-
-        settings = self._agent.settings
+    async def audit_rejected_request(self, request: Request, message: str) -> None:
+        """Audit a request auth.BearerAuthMiddleware refused; never raises."""
+        started = getattr(request.state, auth.REQUEST_STARTED_KEY, None)
         try:
-            await auth.validate_access_token(
-                access_token,
-                auth.IntrospectionConfig(
-                    introspect_url=str(settings.introspect_url),
-                    client_id=settings.introspect_client_id,
-                    client_secret=settings.introspect_client_secret.get_secret_value(),
-                    expected_audience=settings.expected_token_audience,
-                    timeout_seconds=settings.introspect_timeout_seconds,
-                ),
+            body_message = _message_from_body(await request.body())
+            audit_record = _RequestAudit(
+                self._agent.settings,
+                headers=request.headers,
+                context_id=body_message.context_id if body_message else "",
+                prompt=_prompt_from_message(body_message),
+                started=started,
             )
-        except auth.TokenValidationError as exc:
-            raise HTTPException(status_code=_TOKEN_FAILURE_STATUS[exc.failure], detail=str(exc)) from exc
+        except Exception:
+            logger.exception("Failed to read the rejected request for its audit record")
+            audit_record = _RequestAudit(
+                self._agent.settings, headers=request.headers, context_id="", prompt="", started=started
+            )
+        await self._audit(audit_record, ExtractionResult(text="", outcome=Outcome.ERROR, message=message))
+
+    @staticmethod
+    def _authenticate(context: RequestContext) -> None:
+        """Refuse (401) an unauthenticated call - fails closed if wired without the middleware."""
+        call_context = context.call_context
+        if not call_context or not call_context.user.is_authenticated:
+            raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail=auth.AUTHORIZATION_REQUIRED_MESSAGE)
 
     def _subject_params(self, context: RequestContext) -> tuple[str, str]:
         """Read subject_type/subject_id from the caller-supplied message metadata - IAG

@@ -2,20 +2,43 @@
 
 import contextlib
 from collections.abc import AsyncIterator
+from typing import override
 
+from a2a.server.context import ServerCallContext
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.routes import create_agent_card_routes, create_jsonrpc_routes
 from a2a.server.tasks import InMemoryTaskStore
+from a2a.types import CancelTaskRequest, GetTaskRequest, ListTasksRequest, ListTasksResponse, Task
 from a2a.utils.constants import DEFAULT_RPC_URL
+from a2a.utils.errors import UnsupportedOperationError
 from langchain_core.language_models import BaseChatModel
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.routing import Route
 
+from indykite.intent_agent import auth
 from indykite.intent_agent.agent import IntentAgent
 from indykite.intent_agent.audit.sender import Sender, build_sender
 from indykite.intent_agent.config import Settings
 from indykite.intent_agent.executor import IntentExecutor
 from indykite.intent_agent.policy import PolicyClient
 from indykite.intent_agent.schema import SchemaClient
+
+
+class SendMessageOnlyHandler(DefaultRequestHandler):
+    """The SDK's handler, serving SendMessage only: task reads and cancels are unsupported."""
+
+    @override
+    async def on_get_task(self, params: GetTaskRequest, context: ServerCallContext) -> Task | None:
+        raise UnsupportedOperationError(message="GetTask is not supported.")
+
+    @override
+    async def on_list_tasks(self, params: ListTasksRequest, context: ServerCallContext) -> ListTasksResponse:
+        raise UnsupportedOperationError(message="ListTasks is not supported.")
+
+    @override
+    async def on_cancel_task(self, params: CancelTaskRequest, context: ServerCallContext) -> Task | None:
+        raise UnsupportedOperationError(message="CancelTask is not supported.")
 
 
 def build_app(
@@ -51,11 +74,30 @@ def build_app(
     sender = audit_sender or build_sender(settings)
 
     agent_card = agent.build_agent_card()
-    handler = DefaultRequestHandler(
-        agent_executor=IntentExecutor(agent, sender),
+    executor = IntentExecutor(agent, sender)
+    handler = SendMessageOnlyHandler(
+        agent_executor=executor,
         task_store=InMemoryTaskStore(),
         agent_card=agent_card,
     )
+    # Only the JSON-RPC route: the agent card stays public.
+    authenticated = Middleware(
+        auth.BearerAuthMiddleware,
+        config=auth.IntrospectionConfig(
+            introspect_url=str(settings.introspect_url),
+            client_id=settings.introspect_client_id,
+            client_secret=settings.introspect_client_secret.get_secret_value(),
+            expected_audience=settings.expected_token_audience,
+            timeout_seconds=settings.introspect_timeout_seconds,
+        ),
+        on_rejected=executor.audit_rejected_request,
+    )
+    rpc_routes = [
+        Route(route.path, route.endpoint, methods=route.methods, name=route.name, middleware=[authenticated])
+        for route in create_jsonrpc_routes(
+            request_handler=handler, rpc_url=DEFAULT_RPC_URL, context_builder=auth.CallContextBuilder()
+        )
+    ]
 
     @contextlib.asynccontextmanager
     async def _lifespan(_app: Starlette) -> AsyncIterator[None]:
@@ -68,7 +110,7 @@ def build_app(
     app = Starlette(
         routes=[
             *create_agent_card_routes(agent_card=agent_card),
-            *create_jsonrpc_routes(request_handler=handler, rpc_url=DEFAULT_RPC_URL),
+            *rpc_routes,
         ],
         lifespan=_lifespan,
     )
