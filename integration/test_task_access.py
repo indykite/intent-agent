@@ -2,8 +2,12 @@
 
 import asyncio
 import json
+import queue
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from a2a.server.tasks import InMemoryTaskStore
 from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
 from starlette.status import HTTP_200_OK, HTTP_401_UNAUTHORIZED
 from starlette.testclient import TestClient
@@ -16,6 +20,7 @@ from indykite.intent_agent.config import Settings
 
 _A2A_HEADERS = {"A2A-Version": "1.0"}
 _CALLERS = {"alice-token": "alice", "bob-token": "bob"}
+_TASK_NOT_FOUND = -32001
 _UNSUPPORTED_OPERATION = -32004
 
 
@@ -64,20 +69,16 @@ def _rpc(client: TestClient, method: str, params: dict, token: str | None = None
     return client.post("/", headers=headers, json={"jsonrpc": "2.0", "id": "1", "method": method, "params": params})
 
 
-def _send_message(client: TestClient, token: str | None):
-    return _rpc(
-        client,
-        "SendMessage",
-        {
-            "message": {
-                "role": "ROLE_USER",
-                "parts": [{"text": "Can I buy 50 shares of AAPL?"}],
-                "messageId": "integration-test-1",
-                "metadata": {"subject_type": "Customer", "subject_id": "test-subject"},
-            },
-        },
-        token,
-    )
+def _send_message(client: TestClient, token: str | None, *, message_id: str = "integration-test-1", task_id: str = ""):
+    message = {
+        "role": "ROLE_USER",
+        "parts": [{"text": "Can I buy 50 shares of AAPL?"}],
+        "messageId": message_id,
+        "metadata": {"subject_type": "Customer", "subject_id": "test-subject"},
+    }
+    if task_id:
+        message["taskId"] = task_id
+    return _rpc(client, "SendMessage", {"message": message}, token)
 
 
 def _audit_records(tmp_path) -> list[dict]:
@@ -125,6 +126,43 @@ def test_task_methods_are_unsupported(client, method, token):
     assert response.status_code == HTTP_200_OK
     assert response.json()["error"]["code"] == _UNSUPPORTED_OPERATION
     assert "result" not in response.json()
+
+
+def test_another_caller_cannot_join_a_running_task(client, mocker):
+    """A SendMessage naming another caller's still-running task is TaskNotFound: the SDK loads the
+    task from the store scoped to `request.user`, so it is never continued or returned to them.
+    """
+    release = threading.Event()
+    saved_task_ids = queue.Queue()
+    save = InMemoryTaskStore.save
+
+    async def _record_save(store, task, context):
+        await save(store, task, context)
+        saved_task_ids.put(task.id)
+
+    async def _held_extraction(*_args):
+        await asyncio.to_thread(release.wait, 5)
+        return ExtractionResult(text="{}", outcome=Outcome.SUCCESS)
+
+    mocker.patch.object(InMemoryTaskStore, "save", _record_save)
+    mocker.patch.object(IntentAgent, "run_extraction", _held_extraction)
+    safety_release = threading.Timer(5, release.set)
+    safety_release.start()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        alice = pool.submit(_send_message, client, "alice-token")
+        task_id = saved_task_ids.get(timeout=5)
+        bob = _send_message(client, "bob-token", message_id="integration-test-2", task_id=task_id)
+        release.set()
+        alice_task = alice.result(timeout=5).json()["result"]["task"]
+    safety_release.cancel()
+
+    assert bob.json()["error"]["code"] == _TASK_NOT_FOUND
+    assert "result" not in bob.json()
+    assert alice_task["id"] == task_id
+    history_ids = [message["messageId"] for message in alice_task["history"]]
+    assert "integration-test-1" in history_ids
+    assert "integration-test-2" not in history_ids
 
 
 def test_agent_card_stays_public(client):

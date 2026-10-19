@@ -188,7 +188,9 @@ RejectionHook = Callable[[Request, str], Awaitable[None]]
 
 
 def _caller_name(claims: Mapping[str, Any]) -> str:
-    """The token's `sub`, else its `client_id`; "" when it has neither."""
+    """The token's `sub`, else its `client_id`; "" when it has neither (refused: a blank owner
+    would be shared by every such caller, see BearerAuthMiddleware).
+    """
     for claim in ("sub", "client_id"):
         value = claims.get(claim)
         if isinstance(value, str) and value.strip():
@@ -197,8 +199,10 @@ def _caller_name(claims: Mapping[str, Any]) -> str:
 
 
 class BearerAuthMiddleware(BaseHTTPMiddleware):
-    """Introspects the Bearer token of every request on the wrapped route and sets `request.user`,
-    which the A2A SDK's task store keys tasks by. Refusals go to `on_rejected` for auditing.
+    """Introspects the Bearer token of every request on the wrapped route and sets `request.user`.
+    The A2A SDK stores each task under that user, and a SendMessage naming an existing `taskId`
+    only finds the caller's own - so another caller can't join a running task and get its history
+    back. Refusals go to `on_rejected` for auditing.
     """
 
     def __init__(self, app: ASGIApp, config: IntrospectionConfig, on_rejected: RejectionHook) -> None:

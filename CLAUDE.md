@@ -184,7 +184,8 @@ Eight modules carry whole service:
   Bearer `access_token` off the request and validates it via RFC 7662 Token Introspection against
   the external IdP (no local JWT decode/signature check - the introspection call itself is what
   covers signature validity). The token's `sub` (else `client_id`, neither is a 401) becomes
-  `request.user`, which the SDK's task store keys tasks by. Every introspection refusal
+  `request.user`, which the SDK's task store keys tasks by, so a `SendMessage` naming another
+  caller's `taskId` is `TaskNotFound` rather than joining it. Every introspection refusal
   is a `TokenValidationError` classified by whose fault it is (`TokenFailure`), the IAG's split:
   `CALLER` (blank or inactive token, 401), `SERVICE` (the request never got an answer, 500),
   `PROVIDER` (any status instead of an answer, 4xx and 5xx alike, or a body that isn't an
