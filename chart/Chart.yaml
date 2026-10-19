@@ -4,11 +4,12 @@ name: intent-agent
 description: IndyKite Intent Agent - A2A service extracting AuthZEN-style intent from natural-language prompts
 type: application
 # version/appVersion are release-please-managed (see ../release-please-config.json's
-# extra-files) and always match the container image version for a real release. PR/master
+# extra-files; the generic updater edits the lines marked x-release-please-version in place)
+# and always match the container image version for a real release. PR/master
 # builds don't touch this file - the build-publish-deploy workflow suffixes the packaged version
 # at publish time instead (see .github/workflows/build-publish-deploy.yaml).
-version: 0.3.1
-appVersion: "0.3.0"
+version: 0.3.1 # x-release-please-version
+appVersion: "0.3.0" # x-release-please-version
 
 keywords:
   - intent-agent

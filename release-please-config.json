@@ -8,16 +8,7 @@
       "draft": false,
       "prerelease": false,
       "extra-files": [
-        {
-          "type": "yaml",
-          "path": "chart/Chart.yaml",
-          "jsonpath": "$.version"
-        },
-        {
-          "type": "yaml",
-          "path": "chart/Chart.yaml",
-          "jsonpath": "$.appVersion"
-        }
+        "chart/Chart.yaml"
       ]
     }
   },
