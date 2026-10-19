@@ -4,22 +4,21 @@ A2A task's own terminal state reflects that same success/failure classification.
 """
 
 import asyncio
+import json
 import re
 
 import pytest
 from a2a import types as a2a_types
+from a2a.auth.user import UnauthenticatedUser
 from a2a.server.agent_execution import RequestContext
 from a2a.server.context import ServerCallContext
+from a2a.server.routes.common import StarletteUser
 from a2a.types import TaskState, TaskStatusUpdateEvent
+from starlette.authentication import SimpleUser
 from starlette.exceptions import HTTPException
-from starlette.status import (
-    HTTP_400_BAD_REQUEST,
-    HTTP_401_UNAUTHORIZED,
-    HTTP_500_INTERNAL_SERVER_ERROR,
-    HTTP_502_BAD_GATEWAY,
-)
+from starlette.requests import Request
+from starlette.status import HTTP_400_BAD_REQUEST, HTTP_401_UNAUTHORIZED
 
-from indykite.intent_agent import auth
 from indykite.intent_agent.agent import ExtractionResult
 from indykite.intent_agent.audit.message import Outcome
 from indykite.intent_agent.config import Settings
@@ -34,13 +33,15 @@ _MAX_RECORDS_PER_REQUEST = 1
 _DEFAULT_METADATA = object()
 
 
-def _context(headers, *, metadata=_DEFAULT_METADATA):
+def _context(headers, *, metadata=_DEFAULT_METADATA, authenticated=True):
     """A RequestContext carrying `headers` and a one-part user message, as the A2A routes
-    build it. subject_type/subject_id now come from the message's metadata (the caller
-    resolves them, not a token) - defaults to a full pair so most tests don't need to specify
-    it; a test exercising the metadata itself (e.g. a missing subject_type, or no metadata
-    object at all - pass metadata=None for that) passes its own.
+    build it, for an authenticated caller unless `authenticated=False`. subject_type/subject_id
+    now come from the message's metadata (the caller resolves them, not a token) - defaults to a
+    full pair so most tests don't need to specify it; a test exercising the metadata itself (e.g.
+    a missing subject_type, or no metadata object at all - pass metadata=None for that) passes its
+    own.
     """
+    user = StarletteUser(SimpleUser("caller-1")) if authenticated else UnauthenticatedUser()
     message = a2a_types.Message(
         role=a2a_types.Role.ROLE_USER,
         parts=[a2a_types.Part(text=_PROMPT)],
@@ -49,7 +50,7 @@ def _context(headers, *, metadata=_DEFAULT_METADATA):
         metadata=({"subject_type": "Customer", "subject_id": "user-1"} if metadata is _DEFAULT_METADATA else metadata),
     )
     return RequestContext(
-        call_context=ServerCallContext(state={"headers": headers}),
+        call_context=ServerCallContext(state={"headers": headers}, user=user),
         request=a2a_types.SendMessageRequest(message=message),
         context_id="ctx-1",
     )
@@ -115,7 +116,6 @@ def test_success_records_the_extraction(baseline_env, mocker):
     """The terminal record carries the pipeline's classification, the token's subject, the A2A
     context id, the caller's request id, and what the caller was sent.
     """
-    mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value={"active": True, "sub": "user-1"}))
     result = ExtractionResult(
         text="{...}",
         outcome=Outcome.SUCCESS,
@@ -171,7 +171,6 @@ def test_audit_ordering_around_the_terminal_task_event(baseline_env, mocker):
        of it, so a failure there can never reach either `except` clause a second time), not by
        a guard flag.
     """
-    mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value={"active": True, "sub": "user-1"}))
     success_result = ExtractionResult(text="{...}", outcome=Outcome.SUCCESS, evaluations=_EVALUATIONS)
 
     executor, sender, _agent = _executor(baseline_env, mocker, result=success_result)
@@ -222,7 +221,6 @@ def test_non_success_outcomes_surface_as_task_state_failed(baseline_env, mocker,
     (the detailed reason stays in the artifact JSON, not duplicated here), not left on the
     pre-extraction "Extracting intent..." placeholder.
     """
-    mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value={"active": True, "sub": "user-1"}))
     executor, _sender, _agent = _executor(
         baseline_env, mocker, result=ExtractionResult(text="{...}", outcome=outcome, message="did not work out")
     )
@@ -238,7 +236,6 @@ def test_policy_fetch_failure_is_recorded_on_the_audit_trail(baseline_env, mocke
     alongside the caller-facing `context.parameters.policy_fetch_failed` marker, for server-side
     visibility even though the request itself still succeeds.
     """
-    mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value={"active": True, "sub": "user-1"}))
     result = ExtractionResult(
         text="{...}",
         outcome=Outcome.SUCCESS,
@@ -257,7 +254,6 @@ def test_policy_fetch_failure_is_recorded_on_the_audit_trail(baseline_env, mocke
 
 def test_generates_a_request_id_when_the_caller_sends_none(baseline_env, mocker):
     """No X-Request-ID means a server-generated UUID (TDD: `request_id` (UUID), server)."""
-    mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value={"active": True, "sub": "user-1"}))
     executor, sender, _agent = _executor(
         baseline_env,
         mocker,
@@ -272,14 +268,12 @@ def test_generates_a_request_id_when_the_caller_sends_none(baseline_env, mocker)
     assert record.message == "nothing matched"
 
 
-def test_missing_bearer_is_audited_as_error_and_still_rejected(baseline_env, mocker):
-    """A request with no token is rejected with 401 AND audited (IAG: "no bearer token") -
-    as `outcome = error` with the same reason the caller gets (TDD owner's decision).
-    """
+def test_unauthenticated_call_is_audited_as_error_and_still_rejected(baseline_env, mocker):
+    """An unauthenticated call is rejected with 401 AND audited with the caller's reason."""
     executor, sender, agent = _executor(baseline_env, mocker)
 
     with pytest.raises(HTTPException) as excinfo:
-        _execute(executor, _context({"x-request-id": "req-401"}), mocker)
+        _execute(executor, _context({"x-request-id": "req-401"}, authenticated=False), mocker)
 
     assert excinfo.value.status_code == HTTP_401_UNAUTHORIZED
     record = _sole_record(sender)
@@ -296,7 +290,6 @@ def test_missing_subject_type_is_audited_as_error_and_rejected(baseline_env, moc
     """A caller-supplied subject_type is required (IAG resolves and supplies it, not the
     token) - missing/blank it is a 400, audited the same way a rejected token is.
     """
-    mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value={"active": True}))
     executor, sender, agent = _executor(baseline_env, mocker)
 
     context = _context({"authorization": "Bearer good-token"}, metadata={"subject_id": "user-1"})
@@ -317,7 +310,6 @@ def test_missing_subject_id_is_audited_as_error_and_rejected(baseline_env, mocke
     and attach the caller's identity), not a legitimate anonymous-caller request. Missing/blank
     is a 400, audited the same way a missing subject_type is.
     """
-    mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value={"active": True}))
     executor, sender, agent = _executor(baseline_env, mocker)
 
     context = _context({"authorization": "Bearer good-token"}, metadata={"subject_type": "Customer"})
@@ -335,7 +327,6 @@ def test_whitespace_only_subject_type_is_audited_as_error_and_rejected(baseline_
     """A whitespace-only subject_type must count as blank - the same 400 as a missing one, not
     a value that happens to be truthy and slips past the check.
     """
-    mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value={"active": True}))
     executor, sender, agent = _executor(baseline_env, mocker)
 
     context = _context({"authorization": "Bearer good-token"}, metadata={"subject_type": "   "})
@@ -354,7 +345,6 @@ def test_non_string_metadata_value_is_audited_as_error_and_rejected(baseline_env
     """A non-string subject_type/subject_id (e.g. a nested object) must be rejected outright,
     not silently str()-coerced into a Python repr and bound into every evaluation/audit record.
     """
-    mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value={"active": True}))
     executor, sender, agent = _executor(baseline_env, mocker)
 
     context = _context(
@@ -376,7 +366,6 @@ def test_missing_metadata_object_is_audited_as_error_and_rejected(baseline_env, 
     one) must be the same 400 as a missing subject_type, not an unhandled TypeError from
     treating None as a mapping.
     """
-    mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value={"active": True}))
     executor, sender, agent = _executor(baseline_env, mocker)
 
     context = _context({"authorization": "Bearer good-token"}, metadata=None)
@@ -390,57 +379,63 @@ def test_missing_metadata_object_is_audited_as_error_and_rejected(baseline_env, 
     agent.run_extraction.assert_not_awaited()
 
 
-def test_rejected_token_is_audited_with_the_introspection_reason(baseline_env, mocker):
-    """An inactive/invalid token is audited with the exact reason handed back in the 401."""
-    mocker.patch.object(
-        auth,
-        "validate_access_token",
-        mocker.AsyncMock(side_effect=auth.TokenValidationError("Token is not active", auth.TokenFailure.CALLER)),
-    )
-    executor, sender, _agent = _executor(baseline_env, mocker)
+def _request(body: bytes, headers: dict[str, str]) -> Request:
+    """A Starlette request with this body and these headers, as the middleware hands it over."""
 
-    with pytest.raises(HTTPException) as excinfo:
-        _execute(executor, _context({"authorization": "Bearer bad-token"}), mocker)
+    async def _receive():
+        return {"type": "http.request", "body": body, "more_body": False}
 
-    assert excinfo.value.status_code == HTTP_401_UNAUTHORIZED
-    assert excinfo.value.detail == "Token is not active"
+    raw_headers = [(name.lower().encode(), value.encode()) for name, value in headers.items()]
+    return Request({"type": "http", "method": "POST", "path": "/", "headers": raw_headers}, _receive)
+
+
+def _send_message_body(*, context_id: str | None = None) -> bytes:
+    """A SendMessage JSON-RPC body carrying the test prompt."""
+    message = {"role": "ROLE_USER", "parts": [{"text": _PROMPT}], "messageId": "msg-1"}
+    if context_id:
+        message["contextId"] = context_id
+    return json.dumps({"jsonrpc": "2.0", "id": "1", "method": "SendMessage", "params": {"message": message}}).encode()
+
+
+def test_rejected_send_message_is_audited_with_its_prompt(baseline_env, mocker):
+    """A refused SendMessage is audited with its reason, request id, prompt and context id."""
+    executor, sender, agent = _executor(baseline_env, mocker)
+    request = _request(_send_message_body(context_id="ctx-9"), {"x-request-id": "req-401"})
+
+    asyncio.run(executor.audit_rejected_request(request, "Token is not active"))
+
     record = _sole_record(sender)
     assert record.outcome == Outcome.ERROR
     assert record.message == "Token is not active"
+    assert record.request_id == "req-401"
+    assert record.prompt == _PROMPT
+    assert record.context_id == "ctx-9"
     assert record.subject_id == ""
+    assert record.evaluations == []
+    agent.run_extraction.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
-    ("failure", "message", "status"),
+    "body",
     [
-        (auth.TokenFailure.CALLER, "Token is not active", HTTP_401_UNAUTHORIZED),
-        (auth.TokenFailure.SERVICE, "Token introspection request failed", HTTP_500_INTERNAL_SERVER_ERROR),
-        (auth.TokenFailure.PROVIDER, "Introspection endpoint returned status 503", HTTP_502_BAD_GATEWAY),
+        json.dumps({"jsonrpc": "2.0", "id": "1", "method": "ListTasks", "params": {}}).encode(),
+        b"not json",
+        b"[]",
+        json.dumps({"jsonrpc": "2.0", "id": "1", "method": "SendMessage", "params": {"message": 7}}).encode(),
     ],
-    ids=["caller-401", "service-500", "provider-502"],
+    ids=["other-method", "not-json", "not-an-object", "malformed-message"],
 )
-def test_token_failures_are_answered_by_whose_fault_they_are(baseline_env, mocker, failure, message, status):
-    """Only the caller's own token is a 401 - the IAG's split: this service failing to get an
-    answer is a 500, an IdP answering something that isn't an answer is a 502 - so an IdP outage
-    doesn't read as a bad token. All three are audited as `error` with the caller's message, and
-    none reaches the extraction.
-    """
-    mocker.patch.object(
-        auth,
-        "validate_access_token",
-        mocker.AsyncMock(side_effect=auth.TokenValidationError(message, failure)),
-    )
-    executor, sender, agent = _executor(baseline_env, mocker)
+def test_rejected_request_without_a_readable_message_is_still_audited(baseline_env, mocker, body):
+    """Any other refused request is still audited, with an empty prompt."""
+    executor, sender, _agent = _executor(baseline_env, mocker)
 
-    with pytest.raises(HTTPException) as excinfo:
-        _execute(executor, _context({"authorization": "Bearer some-token"}), mocker)
+    asyncio.run(executor.audit_rejected_request(_request(body, {}), "Authorization required"))
 
-    assert excinfo.value.status_code == status
-    assert excinfo.value.detail == message
     record = _sole_record(sender)
     assert record.outcome == Outcome.ERROR
-    assert record.message == message
-    agent.run_extraction.assert_not_awaited()
+    assert record.message == "Authorization required"
+    assert record.prompt == ""
+    assert record.context_id == ""
 
 
 @pytest.mark.parametrize(
@@ -456,7 +451,6 @@ def test_llm_provider_is_derived_from_the_configured_model(baseline_env, monkeyp
     """llm_provider comes from GEMINI_MODEL, not a hard-coded constant, so the record can't
     disagree with what is configured - the family prefix of the model name.
     """
-    mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value={"active": True, "sub": "user-1"}))
     baseline_env()
     monkeypatch.setenv("GEMINI_MODEL", model)
     executor, sender, _agent = _executor(
@@ -475,7 +469,6 @@ def test_audit_failure_does_not_change_a_successful_request(baseline_env, mocker
     the caller already has into an error - it is logged with the request id instead.
     """
     caplog.set_level("ERROR")
-    mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value={"active": True, "sub": "user-1"}))
     executor, sender, _agent = _executor(
         baseline_env, mocker, result=ExtractionResult(text="{...}", outcome=Outcome.SUCCESS)
     )
@@ -497,7 +490,7 @@ def test_audit_failure_does_not_override_the_rejection(baseline_env, mocker, cap
     sender.send.side_effect = RuntimeError("audit backend down")
 
     with pytest.raises(HTTPException) as excinfo:
-        _execute(executor, _context({"x-request-id": "req-401"}), mocker)
+        _execute(executor, _context({"x-request-id": "req-401"}, authenticated=False), mocker)
 
     assert excinfo.value.status_code == HTTP_401_UNAUTHORIZED
     assert excinfo.value.detail == "Authorization required"
@@ -508,7 +501,6 @@ def test_unexpected_failure_is_audited_and_re_raised(baseline_env, mocker):
     """A crash inside the pipeline still leaves one record behind (outcome=error, the exception
     as the message) and still propagates - auditing must never swallow the failure.
     """
-    mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value={"active": True, "sub": "user-1"}))
     executor, sender, _agent = _executor(
         baseline_env, mocker, run_extraction=mocker.AsyncMock(side_effect=RuntimeError("boom"))
     )

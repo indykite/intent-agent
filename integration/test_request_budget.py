@@ -37,7 +37,7 @@ def test_hung_llm_call_is_cut_off_within_request_budget(monkeypatch, mocker, tmp
     monkeypatch.setenv("AUDIT_FILE_ROTATION_STRATEGY", "time")
     monkeypatch.setenv("LLM_TIMEOUT_SECONDS", str(_LLM_TIMEOUT_SECONDS))
     mocker.patch(
-        "indykite.intent_agent.executor.auth.validate_access_token",
+        "indykite.intent_agent.auth.validate_access_token",
         return_value={"active": True, "sub": "test-subject"},
     )
     fake_schema_client = mocker.Mock(

@@ -78,7 +78,7 @@ def _build_test_app(monkeypatch, mocker, schema_server, tmp_path, *, mock_ainvok
     monkeypatch.setenv("AUDIT_FILE_FORMAT", "json")
     monkeypatch.setenv("AUDIT_FILE_ROTATION_STRATEGY", "time")
     mocker.patch(
-        "indykite.intent_agent.executor.auth.validate_access_token",
+        "indykite.intent_agent.auth.validate_access_token",
         return_value={"active": True, "sub": "test-subject"},
     )
     fake_bound_llm = mocker.Mock(ainvoke=mock_ainvoke)

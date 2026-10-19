@@ -130,7 +130,8 @@ after every `.env` change** in the steps below.
    Expect `outcome: success`, the bound `evaluations`, `subject_id` from `message.metadata`, a
    UUID `request_id` and a small `latency_ms`.
 2. **Failures are audited with the caller's message.** Send the request without the
-   `Authorization` header (401, `outcome: error`, `message: Authorization required`); restart
+   `Authorization` header (401 with `WWW-Authenticate: Bearer`, `outcome: error`, `message:
+   Authorization required`) - the same for `GetTask`/`ListTasks`, which need a token too; restart
    the mock IdP with `MOCK_INTROSPECT_MODE=inactive` and call again (401, `Token is not
    active`), then with `MOCK_INTROSPECT_MODE=broken` (502, `Introspection endpoint returned
    status 503` - the IdP's fault, not the token's); stop the mock IdP and call again (500,

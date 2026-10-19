@@ -98,7 +98,7 @@ def test_accepts_token_scoped_to_this_agent_end_to_end(monkeypatch, mocker, tmp_
     own default, "intent_agent") must be accepted and the request extracted normally.
     """
     _set_baseline_env(monkeypatch, tmp_path)
-    _mock_introspection_response(mocker, {"active": True, "aud": "intent_agent"})
+    _mock_introspection_response(mocker, {"active": True, "aud": "intent_agent", "client_id": "agent-gateway"})
     fake_schema_client, fake_policy_client = _fake_schema_and_policy_clients(mocker)
 
     tool_call_response = AIMessage(

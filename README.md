@@ -56,7 +56,8 @@ curl http://localhost:6003/.well-known/agent-card.json
 Send a prompt. This is the A2A JSON-RPC transport, not a REST API: note the `A2A-Version` header,
 the `SendMessage` method name, the `ROLE_USER` role and the caller's `subject_type`/`subject_id`
 in `message.metadata`. The Bearer token authenticates the calling client (via RFC 7662 token
-introspection), not the subject:
+introspection), not the subject. Every JSON-RPC method needs it, but only `SendMessage` is served
+(`GetTask`, `ListTasks` and `CancelTask` answer "unsupported operation"); the agent card stays public:
 
 ```sh
 curl -X POST http://localhost:6003/ \
