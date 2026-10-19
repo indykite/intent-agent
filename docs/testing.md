@@ -103,8 +103,8 @@ service code (`indykite/`: skill content, the `input_schema` derivation, the LLM
 config, the schema and policy loaders, the pipeline modules), the dependency pins
 (`pyproject.toml`, `uv.lock`), `evals/` or the workflow itself, on every push to `master` touching the same
 paths, and on demand (`workflow_dispatch`). Release-please's version bump in
-`indykite/intent_agent/version.py` and `chart/Chart.yaml` alone doesn't count, on PRs or on `master`. Its `golden-evals`
-check is meant to be required: every PR reports it, and a small `changes` job skips the suite
+`indykite/intent_agent/version.py` and `chart/Chart.yaml` alone doesn't count, on PRs or on `master`.
+Its `golden-evals` check is meant to be required: every PR reports it, and a small `changes` job skips the suite
 (skipped counts as passing) when the PR touches none of those files, so unrelated PRs make no
 Gemini calls and are not blocked. It takes `GEMINI_API_KEY` from the `evals` GitHub environment,
 so each run waits for a reviewer's approval before it gets the key. The key is never given to code
