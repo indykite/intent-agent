@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: pre-commit
-        uses: indykite/.github/.github/actions/pre-commit@761ebb8b79f5a3302c7fa8c2144494fc4d4528b0 # master
+        uses: indykite/.github/.github/actions/pre-commit@76807c2d1c51d467f39590d6b0caa5a62a033a00 # master
         with:
           # comma separated list of hook ids; exclude autoupdate and branch checks on scheduled runs for cache purposes
           pre_commit_skip: >-
@@ -36,7 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: trivy
-        uses: indykite/.github/.github/actions/trivy@761ebb8b79f5a3302c7fa8c2144494fc4d4528b0 # master
+        uses: indykite/.github/.github/actions/trivy@76807c2d1c51d467f39590d6b0caa5a62a033a00 # master
         with:
           scanners: vuln,secret,misconfig,license
           slack-bot-token: ${{ secrets.SLACK_BOT_TOKEN }}
