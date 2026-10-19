@@ -29,7 +29,7 @@ What it does not do: make authorization decisions. A decision is the downstream 
 ## Quick start
 
 Each release publishes the image to Docker Hub as `docker.io/indykite/intent-agent`, with a Helm chart
-under `chart/`. To build locally instead:
+under `chart/`. `latest` tag is not published. To build locally instead:
 
 ```sh
 cp .env.example .env     # fill in the required settings listed under Configuration
