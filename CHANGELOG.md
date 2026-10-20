@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.2](https://github.com/indykite/intent-agent/compare/v0.4.1...v0.4.2) (2026-10-20)
+
+
+### Bug Fixes
+
+* implement a2a compliant errors ([#109](https://github.com/indykite/intent-agent/issues/109)) ([0685c0d](https://github.com/indykite/intent-agent/commit/0685c0d8167dfb2df1b60cd7860320b9285aad78))
+* mention auth requirement in agent-card ([#113](https://github.com/indykite/intent-agent/issues/113)) ([4b8499a](https://github.com/indykite/intent-agent/commit/4b8499ac10e01088ae4834499625e2bc1a717e31))
+
 ## [0.4.1](https://github.com/indykite/intent-agent/compare/v0.4.0...v0.4.1) (2026-10-20)
 
 
