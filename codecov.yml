@@ -14,3 +14,7 @@ coverage:
       default:
         target: 90%
         threshold: 1%
+
+# Bumped by release-please on every release commit; nothing to test.
+ignore:
+  - "indykite/intent_agent/version.py"
