@@ -152,6 +152,9 @@ jobs:
         id: meta
         with:
           images: ${{ steps.registries.outputs.images }}
+          # type=semver would otherwise make the action add a `latest` tag on every release.
+          flavor: |
+            latest=false
           # The type=raw tag covers this job's two non-release triggers (PR and master push); a
           # release build carries no version.image-tag (see the "version" job) and gets its
           # version from type=semver above instead.
