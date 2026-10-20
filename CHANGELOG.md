@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/indykite/intent-agent/compare/v0.4.0...v0.4.1) (2026-10-20)
+
+
+### Documentation
+
+* clarify docker tags ([#110](https://github.com/indykite/intent-agent/issues/110)) ([b49cceb](https://github.com/indykite/intent-agent/commit/b49cceb08c6e5eb90c2203c878011e4743615b27))
+
 ## [0.4.0](https://github.com/indykite/intent-agent/compare/v0.3.0...v0.4.0) (2026-10-19)
 
 
