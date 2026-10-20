@@ -114,14 +114,12 @@ def _decode_schema(encoded: bytes) -> dict[str, Any] | None:
     get_cached() self-heals, rather than leaving a bad value in place forever."""
     try:
         value = json.loads(encoded)
-        if not isinstance(value, dict):
-            message = "unrecognized cached schema value shape"
-            raise ValueError(message)  # noqa: TRY301, TRY004
     except (ValueError, TypeError):
-        logger.warning("Ignoring unreadable cached schema value (legacy or corrupted) - treating as a miss")
-        return None
-    else:
+        value = None
+    if isinstance(value, dict):
         return value
+    logger.warning("Ignoring unreadable cached schema value (legacy or corrupted) - treating as a miss")
+    return None
 
 
 class SchemaClient:

@@ -5,6 +5,7 @@ SchemaClient/PolicyClient run synchronously on IntentAgent's own ThreadPoolExecu
 backend is a plain redis.Redis client, not redis.asyncio - no event loop to bridge into.
 """
 
+import threading
 import time
 from abc import ABC, abstractmethod
 
@@ -57,32 +58,38 @@ class MemoryStorageBackend(StorageBackend):
 
     expires_at is a time.monotonic() deadline, or None for no expiry - monotonic so a clock
     adjustment can't throw off expiry math. Checked and evicted lazily on get(), no background
-    sweep.
+    sweep. Shared by the fetch-executor's worker threads, so every access holds a lock: without
+    it two readers could both see the same expired entry and the second `del` would raise
+    KeyError (or evict a value a concurrent set() had just refreshed).
     """
 
     def __init__(self) -> None:
         """Start with an empty store."""
         self._store: dict[str, tuple[bytes, float | None]] = {}
+        self._lock = threading.Lock()
 
     def get(self, key: str) -> bytes | None:
         """Return the value at key, evicting it first if its TTL has passed."""
-        entry = self._store.get(key)
-        if entry is None:
-            return None
-        value, expires_at = entry
-        if expires_at is not None and time.monotonic() >= expires_at:
-            del self._store[key]
-            return None
-        return value
+        with self._lock:
+            entry = self._store.get(key)
+            if entry is None:
+                return None
+            value, expires_at = entry
+            if expires_at is not None and time.monotonic() >= expires_at:
+                del self._store[key]
+                return None
+            return value
 
     def set(self, key: str, value: bytes, *, ttl_seconds: float | None = None) -> None:
         """Store value at key, with an absolute monotonic expiry when ttl_seconds is given."""
         expires_at = time.monotonic() + ttl_seconds if ttl_seconds is not None else None
-        self._store[key] = (value, expires_at)
+        with self._lock:
+            self._store[key] = (value, expires_at)
 
     def delete(self, key: str) -> None:
         """Remove key if present."""
-        self._store.pop(key, None)
+        with self._lock:
+            self._store.pop(key, None)
 
 
 class RedisStorageBackend(StorageBackend):

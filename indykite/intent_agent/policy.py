@@ -114,22 +114,21 @@ def _decode_envelope(encoded: bytes) -> _PolicyEnvelope | None:
     """
     try:
         raw = json.loads(encoded)
-        if not isinstance(raw, dict):
-            message = "unrecognized cache envelope shape"
-            raise ValueError(message)  # noqa: TRY301, TRY004 - ValueError kept consistent with the other shape checks here
-        kind = _EnvelopeKind(raw.get("kind"))  # raises ValueError for a missing/unrecognized kind
-        policies = raw.get("policies")
-        reason = raw.get("reason")
-        if kind == _EnvelopeKind.SUCCESS and not isinstance(policies, list):
-            message = "success envelope missing a policies list"
-            raise ValueError(message)  # noqa: TRY301 - caught by the except right below, not left to propagate
-        if kind == _EnvelopeKind.FAILURE and not isinstance(reason, str):
-            message = "failure envelope missing a reason string"
-            raise ValueError(message)  # noqa: TRY301 - caught by the except right below, not left to propagate
-    except (ValueError, TypeError, KeyError):
+    except (ValueError, TypeError):
         return None
-    else:
-        return _PolicyEnvelope(kind=kind, policies=policies, reason=reason)
+    if not isinstance(raw, dict):
+        return None
+    try:
+        kind = _EnvelopeKind(raw.get("kind"))
+    except ValueError:  # a missing/unrecognized kind
+        return None
+    policies = raw.get("policies")
+    reason = raw.get("reason")
+    if kind == _EnvelopeKind.SUCCESS and not isinstance(policies, list):
+        return None
+    if kind == _EnvelopeKind.FAILURE and not isinstance(reason, str):
+        return None
+    return _PolicyEnvelope(kind=kind, policies=policies, reason=reason)
 
 
 def _encode_success(policies: list[dict[str, Any]]) -> bytes:

@@ -2,6 +2,9 @@
 faked with fakeredis so no real Redis server is needed.
 """
 
+import time
+from concurrent.futures import ThreadPoolExecutor
+
 from fakeredis import FakeRedis
 from redis.backoff import NoBackoff
 from redis.exceptions import ConnectionError as RedisConnectionError
@@ -11,6 +14,8 @@ from indykite.redis.storage import MemoryStorageBackend, RedisStorageBackend, bu
 _TTL_SECONDS = 60.0
 _EXPECTED_TTL_CEILING_SECONDS = 6
 _EXPECTED_SOCKET_TIMEOUT_SECONDS = 2.5
+_CONCURRENT_READERS = 4
+_LOOKUP_DELAY_SECONDS = 0.05
 
 
 def _redis_backend():
@@ -69,6 +74,30 @@ def test_memory_backend_evicts_on_read_past_ttl(mocker):
     # Evicted, not just reported as expired - a second read must still be None with no
     # lingering internal entry.
     assert backend._store == {}
+
+
+def test_memory_backend_concurrent_reads_of_an_expired_entry_do_not_raise(mocker):
+    """Several threads reading the same expired key must all get None: without a lock they all
+    find the entry before any evicts it, and every `del` after the first raised KeyError.
+    """
+    monotonic = mocker.patch("indykite.redis.storage.time.monotonic")
+    monotonic.return_value = 0.0
+    backend = MemoryStorageBackend()
+    backend.set("key", b"value", ttl_seconds=_TTL_SECONDS)
+    monotonic.return_value = _TTL_SECONDS + 1
+
+    class _SlowLookupDict(dict):
+        def get(self, key, default=None):
+            entry = super().get(key, default)
+            time.sleep(_LOOKUP_DELAY_SECONDS)
+            return entry
+
+    backend._store = _SlowLookupDict(backend._store)
+
+    with ThreadPoolExecutor(max_workers=_CONCURRENT_READERS) as pool:
+        results = list(pool.map(lambda _: backend.get("key"), range(_CONCURRENT_READERS)))
+
+    assert results == [None] * _CONCURRENT_READERS
 
 
 def test_memory_backend_keeps_a_value_still_inside_its_ttl(mocker):
