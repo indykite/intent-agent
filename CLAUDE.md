@@ -157,7 +157,11 @@ Eight modules carry whole service:
 - **`app.py`** — `build_app(settings) -> (Starlette app, IntentAgent)`: wires `IntentAgent`,
   `IntentExecutor`, the audit sender and the A2A routes together = entrypoint for `__main__.py`
   and the integration tests. Only `SendMessage` is served: `SendMessageOnlyHandler` answers
-  `GetTask`/`ListTasks`/`CancelTask` with `UnsupportedOperationError`.
+  `GetTask`/`ListTasks`/`CancelTask` with `UnsupportedOperationError`, and refuses a message naming
+  a `taskId` or with invalid subject metadata (`InvalidParamsError`, audited via
+  `IntentExecutor.audit_refused_message`) before the SDK starts or loads a task - every message is a
+  new task, and a caller's mistake never reaches the executor (which the SDK would log as a failed
+  execution). `IntentExecutor._subject_params` re-checks the metadata as a second layer.
 - **`skills.py`** — `SKILL.md` discovery/YAML-frontmatter parsing under `skills/`, builds the
   tier-1 system-prompt catalog (`skill_catalog_preamble.txt` + skill names/descriptions) and the
   A2A `AgentSkill` list for the agent card.
@@ -184,8 +188,7 @@ Eight modules carry whole service:
   Bearer `access_token` off the request and validates it via RFC 7662 Token Introspection against
   the external IdP (no local JWT decode/signature check - the introspection call itself is what
   covers signature validity). The token's `sub` (else `client_id`, neither is a 401) becomes
-  `request.user`, which the SDK's task store keys tasks by, so a `SendMessage` naming another
-  caller's `taskId` is `TaskNotFound` rather than joining it. Every introspection refusal
+  `request.user`, which the SDK's task store keys tasks by. Every introspection refusal
   is a `TokenValidationError` classified by whose fault it is (`TokenFailure`), the IAG's split:
   `CALLER` (blank or inactive token, 401), `SERVICE` (the request never got an answer, 500),
   `PROVIDER` (any status instead of an answer, 4xx and 5xx alike, or a body that isn't an
@@ -364,9 +367,9 @@ test): JSON-RPC method name is `SendMessage`, not `message/send`; requests need
 call - a valid-looking-but-fake token, like the old JWT-decode design accepted, is now rejected) -
 this authenticates the calling client, not any subject, so `subject_type`/`subject_id` are no
 longer derived from it. Both are required in the request's `message.metadata` instead (ENG-9810:
-missing/blank is a 400 for either one now, since `subject_id` used to come reliably from the
+missing/blank is JSON-RPC error -32602 (`InvalidParamsError`) for either one now, since `subject_id` used to come reliably from the
 token's own `sub` claim, so a missing one is a caller-side bug, not a legitimate anonymous-caller
-request) - see `IntentExecutor._subject_params`. A Subject Search ("Who can do Y on Z?") is
+request) - see `executor.subject_from_message`. A Subject Search ("Who can do Y on Z?") is
 unrelated to this: it is marked per evaluation by the LLM (`subject_binding._subject_search`),
 not by the caller omitting `subject_id`.
 
