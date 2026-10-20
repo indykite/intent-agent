@@ -10,6 +10,7 @@ from typing import Any
 
 from a2a.helpers import new_task_from_user_message, new_text_artifact, new_text_message
 from a2a.server.agent_execution import AgentExecutor, RequestContext
+from a2a.server.context import ServerCallContext
 from a2a.server.events import EventQueue
 from a2a.types import (
     Message,
@@ -19,10 +20,9 @@ from a2a.types import (
     TaskStatus,
     TaskStatusUpdateEvent,
 )
+from a2a.utils.errors import A2AError, InternalError, InvalidParamsError
 from google.protobuf.json_format import ParseDict, ParseError
-from starlette.exceptions import HTTPException
 from starlette.requests import Request
-from starlette.status import HTTP_400_BAD_REQUEST, HTTP_401_UNAUTHORIZED
 
 from indykite.intent_agent import auth
 from indykite.intent_agent.agent import ExtractionResult, IntentAgent, RequestSubject
@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 _MILLISECONDS_PER_SECOND = 1000
 _EXTRACTION_SUCCEEDED_MESSAGE = "Intent extracted successfully."
 _EXTRACTION_FAILED_MESSAGE = "Failed to extract intent."
+_UNAUTHENTICATED_CALL_MESSAGE = "Request reached the executor unauthenticated"
 
 
 def _prompt_from_message(message: Message | None) -> str:
@@ -58,6 +59,44 @@ def _message_from_body(body: bytes) -> Message | None:
     except (ValueError, ParseError):
         return None
     return request.message if request.HasField("message") else None
+
+
+def subject_from_message(message: Message | None) -> tuple[str, str]:
+    """Read subject_type/subject_id from the caller-supplied message metadata - IAG
+    resolves the caller's own identity itself and supplies both per request, instead of
+    subject_id coming from a token's `sub` claim and subject_type from static config.
+
+    Both are required (ENG-9810) - InvalidParamsError (JSON-RPC -32602) if either is missing or blank
+    (whitespace-only counts as blank). subject_id used to be reliably populated from the
+    token's own `sub` claim, so a real authenticated caller was never actually anonymous in
+    practice; now that IAG must supply it explicitly instead, a missing subject_id is a
+    caller-side bug (it forgot to resolve/attach the caller's identity), not a legitimate
+    anonymous-caller request, and must be rejected the same as a missing subject_type rather
+    than silently proceeding with an unidentified caller. Either present but not a string
+    (e.g. a nested object) is also rejected - str(some_dict) would otherwise silently coerce it
+    into a Python repr and bind that into every evaluation and audit record, instead of
+    surfacing the malformed request to the caller.
+    """
+    metadata = dict(message.metadata) if message and message.metadata else {}
+    subject_type = _require_metadata_string(metadata, "subject_type")
+    subject_id = _require_metadata_string(metadata, "subject_id")
+    if not subject_type:
+        raise InvalidParamsError(message="subject_type is required")
+    if not subject_id:
+        raise InvalidParamsError(message="subject_id is required")
+    return subject_type, subject_id
+
+
+def _require_metadata_string(metadata: dict[str, Any], key: str) -> str:
+    """Return metadata[key] as a stripped string, or "" if absent/blank - raising
+    InvalidParamsError if it's present but not a string at all (see subject_from_message).
+    """
+    value = metadata.get(key)
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise InvalidParamsError(message=f"{key} must be a string")
+    return value.strip()
 
 
 def _llm_provider(model: str) -> str:
@@ -165,8 +204,9 @@ class IntentExecutor(AgentExecutor):
             self._authenticate(context)
             audit_record.subject_type, audit_record.subject_id = self._subject_params(context)
             result = await self._run_extraction(context, event_queue, audit_record)
-        except HTTPException as exc:
-            await self._audit(audit_record, ExtractionResult(text="", outcome=Outcome.ERROR, message=str(exc.detail)))
+        except A2AError as exc:
+            # The SDK answers it as a JSON-RPC error carrying exc.message - audit that same text.
+            await self._audit(audit_record, ExtractionResult(text="", outcome=Outcome.ERROR, message=exc.message))
             raise
         except Exception as exc:
             await self._audit(
@@ -183,7 +223,7 @@ class IntentExecutor(AgentExecutor):
 
         The sender contract is already "log, don't raise", but building the record or a
         misbehaving sender could still fail - and that must not override what the request
-        itself produced: the 401 / exception being re-raised in `execute`, or a result whose
+        itself produced: the A2A error / exception being re-raised in `execute`, or a result whose
         artifact the caller already has. An audit failure is logged with the request id instead.
         """
         try:
@@ -210,49 +250,32 @@ class IntentExecutor(AgentExecutor):
             )
         await self._audit(audit_record, ExtractionResult(text="", outcome=Outcome.ERROR, message=message))
 
+    async def audit_refused_message(self, params: SendMessageRequest, context: ServerCallContext, message: str) -> None:
+        """Audit a SendMessage the request handler refused before it reached `execute`."""
+        audit_record = _RequestAudit(
+            self._agent.settings,
+            headers=context.state.get("headers") or {},
+            context_id=params.message.context_id,
+            prompt=_prompt_from_message(params.message),
+            started=context.state.get(auth.REQUEST_STARTED_KEY),
+        )
+        await self._audit(audit_record, ExtractionResult(text="", outcome=Outcome.ERROR, message=message))
+
     @staticmethod
     def _authenticate(context: RequestContext) -> None:
-        """Refuse (401) an unauthenticated call - fails closed if wired without the middleware."""
+        """Refuse an unauthenticated call - fails closed if wired without the middleware. Reaching
+        this is a wiring bug, not the caller's, so it is InternalError (JSON-RPC -32603).
+        """
         call_context = context.call_context
         if not call_context or not call_context.user.is_authenticated:
-            raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail=auth.AUTHORIZATION_REQUIRED_MESSAGE)
-
-    def _subject_params(self, context: RequestContext) -> tuple[str, str]:
-        """Read subject_type/subject_id from the caller-supplied message metadata - IAG
-        resolves the caller's own identity itself and supplies both per request, instead of
-        subject_id coming from a token's `sub` claim and subject_type from static config.
-
-        Both are required (ENG-9810) - 400 (HTTPException) if either is missing or blank
-        (whitespace-only counts as blank). subject_id used to be reliably populated from the
-        token's own `sub` claim, so a real authenticated caller was never actually anonymous in
-        practice; now that IAG must supply it explicitly instead, a missing subject_id is a
-        caller-side bug (it forgot to resolve/attach the caller's identity), not a legitimate
-        anonymous-caller request, and must be rejected the same as a missing subject_type rather
-        than silently proceeding with an unidentified caller. Either present but not a string
-        (e.g. a nested object) is also a 400 - str(some_dict) would otherwise silently coerce it
-        into a Python repr and bind that into every evaluation and audit record, instead of
-        surfacing the malformed request to the caller.
-        """
-        metadata = dict(context.message.metadata) if context.message and context.message.metadata else {}
-        subject_type = self._require_metadata_string(metadata, "subject_type")
-        subject_id = self._require_metadata_string(metadata, "subject_id")
-        if not subject_type:
-            raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail="subject_type is required")
-        if not subject_id:
-            raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail="subject_id is required")
-        return subject_type, subject_id
+            raise InternalError(message=_UNAUTHENTICATED_CALL_MESSAGE)
 
     @staticmethod
-    def _require_metadata_string(metadata: dict[str, Any], key: str) -> str:
-        """Return metadata[key] as a stripped string, or "" if absent/blank - raising 400 if
-        it's present but not a string at all (see _subject_params).
+    def _subject_params(context: RequestContext) -> tuple[str, str]:
+        """subject_type/subject_id of the request (subject_from_message). The request handler
+        already refused invalid ones before the SDK started a task; this is the second layer.
         """
-        value = metadata.get(key)
-        if value is None:
-            return ""
-        if not isinstance(value, str):
-            raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=f"{key} must be a string")
-        return value.strip()
+        return subject_from_message(context.message)
 
     async def _run_extraction(
         self,

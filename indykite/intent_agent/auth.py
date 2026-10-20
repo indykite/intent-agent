@@ -22,7 +22,7 @@ from starlette.types import ASGIApp
 
 logger = logging.getLogger(__name__)
 
-AUTHORIZATION_REQUIRED_MESSAGE = "Authorization required"
+_AUTHORIZATION_REQUIRED_MESSAGE = "Authorization required"
 # Request (and call context) state key: `time.perf_counter()` when BearerAuthMiddleware got the request.
 REQUEST_STARTED_KEY = "request_started"
 _NO_CALLER_MESSAGE = "Token does not identify its caller"
@@ -199,10 +199,9 @@ def _caller_name(claims: Mapping[str, Any]) -> str:
 
 
 class BearerAuthMiddleware(BaseHTTPMiddleware):
-    """Introspects the Bearer token of every request on the wrapped route and sets `request.user`.
-    The A2A SDK stores each task under that user, and a SendMessage naming an existing `taskId`
-    only finds the caller's own - so another caller can't join a running task and get its history
-    back. Refusals go to `on_rejected` for auditing.
+    """Introspects the Bearer token of every request on the wrapped route and sets `request.user`,
+    which the A2A SDK stores each task under (a second layer: app.SendMessageOnlyHandler already
+    refuses a message naming a `taskId`). Refusals go to `on_rejected` for auditing.
     """
 
     def __init__(self, app: ASGIApp, config: IntrospectionConfig, on_rejected: RejectionHook) -> None:
@@ -216,7 +215,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         setattr(request.state, REQUEST_STARTED_KEY, time.perf_counter())
         token = bearer_token(request.headers)
         if not token:
-            return await self._reject(request, AUTHORIZATION_REQUIRED_MESSAGE, HTTP_401_UNAUTHORIZED, token_sent=False)
+            return await self._reject(request, _AUTHORIZATION_REQUIRED_MESSAGE, HTTP_401_UNAUTHORIZED, token_sent=False)
         try:
             claims = await validate_access_token(token, self._config)
         except TokenValidationError as exc:

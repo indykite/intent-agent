@@ -14,10 +14,9 @@ from a2a.server.agent_execution import RequestContext
 from a2a.server.context import ServerCallContext
 from a2a.server.routes.common import StarletteUser
 from a2a.types import TaskState, TaskStatusUpdateEvent
+from a2a.utils.errors import InternalError, InvalidParamsError
 from starlette.authentication import SimpleUser
-from starlette.exceptions import HTTPException
 from starlette.requests import Request
-from starlette.status import HTTP_400_BAD_REQUEST, HTTP_401_UNAUTHORIZED
 
 from indykite.intent_agent.agent import ExtractionResult
 from indykite.intent_agent.audit.message import Outcome
@@ -269,16 +268,18 @@ def test_generates_a_request_id_when_the_caller_sends_none(baseline_env, mocker)
 
 
 def test_unauthenticated_call_is_audited_as_error_and_still_rejected(baseline_env, mocker):
-    """An unauthenticated call is rejected with 401 AND audited with the caller's reason."""
+    """An unauthenticated call reaching the executor (the middleware wasn't wired) fails closed
+    as InternalError (JSON-RPC -32603, a wiring bug, not the caller's) AND is audited with the
+    same message.
+    """
     executor, sender, agent = _executor(baseline_env, mocker)
 
-    with pytest.raises(HTTPException) as excinfo:
+    with pytest.raises(InternalError) as excinfo:
         _execute(executor, _context({"x-request-id": "req-401"}, authenticated=False), mocker)
 
-    assert excinfo.value.status_code == HTTP_401_UNAUTHORIZED
     record = _sole_record(sender)
     assert record.outcome == Outcome.ERROR
-    assert record.message == excinfo.value.detail == "Authorization required"
+    assert record.message == excinfo.value.message == "Request reached the executor unauthenticated"
     assert record.request_id == "req-401"
     assert record.subject_id == ""
     assert record.prompt == _PROMPT
@@ -288,18 +289,17 @@ def test_unauthenticated_call_is_audited_as_error_and_still_rejected(baseline_en
 
 def test_missing_subject_type_is_audited_as_error_and_rejected(baseline_env, mocker):
     """A caller-supplied subject_type is required (IAG resolves and supplies it, not the
-    token) - missing/blank it is a 400, audited the same way a rejected token is.
+    token) - missing/blank it is InvalidParamsError (JSON-RPC -32602), audited with its message.
     """
     executor, sender, agent = _executor(baseline_env, mocker)
 
     context = _context({"authorization": "Bearer good-token"}, metadata={"subject_id": "user-1"})
-    with pytest.raises(HTTPException) as excinfo:
+    with pytest.raises(InvalidParamsError) as excinfo:
         _execute(executor, context, mocker)
 
-    assert excinfo.value.status_code == HTTP_400_BAD_REQUEST
     record = _sole_record(sender)
     assert record.outcome == Outcome.ERROR
-    assert record.message == excinfo.value.detail == "subject_type is required"
+    assert record.message == excinfo.value.message == "subject_type is required"
     assert record.subject_id == ""
     agent.run_extraction.assert_not_awaited()
 
@@ -308,35 +308,33 @@ def test_missing_subject_id_is_audited_as_error_and_rejected(baseline_env, mocke
     """A caller-supplied subject_id is required too (ENG-9810) - it used to come reliably from
     the token's own sub claim, so a missing one now is a caller-side bug (IAG forgot to resolve
     and attach the caller's identity), not a legitimate anonymous-caller request. Missing/blank
-    is a 400, audited the same way a missing subject_type is.
+    is InvalidParamsError, audited the same way a missing subject_type is.
     """
     executor, sender, agent = _executor(baseline_env, mocker)
 
     context = _context({"authorization": "Bearer good-token"}, metadata={"subject_type": "Customer"})
-    with pytest.raises(HTTPException) as excinfo:
+    with pytest.raises(InvalidParamsError) as excinfo:
         _execute(executor, context, mocker)
 
-    assert excinfo.value.status_code == HTTP_400_BAD_REQUEST
     record = _sole_record(sender)
     assert record.outcome == Outcome.ERROR
-    assert record.message == excinfo.value.detail == "subject_id is required"
+    assert record.message == excinfo.value.message == "subject_id is required"
     agent.run_extraction.assert_not_awaited()
 
 
 def test_whitespace_only_subject_type_is_audited_as_error_and_rejected(baseline_env, mocker):
-    """A whitespace-only subject_type must count as blank - the same 400 as a missing one, not
-    a value that happens to be truthy and slips past the check.
+    """A whitespace-only subject_type must count as blank - the same InvalidParamsError as a
+    missing one, not a value that happens to be truthy and slips past the check.
     """
     executor, sender, agent = _executor(baseline_env, mocker)
 
     context = _context({"authorization": "Bearer good-token"}, metadata={"subject_type": "   "})
-    with pytest.raises(HTTPException) as excinfo:
+    with pytest.raises(InvalidParamsError) as excinfo:
         _execute(executor, context, mocker)
 
-    assert excinfo.value.status_code == HTTP_400_BAD_REQUEST
     record = _sole_record(sender)
     assert record.outcome == Outcome.ERROR
-    assert record.message == excinfo.value.detail == "subject_type is required"
+    assert record.message == excinfo.value.message == "subject_type is required"
     agent.run_extraction.assert_not_awaited()
 
 
@@ -351,31 +349,29 @@ def test_non_string_metadata_value_is_audited_as_error_and_rejected(baseline_env
         {"authorization": "Bearer good-token"},
         metadata={"subject_type": "Customer", "subject_id": "user-1", key: {"nested": "object"}},
     )
-    with pytest.raises(HTTPException) as excinfo:
+    with pytest.raises(InvalidParamsError) as excinfo:
         _execute(executor, context, mocker)
 
-    assert excinfo.value.status_code == HTTP_400_BAD_REQUEST
     record = _sole_record(sender)
     assert record.outcome == Outcome.ERROR
-    assert record.message == excinfo.value.detail == f"{key} must be a string"
+    assert record.message == excinfo.value.message == f"{key} must be a string"
     agent.run_extraction.assert_not_awaited()
 
 
 def test_missing_metadata_object_is_audited_as_error_and_rejected(baseline_env, mocker):
     """A message with no metadata object at all (metadata=None, not just an empty/incomplete
-    one) must be the same 400 as a missing subject_type, not an unhandled TypeError from
-    treating None as a mapping.
+    one) must be the same InvalidParamsError as a missing subject_type, not an unhandled
+    TypeError from treating None as a mapping.
     """
     executor, sender, agent = _executor(baseline_env, mocker)
 
     context = _context({"authorization": "Bearer good-token"}, metadata=None)
-    with pytest.raises(HTTPException) as excinfo:
+    with pytest.raises(InvalidParamsError) as excinfo:
         _execute(executor, context, mocker)
 
-    assert excinfo.value.status_code == HTTP_400_BAD_REQUEST
     record = _sole_record(sender)
     assert record.outcome == Outcome.ERROR
-    assert record.message == excinfo.value.detail == "subject_type is required"
+    assert record.message == excinfo.value.message == "subject_type is required"
     agent.run_extraction.assert_not_awaited()
 
 
@@ -482,18 +478,17 @@ def test_audit_failure_does_not_change_a_successful_request(baseline_env, mocker
 
 
 def test_audit_failure_does_not_override_the_rejection(baseline_env, mocker, caplog):
-    """A sender failure while auditing a 401 must not replace that 401 with the sender's own
+    """A sender failure while auditing a rejection must not replace it with the sender's own
     exception - the caller still gets the rejection, and the audit failure is logged.
     """
     caplog.set_level("ERROR")
     executor, sender, _agent = _executor(baseline_env, mocker)
     sender.send.side_effect = RuntimeError("audit backend down")
 
-    with pytest.raises(HTTPException) as excinfo:
+    with pytest.raises(InternalError) as excinfo:
         _execute(executor, _context({"x-request-id": "req-401"}, authenticated=False), mocker)
 
-    assert excinfo.value.status_code == HTTP_401_UNAUTHORIZED
-    assert excinfo.value.detail == "Authorization required"
+    assert excinfo.value.message == "Request reached the executor unauthenticated"
     assert "Failed to audit request req-401 (outcome error)" in caplog.text
 
 
