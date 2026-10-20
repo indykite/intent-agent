@@ -9,6 +9,7 @@ from typing import Any
 import httpx2
 from a2a.server.context import ServerCallContext
 from a2a.server.routes.common import DefaultServerCallContextBuilder
+from a2a.types import AgentCard, HTTPAuthSecurityScheme, SecurityRequirement, SecurityScheme, StringList
 from starlette.authentication import AuthCredentials, SimpleUser
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
@@ -28,6 +29,10 @@ REQUEST_STARTED_KEY = "request_started"
 _NO_CALLER_MESSAGE = "Token does not identify its caller"
 _AUTHORIZATION_HEADER = "Authorization"
 _WWW_AUTHENTICATE_HEADER = "WWW-Authenticate"
+# The scheme in the 401's WWW-Authenticate challenge and in the agent card (add_bearer_security).
+_BEARER_AUTH_SCHEME = "Bearer"
+# The agent card's name for that scheme, which its security requirement refers to.
+_BEARER_SECURITY_SCHEME = "bearer"
 
 
 class TokenFailure(Enum):
@@ -236,8 +241,30 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         await self._on_rejected(request, message)
         headers = {}
         if status == HTTP_401_UNAUTHORIZED:
-            headers[_WWW_AUTHENTICATE_HEADER] = 'Bearer error="invalid_token"' if token_sent else "Bearer"
+            headers[_WWW_AUTHENTICATE_HEADER] = (
+                f'{_BEARER_AUTH_SCHEME} error="invalid_token"' if token_sent else _BEARER_AUTH_SCHEME
+            )
         return PlainTextResponse(message, status_code=status, headers=headers)
+
+
+def add_bearer_security(card: AgentCard, expected_audience: str) -> None:
+    """Declare on the agent card the Bearer token BearerAuthMiddleware requires, so a client can
+    discover it before getting a 401. HTTP Bearer, not OAuth2/OpenID: those would advertise the
+    IdP's endpoints, which this service doesn't know - it only introspects. No bearer_format (the
+    token isn't decoded here) and no scopes (none are checked).
+    """
+    card.security_schemes[_BEARER_SECURITY_SCHEME].CopyFrom(
+        SecurityScheme(
+            http_auth_security_scheme=HTTPAuthSecurityScheme(
+                scheme=_BEARER_AUTH_SCHEME,
+                description=(
+                    "OAuth 2.0 access token, validated by RFC 7662 token introspection; "
+                    f"its audience must include '{expected_audience}'."
+                ),
+            ),
+        ),
+    )
+    card.security_requirements.append(SecurityRequirement(schemes={_BEARER_SECURITY_SCHEME: StringList()}))
 
 
 class CallContextBuilder(DefaultServerCallContextBuilder):

@@ -115,6 +115,7 @@ def build_app(
     sender = audit_sender or build_sender(settings)
 
     agent_card = agent.build_agent_card()
+    auth.add_bearer_security(agent_card, settings.expected_token_audience)
     executor = IntentExecutor(agent, sender)
     handler = SendMessageOnlyHandler(
         agent_executor=executor,

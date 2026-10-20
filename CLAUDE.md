@@ -194,6 +194,9 @@ Eight modules carry whole service:
   `PROVIDER` (any status instead of an answer, 4xx and 5xx alike, or a body that isn't an
   RFC 7662 answer, 502) - `_TOKEN_FAILURE_STATUS` maps the class to the status, so an IdP outage
   never reads as a bad token. Refusals are audited via `IntentExecutor.audit_rejected_request`.
+  `add_bearer_security` declares the same Bearer token on the agent card (`app.py` applies it to
+  `build_agent_card`'s card): an HTTP auth `security_schemes` entry naming `EXPECTED_TOKEN_AUDIENCE`
+  plus a matching `security_requirements`. The challenge and the card share `_BEARER_AUTH_SCHEME`.
 - **`__main__.py`** — process entrypoint (`python -m indykite.intent_agent`). Wires `Settings()`,
   calls `build_app`, starts background health server on `HEALTH_PORT` (default 8001) using
   stdlib `http.server` — deliberately **not** part of main Starlette app, second listener —

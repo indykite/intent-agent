@@ -173,11 +173,20 @@ def test_a_message_naming_a_task_is_refused(client, mocker, tmp_path, token):
 
 
 def test_agent_card_stays_public(client):
-    """The agent card needs no token."""
+    """The agent card needs no token, and tells the client it needs one for everything else: a
+    Bearer scheme matching the challenge the 401 carries.
+    """
     response = client.get(AGENT_CARD_WELL_KNOWN_PATH)
 
     assert response.status_code == HTTP_200_OK
-    assert response.json()["name"]
+    card = response.json()
+    assert card["name"]
+    (name,) = card["securitySchemes"]
+    advertised = card["securitySchemes"][name]["httpAuthSecurityScheme"]["scheme"]
+    assert "'intent_agent'" in card["securitySchemes"][name]["httpAuthSecurityScheme"]["description"]
+    assert card["securityRequirements"] == [{"schemes": {name: {}}}]
+    challenge = _rpc(client, "SendMessage", {}).headers["WWW-Authenticate"]
+    assert challenge.split()[0] == advertised == "Bearer"
 
 
 @pytest.mark.parametrize("token", ["alice-token", "junk-token"], ids=["accepted", "refused"])
