@@ -1223,6 +1223,8 @@ def _fake_audit_sender(mocker):
 
 def test_build_cache_backend_uses_memory_backend_by_default(monkeypatch):
     """CACHE_BACKEND defaults to memory - the in-process Memory backend - with no REDIS_URL set."""
+    monkeypatch.delenv("CACHE_BACKEND", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
     settings = _full_settings(monkeypatch)
     assert isinstance(build_cache_backend(settings), MemoryStorageBackend)
 

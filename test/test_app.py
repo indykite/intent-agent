@@ -5,6 +5,7 @@ IAG only ever calls SendMessage, so a task never needs to be looked up or cancel
 import jwt
 from starlette.testclient import TestClient
 
+from indykite.intent_agent import auth
 from indykite.intent_agent.app import build_app
 from indykite.intent_agent.config import Settings
 
@@ -29,6 +30,7 @@ def test_get_task_list_tasks_cancel_task_are_rejected_as_unsupported(monkeypatch
     they must come back as a clean UNSUPPORTED_OPERATION JSON-RPC error, not reach the store.
     """
     _set_baseline_env(monkeypatch)
+    mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value={"active": True, "sub": "alice"}))
     fake_schema_client = mocker.Mock(preload=mocker.Mock(), aclose=mocker.AsyncMock())
     fake_policy_client = mocker.Mock(aclose=mocker.AsyncMock())
     settings = Settings(_env_file=None)
@@ -41,7 +43,9 @@ def test_get_task_list_tasks_cancel_task_are_rejected_as_unsupported(monkeypatch
         ("CancelTask", {"id": "whatever"}),
     ]:
         response = client.post(
-            "/", headers={"A2A-Version": "1.0"}, json={"jsonrpc": "2.0", "id": "1", "method": method, "params": params}
+            "/",
+            headers={"A2A-Version": "1.0", "Authorization": "Bearer alice-token"},
+            json={"jsonrpc": "2.0", "id": "1", "method": method, "params": params},
         )
         error = response.json()["error"]
         assert error["message"] == f"{method} is not supported."

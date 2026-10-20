@@ -7,11 +7,11 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-from a2a.server.tasks import InMemoryTaskStore
 from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
 from starlette.status import HTTP_200_OK, HTTP_401_UNAUTHORIZED
 from starlette.testclient import TestClient
 
+from indykite.a2a.task_store import EvictingTaskStore
 from indykite.intent_agent import auth
 from indykite.intent_agent.agent import ExtractionResult, IntentAgent
 from indykite.intent_agent.app import build_app
@@ -135,7 +135,7 @@ def test_a_message_naming_a_task_is_refused(client, mocker, tmp_path, token):
     """
     release = threading.Event()
     saved_task_ids = queue.Queue()
-    save = InMemoryTaskStore.save
+    save = EvictingTaskStore.save
 
     async def _record_save(store, task, context):
         await save(store, task, context)
@@ -145,7 +145,7 @@ def test_a_message_naming_a_task_is_refused(client, mocker, tmp_path, token):
         await asyncio.to_thread(release.wait, 5)
         return ExtractionResult(text="{}", outcome=Outcome.SUCCESS)
 
-    mocker.patch.object(InMemoryTaskStore, "save", _record_save)
+    mocker.patch.object(EvictingTaskStore, "save", _record_save)
     mocker.patch.object(IntentAgent, "run_extraction", _held_extraction)
     safety_release = threading.Timer(5, release.set)
     safety_release.start()
