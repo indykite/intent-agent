@@ -57,7 +57,8 @@ Send a prompt. This is the A2A JSON-RPC transport, not a REST API: note the `A2A
 the `SendMessage` method name, the `ROLE_USER` role and the caller's `subject_type`/`subject_id`
 in `message.metadata`. The Bearer token authenticates the calling client (via RFC 7662 token
 introspection), not the subject. Every JSON-RPC method needs it, but only `SendMessage` is served
-(`GetTask`, `ListTasks` and `CancelTask` answer "unsupported operation"); the agent card stays public:
+(`GetTask`, `ListTasks` and `CancelTask` answer "unsupported operation"). The agent card stays public
+and advertises the requirement as an HTTP Bearer scheme (`securitySchemes` / `securityRequirements`):
 
 ```sh
 curl -X POST http://localhost:6003/ \
@@ -115,7 +116,7 @@ Commonly tuned optional settings:
 | `TOOL_CALL_MAX_ITERATIONS` | `5` | Tool-call rounds before giving up |
 | `SCHEMA_REFRESH_TTL_MINUTES`, `POLICY_REFRESH_TTL_MINUTES` | `5.0` | How long a cached schema / policy list is served |
 | `CACHE_BACKEND`, `REDIS_URL` | `memory`, - | `redis` shares the schema cache between instances; `REDIS_URL` is then required |
-| `EXPECTED_TOKEN_AUDIENCE` | `intent_agent` | Required `aud` of the caller's token |
+| `EXPECTED_TOKEN_AUDIENCE` | `intent_agent` | Required `aud` of the caller's token. Published in the public agent card, so a client can request the right token |
 | `LOG_LEVEL` | `INFO` | Python log level (`.env.example` sets `DEBUG` for local runs) |
 
 ### Audit log

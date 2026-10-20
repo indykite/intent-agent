@@ -4,6 +4,7 @@ from http import HTTPStatus
 
 import httpx2
 import pytest
+from a2a.types import AgentCard
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.responses import PlainTextResponse
@@ -364,3 +365,20 @@ def test_middleware_refuses_a_token_that_names_no_caller(mocker):
     assert response.headers["WWW-Authenticate"] == 'Bearer error="invalid_token"'
     assert bodies == [(b"", "Token does not identify its caller")]
     endpoint.assert_not_awaited()
+
+
+def test_add_bearer_security_declares_the_token_the_middleware_requires():
+    """The card gets one HTTP Bearer scheme naming the audience, required with no scopes."""
+    card = AgentCard(name="intent_agent")
+
+    auth.add_bearer_security(card, "custom-agent")
+
+    (name,) = card.security_schemes
+    scheme = card.security_schemes[name]
+    assert scheme.WhichOneof("scheme") == "http_auth_security_scheme"
+    assert scheme.http_auth_security_scheme.scheme == "Bearer"
+    assert not scheme.http_auth_security_scheme.bearer_format
+    assert "'custom-agent'" in scheme.http_auth_security_scheme.description
+    (requirement,) = card.security_requirements
+    assert list(requirement.schemes) == [name]
+    assert list(requirement.schemes[name].list) == []
