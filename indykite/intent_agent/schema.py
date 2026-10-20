@@ -104,8 +104,9 @@ def _cache_key(app_agent_key: str) -> str:
     return f"ikg:{env_scope(app_agent_key)}:schema"
 
 
-# The freshness marker's value is never read for its content, only for whether get() still
-# returns something at all - see SchemaClient._store()/_load_schema().
+# The freshness marker's value: _load_schema() treats the entry as fresh only while get() still
+# returns exactly this, so a stray or foreign value under the key reads as stale - see
+# SchemaClient._store()/_load_schema().
 _FRESH_MARKER = b"1"
 
 
@@ -200,7 +201,7 @@ class SchemaClient:
             return None, False
         fresh_marker = self._cache.get(self._fresh_key)
         value = _decode_schema(encoded)
-        return (value, fresh_marker is not None) if value is not None else (None, False)
+        return (value, fresh_marker == _FRESH_MARKER) if value is not None else (None, False)
 
     def _load_and_store(self) -> None:
         """Fetch and, on success, cache - shared by _refresh() and preload(). Must not raise:

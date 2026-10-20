@@ -257,7 +257,7 @@ class PolicyClient:
         if envelope is None:
             return None, False
         fresh_marker = self._cache.get(f"{cache_key}:fresh")
-        return envelope, fresh_marker is not None
+        return envelope, fresh_marker == _FRESH_MARKER
 
     def _store_success(self, cache_key: str, policies: list[dict[str, Any]]) -> None:
         """Value gets no TTL (a hard expiry could delete the only stale fallback value during
