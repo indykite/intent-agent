@@ -166,7 +166,7 @@ Eight modules carry whole service:
   tier-1 system-prompt catalog (`skill_catalog_preamble.txt` + skill names/descriptions) and the
   A2A `AgentSkill` list for the agent card.
 - **`schema.py`** — `SchemaClient`: fetches/caches the IndyKite graph schema (JGF) over `httpx2`;
-  `build_schema_backend(settings)` picks the `StorageBackend` (in-process memory, or Redis) it
+  `build_cache_backend(settings)` picks the `StorageBackend` (in-process memory, or Redis) it
   caches into.
 - **`policy.py`** — `PolicyClient`: fetches/caches the caller's subject type's ACTIVE KBAC
   policies (`GET /access/v1/policies?subject_type=`, X-IK-ClientKey, per-subject-type cache key,
@@ -331,7 +331,7 @@ evaluations, retry count, schema hash) so `IntentExecutor` never parses its own 
 classify it; a new exit path from the pipeline must set its outcome there, not in the executor.
 
 **Schema cache backend.** `CACHE_BACKEND` (`Settings`, default `"memory"`) picks the
-`StorageBackend` (`storage.py`) `build_schema_backend` (`schema.py`) configures: in-process
+`StorageBackend` (`storage.py`) `build_cache_backend` (`schema.py`) configures: in-process
 `memory`, or `redis` using `REDIS_URL` — required whenever `CACHE_BACKEND=redis` (`Settings`
 fails fast at startup otherwise). Multi-instance deployments need `redis` so instances share
 one schema cache entry (see the pre-merge multi-instance validation below).
