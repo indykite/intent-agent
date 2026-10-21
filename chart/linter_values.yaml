@@ -14,3 +14,9 @@ redis:
 
 app:
   cacheBackend: "redis"
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: intent-agent.example.com

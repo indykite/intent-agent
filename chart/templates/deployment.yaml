@@ -59,8 +59,8 @@ spec:
               value: {{ .Values.app.intentPort | int64 | quote }}
             - name: HEALTH_PORT
               value: {{ .Values.app.healthPort | int64 | quote }}
-            - name: ADVERTISED_HOST
-              value: {{ .Values.app.advertisedHost | default (include "service.fullname" .) | quote }}
+            - name: ADVERTISED_URL
+              value: {{ .Values.app.advertisedUrl | default (printf "http://%s:%d" (include "service.fullname" .) (.Values.app.intentPort | int)) | quote }}
             - name: INTENT_AGENT_NAME
               value: {{ .Values.app.intentAgentName | quote }}
             - name: LOG_LEVEL

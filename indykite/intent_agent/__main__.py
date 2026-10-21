@@ -89,6 +89,13 @@ def main() -> None:
     # Send warnings.warn() through the JSON logging handler instead of plain text on stderr.
     logging.captureWarnings(capture=True)
 
+    if settings.advertised_url is None:
+        logger.warning(
+            "ADVERTISED_URL is not set - the agent card advertises http://intent:%d, which only suits "
+            "direct container-port access; set it to the public URL when served through an ingress or gateway",
+            settings.intent_port,
+        )
+
     app, agent = build_app(settings)
     app.add_middleware(MetricsMiddleware)
 

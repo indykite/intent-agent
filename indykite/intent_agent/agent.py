@@ -426,8 +426,10 @@ class IntentAgent:
         )
 
     def _rpc_url(self) -> str:
-        """Build the advertised JSON-RPC URL from the configured host and port."""
-        return f"http://{self.settings.advertised_host}:{self.settings.intent_port}"
+        """Return the configured advertised JSON-RPC URL, else the plain-HTTP one on the listening port."""
+        if self.settings.advertised_url is None:
+            return f"http://intent:{self.settings.intent_port}"
+        return str(self.settings.advertised_url)
 
     def build_agent_card(self) -> AgentCard:
         """Build the A2A agent card advertising this agent's interface and skills."""

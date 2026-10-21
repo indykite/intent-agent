@@ -16,9 +16,15 @@ image:
 # app.* mirrors indykite/intent_agent/config.py's Settings fields 1:1 (env var names
 # in comments match .env.example). Keep the two in sync when Settings gains a field.
 app:
-  # advertisedHost left blank defaults to the in-cluster Service DNS name (service.fullname),
-  # which is what the A2A agent card needs callers to reach - see agent.py's `_rpc_url`.
-  advertisedHost: ""
+  # advertisedUrl is the JSON-RPC endpoint the A2A agent card advertises (ADVERTISED_URL). It is
+  # only published, never checked: for callers following the agent card to reach the agent it MUST
+  # match the protocol, hostname and port that callers actually use - the ingress (ingress.hosts,
+  # ingress.tls) or the Istio VirtualService (istio.virtualService.hosts and gateways) - e.g.
+  # "https://intent-agent.example.com" for a TLS ingress on that host. It is independent of
+  # intentPort, which is the container port behind the ingress/VirtualService.
+  # Left blank defaults to the in-cluster Service, http://<service.fullname>:<intentPort>, which is
+  # only right for callers inside the cluster - see agent.py's `_rpc_url`.
+  advertisedUrl: ""
   intentPort: 6003 # INTENT_PORT
   healthPort: 8001 # HEALTH_PORT
   intentAgentName: "intent_agent" # INTENT_AGENT_NAME
@@ -62,7 +68,7 @@ app:
   introspectClientId: "placeholder" # INTROSPECT_CLIENT_ID
   introspectTimeoutSeconds: 5.0 # INTROSPECT_TIMEOUT_SECONDS
   # The `aud` value this agent expects on an incoming access token - independent of
-  # advertisedHost/intentPort, since those are deployment topology, not what an external IdP was
+  # advertisedUrl/intentPort, since those are deployment topology, not what an external IdP was
   # configured to stamp into `aud` for this resource. Defaults to intentAgentName; override only
   # if the IdP registers a different identifier for this agent.
   expectedTokenAudience: "intent_agent" # EXPECTED_TOKEN_AUDIENCE
@@ -213,6 +219,26 @@ networkPolicy:
   egress:
     - {}
 
+# Kubernetes Ingress - an alternative to istio.virtualService for clusters exposing the agent
+# through an ingress controller. Routes to the A2A port (app.intentPort). Set app.advertisedUrl to
+# the protocol, hostname and port callers reach this ingress on (https:// when tls is set), or
+# agent-card clients are sent to the wrong endpoint.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  #  hosts:
+  #    - host: intent-agent.example.com
+  #      paths:
+  #        - path: /
+  #          pathType: Prefix
+  tls: []
+  #  tls:
+  #    - secretName: intent-agent-tls
+  #      hosts:
+  #        - intent-agent.example.com
+
 istio:
   enabled: false
   # Automatically enabled if istio.enabled and metricsPeerAuthentication.enabled are true
@@ -230,6 +256,8 @@ istio:
     principals: []
   destinationRule:
     enabled: false
+  # app.advertisedUrl must match the protocol, hostname and port callers reach this VirtualService
+  # on (its hosts and the gateway's), or agent-card clients are sent to the wrong endpoint.
   virtualService:
     enabled: false
     gateways:

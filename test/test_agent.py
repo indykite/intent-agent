@@ -1086,3 +1086,33 @@ def test_run_extraction_injects_the_skill_for_an_unactivated_bare_array_answer(m
     assert result.outcome == Outcome.SUCCESS
     assert json.loads(result.text)["evaluations"][0]["subject"] == {"type": "Customer", "id": "user-1"}
     assert mock_ainvoke.call_count == _LLM_CALLS_TO_FIRST_ANSWER
+
+
+def test_agent_card_advertises_the_configured_url(monkeypatch, mocker, baseline_env):
+    baseline_env()
+    monkeypatch.setenv("ADVERTISED_URL", "https://intent-agent.example.com/a2a")
+    agent = IntentAgent(
+        Settings(_env_file=None), llm=mocker.Mock(), schema_client=mocker.Mock(), policy_client=mocker.Mock()
+    )
+
+    assert agent.build_agent_card().supported_interfaces[0].url == "https://intent-agent.example.com/a2a"
+
+
+@pytest.mark.parametrize(
+    ("intent_port", "expected_url"),
+    [
+        pytest.param("6003", "http://intent:6003", id="default-port"),
+        pytest.param("7000", "http://intent:7000", id="custom-port"),
+    ],
+)
+def test_agent_card_default_url_follows_the_listening_port(
+    monkeypatch, mocker, baseline_env, intent_port, expected_url
+):
+    baseline_env()
+    monkeypatch.delenv("ADVERTISED_URL", raising=False)
+    monkeypatch.setenv("INTENT_PORT", intent_port)
+    agent = IntentAgent(
+        Settings(_env_file=None), llm=mocker.Mock(), schema_client=mocker.Mock(), policy_client=mocker.Mock()
+    )
+
+    assert agent.build_agent_card().supported_interfaces[0].url == expected_url
