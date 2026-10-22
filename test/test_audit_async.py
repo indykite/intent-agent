@@ -12,7 +12,6 @@ def _inner(mocker, **kwargs):
 
 
 def test_delivers_through_the_inner_sender_and_closes_it(mocker, audit_message):
-    """The happy path: send returns immediately, the worker delivers, close() closes the inner sender."""
     inner = _inner(mocker)
     sender = AsyncSender(inner, buffer_size=_DEFAULT_BUFFER_SIZE)
 
@@ -27,7 +26,7 @@ def test_delivers_through_the_inner_sender_and_closes_it(mocker, audit_message):
 
 
 def test_close_drains_queued_records_before_closing(mocker, audit_message):
-    """IAG: "buffered audit messages are drained during shutdown before the sender is closed"."""
+    """Queued records are delivered before the inner sender is closed."""
     delivered = []
     inner = _inner(mocker, side_effect=lambda message: delivered.append(message.request_id))
     sender = AsyncSender(inner, buffer_size=_DEFAULT_BUFFER_SIZE)
@@ -73,7 +72,7 @@ def test_drops_when_the_queue_is_full(mocker, caplog, audit_message):
 
 
 def test_drops_while_stopping(mocker, caplog, audit_message):
-    """After close() nothing more is accepted - dropped with a warning, like the IAG."""
+    """After close() a record is dropped with a warning."""
     caplog.set_level("WARNING")
     inner = _inner(mocker)
     sender = AsyncSender(inner, buffer_size=_DEFAULT_BUFFER_SIZE)

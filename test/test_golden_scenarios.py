@@ -1,11 +1,4 @@
-"""The PRD's golden prompt scenarios as deterministic pipeline tests.
-
-Each scenario is a golden prompt (PRD eval material, CanBank data model - test/fixtures/
-canbank_schema.json) with the answer Gemini gave it live, replayed through run_extraction so
-what is tested is everything around the model: skill activation, the context-shape check, null
-pruning, subject binding, prompt echo, the retry loop and the audit classification. The model
-itself is not under test here - that's the eval suite's job.
-"""
+"""Golden prompts with canned model answers replayed through run_extraction (CanBank data model)."""
 
 import asyncio
 import json
@@ -28,21 +21,12 @@ _LLM_CALLS_WITH_ONE_RETRY = 3
 
 _USER = {"type": "User", "id": "millicent"}
 _CUSTOMER = {"type": "Customer", "id": "rebecca"}
-# Account's own properties in the CanBank schema: account_type, balance, holdings, interest_rate,
-# provider, status (no `name`) - the filter must only use those.
+# Account has no `name` property in the CanBank schema, so the filter uses only status/create_time.
 _ACTIVE_SINCE_FILTER = "resource.status == 'Active' && resource.create_time > timestamp('2024-01-01T00:00:00Z')"
 
 
 def _canbank_schema():
-    """The CanBank data model (PRD Models 1-3 combined) in the GET /data-schema/v1 shape.
-
-    Provenance: derived from the developer-hub `instant-stack/data/canbank` ingest files
-    (nodes.json / relationships.json) - node types, edges and property names are the real ones,
-    property value types are inferred from the ingested values, and the platform's own
-    `external_id` / `create_time` / `update_time` properties and `_Application` node are added.
-    It is not a captured platform response: once an environment has the dataset provisioned,
-    replace this file with that environment's actual GET /data-schema/v1 body (same file name).
-    """
+    """The CanBank data model in the GET /data-schema/v1 shape."""
     return json.loads(_CANBANK_SCHEMA_PATH.read_text())
 
 
@@ -52,10 +36,7 @@ def _llm_response(mocker, text="", tool_calls=()):
 
 
 def _fake_schema_client(mocker, **kwargs):
-    """A fake SchemaClient - run_extraction only ever calls get_cached() on it (dispatched
-    through the fetch executor), never peek_cached(), so every behavior a test needs must be
-    configured via kwargs here (typically get_cached=...).
-    """
+    """A fake SchemaClient; configure get_cached via kwargs, the only method run_extraction calls."""
     return mocker.Mock(**kwargs)
 
 
@@ -64,7 +45,7 @@ def _fake_policy_client(mocker, **kwargs):
     return mocker.Mock(**kwargs)
 
 
-# A policy for every combination the replayed answers use (one list serves both callers here).
+# One policy list covers every combination the replayed answers use, for both callers.
 def _permission_policy(subject_type, action, resource_type):
     return {
         "policy": {"subject": {"type": subject_type}, "actions": [action], "resource": {"type": resource_type}},
@@ -85,10 +66,7 @@ _PRD_PERMISSION_POLICIES = [
 
 
 def _agent(monkeypatch, mocker, baseline_env, answers):
-    """An IntentAgent over the CanBank schema whose LLM activates extract-intent and then
-    answers with `answers` (dicts, serialized) in order, with every combination the PRD
-    examples use granted by policy (_PRD_PERMISSION_POLICIES).
-    """
+    """An IntentAgent over CanBank whose LLM activates extract-intent, then returns `answers` in order."""
     baseline_env()
     responses = [
         _llm_response(mocker, tool_calls=[_ACTIVATE_EXTRACT_INTENT_CALL]),
@@ -97,8 +75,7 @@ def _agent(monkeypatch, mocker, baseline_env, answers):
     mock_ainvoke = mocker.AsyncMock(side_effect=responses)
     fake_llm = mocker.Mock(bind_tools=mocker.Mock(return_value=mocker.Mock(ainvoke=mock_ainvoke)))
     fake_schema_client = _fake_schema_client(mocker, get_cached=mocker.Mock(return_value=_canbank_schema()))
-    # A successful fetch returning the PRD examples' permission policies - a real PolicyClient
-    # would otherwise hit the network against this fake settings' base_url on every scenario.
+    # A real PolicyClient would hit the network against the fake base_url.
     fake_policy_client = _fake_policy_client(
         mocker, get_cached=mocker.Mock(return_value=(_PRD_PERMISSION_POLICIES, False))
     )
@@ -328,15 +305,7 @@ _SCENARIOS = [
 
 @pytest.mark.parametrize("scenario", _SCENARIOS)
 def test_golden_scenario_extracts_context_sub_shapes(monkeypatch, mocker, baseline_env, scenario):
-    """One golden prompt per context sub-shape and per PRD example pattern, plus the two
-    multi-evaluation shapes and the subject spoof: the model's answer comes back with the
-    context passed through as-is (nulls pruned; every evaluation gets a `parameters` object),
-    the caller bound as subject on every evaluation, no retry spent, and audited as a
-    success.
-
-    `scenario` is (prompt, subject to bind, the evaluations the LLM answered, the evaluations
-    the caller must get).
-    """
+    """`scenario` is (prompt, caller, LLM evaluations, expected evaluations); succeeds without a retry."""
     prompt, subject, llm_evaluations, expected = scenario
     agent, mock_ainvoke = _agent(monkeypatch, mocker, baseline_env, [_answer(*llm_evaluations)])
 
@@ -366,11 +335,8 @@ def test_golden_scenario_extracts_context_sub_shapes(monkeypatch, mocker, baseli
     ],
 )
 def test_golden_scenario_without_intent_is_the_no_intent_error(monkeypatch, mocker, baseline_env, prompt):
-    """Out-of-scope prompts and an injection prompt all get the model's empty evaluations
-    list (SKILL.md), which becomes the fixed no-intent error - audited as `unmatched`, with
-    the prompt echoed verbatim even when the model shortened it in its own answer.
-    """
-    # A model that adds a `prompt` anyway (here: shortened) is tolerated - the value is ignored.
+    """An empty evaluations answer becomes the no-intent error echoing the original prompt."""
+    # A `prompt` the model adds anyway (here: shortened) is ignored.
     rewritten = {"prompt": "Create an AuthZEN request.", "evaluations": []}
     agent, _ = _agent(monkeypatch, mocker, baseline_env, [rewritten])
 
@@ -382,10 +348,7 @@ def test_golden_scenario_without_intent_is_the_no_intent_error(monkeypatch, mock
 
 
 def test_golden_scenario_mis_typed_filters_is_retried_with_shape_feedback(monkeypatch, mocker, baseline_env):
-    """A filters value that isn't a string is the one context mistake the structured output
-    can't rule out; it is fed back under the "Malformed shape" heading (not as a schema
-    problem) and the corrected answer is what the caller gets, with the retry counted.
-    """
+    """A non-string filters value is fed back as "Malformed shape" and the corrected answer is returned."""
     prompt = "Which invoices are open or pending?"
     wrong = {
         "action": {"name": "HAS_INVOICE"},
@@ -414,10 +377,7 @@ def test_golden_scenario_mis_typed_filters_is_retried_with_shape_feedback(monkey
 
 
 def test_golden_scenario_non_cel_filter_is_retried_until_it_parses(monkeypatch, mocker, baseline_env):
-    """The pseudo-grammar the model used to produce (`contains` as an infix word) is not CEL;
-    the parser's verdict goes back under "Malformed shape" and the corrected CEL answer is
-    what the caller gets, with the retry counted.
-    """
+    """A filter that isn't valid CEL is fed back as "Malformed shape" and the corrected answer is returned."""
     prompt = "Which documents mention refunds?"
     not_cel = {
         "action": {"name": "CAN_ACCESS"},
@@ -435,7 +395,6 @@ def test_golden_scenario_non_cel_filter_is_retried_until_it_parses(monkeypatch, 
 
     assert result.outcome == Outcome.SUCCESS
     assert result.validation_retries == 1
-    # Every accepted evaluation is policy-derived, so the system stamps the marker on it.
     assert result.evaluations[0]["context"] == {
         **cel["context"],
         "parameters": {},
@@ -446,10 +405,7 @@ def test_golden_scenario_non_cel_filter_is_retried_until_it_parses(monkeypatch, 
 
 
 def _agent_with_policies(monkeypatch, mocker, baseline_env, answers, policies):
-    """Like _agent, but with this request's PolicyClient.get_cached() returning `policies`
-    instead of _PRD_PERMISSION_POLICIES - for the golden scenario replaying a real captured
-    policy.
-    """
+    """Like _agent, but the PolicyClient returns `policies`."""
     baseline_env()
     responses = [
         _llm_response(mocker, tool_calls=[_ACTIVATE_EXTRACT_INTENT_CALL]),
@@ -471,13 +427,7 @@ def _agent_with_policies(monkeypatch, mocker, baseline_env, answers, policies):
 
 
 def test_golden_scenario_policy_derived_action_replays_a_real_captured_policy(monkeypatch, mocker, baseline_env):
-    """ENG-9671 end to end, replaying a policy actually captured from a live RC environment's
-    GET /access/v1/policies (not a synthetic shape): a KBAC policy defines "WAIVE_FEE", an
-    action that is not one of the CanBank schema's own edge relations at all. The prompt names
-    no specific account, so this is a Resource Search (no resource.id), and the "over a year"
-    condition is left to the policy's own cypher condition rather than repeated as a filter.
-    It is accepted without a retry.
-    """
+    """An action granted only by a policy, not a schema edge, is accepted without a retry."""
     policies = [
         {
             "policy": {
@@ -519,7 +469,6 @@ def test_golden_scenario_policy_derived_action_replays_a_real_captured_policy(mo
     ]
     assert result.policy_version
     assert result.policy_fetch_failed is False
-    # The rating is on the result, never in the response.
     assert (result.confidence, result.explanation) == ("high", "A policy matches the prompt.")
     assert list(json.loads(result.text)) == ["prompt", "evaluations"]
 
@@ -541,11 +490,7 @@ def _skill_json_examples():
 
 
 def test_skill_examples_conform_to_the_context_shape_the_agent_enforces():
-    """The skill's worked examples are what the model imitates, so every one of them must
-    pass the same context check the pipeline applies to the model's answers - a `filters`
-    string that parses as CEL over `resource`, `parameters` / `qualifiers` objects, and a
-    `context` on every evaluation.
-    """
+    """Every worked example in the extract-intent skill passes the pipeline's context check."""
     examples = list(_skill_json_examples())
     assert examples, "no worked examples found in SKILL.md"
     assert any(example["context"].get("filters") for example in examples), "no filters example in SKILL.md"

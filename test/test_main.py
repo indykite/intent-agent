@@ -93,22 +93,12 @@ def test_start_observability_server_runs_on_background_daemon_thread(mocker):
 
 
 def test_main_routes_warnings_through_logging_before_serving(monkeypatch, mocker, baseline_env):
-    """main() is the process entrypoint - never exercised end to end elsewhere in the unit
-    suite (it builds a real Settings, starts a background thread, and blocks on
-    uvicorn.run). Every collaborator is faked here so this only verifies main()'s own
-    wiring: warnings.warn() routed through logging (captureWarnings) before the app is
-    built, both servers started, and the middleware attached - not any real network binding
-    or blocking call.
-    """
+    """main() wires logging, captureWarnings, the app, both servers and the middleware."""
     baseline_env()
-    # Settings(_env_file=None), like every other test's fixed instance - main()'s own bare
-    # Settings() would otherwise pick up whatever .env file happens to sit in the developer's
-    # cwd (e.g. a local LOG_LEVEL=DEBUG), making this test's expectations non-deterministic.
+    # main()'s bare Settings() would read a developer's local .env.
     settings = Settings(_env_file=None)
     mocker.patch("indykite.intent_agent.__main__.Settings", return_value=settings)
-    # dictConfig is mocked too - calling it for real would reconfigure the actual root/uvicorn
-    # loggers process-wide (see test_logging_config.py's captureWarnings test, which has to
-    # snapshot and restore exactly that) and leak into every other test in the suite.
+    # A real dictConfig would reconfigure loggers process-wide and leak into other tests.
     dict_config = mocker.patch("indykite.intent_agent.__main__.logging.config.dictConfig")
     capture_warnings = mocker.patch("indykite.intent_agent.__main__.logging.captureWarnings")
     fake_agent = mocker.Mock(get_cached_schema=mocker.Mock(return_value=None))

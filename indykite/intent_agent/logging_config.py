@@ -1,19 +1,14 @@
-"""Structured JSON logging, applied uniformly to app logs and uvicorn's own logs.
+"""Structured one-line JSON logging to stdout for both app and uvicorn logs.
 
-`build_logging_config` returns one dictConfig-compatible mapping that both `main()`
-(for the app's own root logger) and every `uvicorn.Config`/`uvicorn.run` call (for
-"uvicorn"/"uvicorn.error"/"uvicorn.access") must be given, so a line logged from either
-source is the same one-line-JSON-to-stdout shape.
+Pass `build_logging_config`'s result to `dictConfig` and to every uvicorn config/run call.
 """
 
 import json
 import logging
 from typing import Any
 
-# Built from a throwaway LogRecord rather than hardcoded, so it tracks whichever attrs
-# the running Python version's LogRecord actually carries (e.g. `taskName`, added in 3.12).
-# `color_message` is uvicorn's own extra, carrying an ANSI-colorized dupe of `message` -
-# meaningless once rendered as JSON, so it's dropped alongside the stdlib attrs.
+# Derived from a real LogRecord so it tracks the running Python's attrs; `color_message` is
+# uvicorn's ANSI-colored duplicate of `message`.
 _STANDARD_RECORD_ATTRS = frozenset(logging.LogRecord("", 0, "", 0, "", (), None).__dict__) | {
     "message",
     "color_message",

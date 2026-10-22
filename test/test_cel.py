@@ -22,17 +22,12 @@ from indykite.intent_agent.cel import MAX_FILTER_LENGTH, conjuncts, filter_error
     ],
 )
 def test_filter_errors_accepts_cel_over_the_resource(expression):
-    """The skill's CEL subset - comparisons, string methods, membership, timestamps, macros,
-    `has`/`size` - over `resource` is accepted as-is; a comprehension's loop variable is not a
-    foreign reference.
-    """
+    """The skill's CEL subset over `resource` is accepted; a comprehension's loop variable is not foreign."""
     assert filter_errors(expression) == []
 
 
 def test_filter_errors_reports_syntax_errors_with_a_position():
-    """Non-CEL (the SQL / pseudo-grammar the model used to produce) is rejected with the
-    parser's position, so the feedback tells the LLM where the expression broke.
-    """
+    """Non-CEL is rejected with the parser's position, so the LLM feedback says where it broke."""
     errors = filter_errors("resource.name contains 'refund'")
     assert len(errors) == 1
     assert errors[0].startswith("context.filters is not valid CEL (line 1, column ")
@@ -90,11 +85,7 @@ def test_filter_errors_reports_syntax_errors_with_a_position():
     ],
 )
 def test_filter_errors_rejects_foreign_variables_and_blocked_functions(expression, expected):
-    """A filter constrains the resource only: any other variable - in plain or leading-dot
-    form, outside a comprehension's own body, or smuggled in as a macro argument - and the
-    reflection functions the platform's evaluator also blocks, called globally or on a
-    receiver, are reported - each once, all at the same time.
-    """
+    """Every non-resource variable and blocked reflection call is reported, each once, all together."""
     assert filter_errors(expression) == expected
 
 
@@ -127,10 +118,7 @@ _CAR_PROPERTIES = {"external_id", "make", "model", "vin", "year"}
     ],
 )
 def test_filter_errors_accepts_known_properties(expression):
-    """With a property list, a filter reading the resource type's own properties is accepted in
-    either CEL spelling; `id` / `type` belong to the AuthZEN resource object and always are. The
-    last case passes no list at all, which disables the check (an unobserved type, or no schema).
-    """
+    """Known properties, `id` and `type` are accepted; the `tags` case passes no list, which disables the check."""
     properties = None if "tags" in expression else _CAR_PROPERTIES
     assert filter_errors(expression, properties) == []
 
@@ -169,11 +157,7 @@ def test_filter_errors_accepts_known_properties(expression):
     ],
 )
 def test_filter_errors_rejects_properties_the_resource_type_lacks(expression, expected):
-    """A condition on a property the type doesn't have can't be answered downstream, so it is fed
-    back for a retry - whichever way the property was selected. A computed index names a property
-    only once evaluated, which is the one case nothing static can check, so it is refused outright
-    rather than waved through.
-    """
+    """Unknown properties are rejected in either spelling; a computed index can't be checked, so it is refused."""
     assert filter_errors(expression, _CAR_PROPERTIES) == expected
 
 

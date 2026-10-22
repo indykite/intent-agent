@@ -11,9 +11,7 @@ from integration.schema_fixtures import RATING, STOCK_POLICIES, schema_with_stoc
 
 
 def test_gemini_send_message_end_to_end(monkeypatch, mocker, tmp_path):
-    """Drive a SendMessage JSON-RPC request through the ASGI app, LLM mocked, and check the
-    request left exactly one TDD 4.9 audit record behind through the real file sender.
-    """
+    """A SendMessage through the ASGI app (LLM mocked) returns the bound intent and writes one audit record."""
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("INTROSPECT_URL", "https://idp.example.com/introspect")
     monkeypatch.setenv("INTROSPECT_CLIENT_ID", "client-id")
@@ -49,9 +47,7 @@ def test_gemini_send_message_end_to_end(monkeypatch, mocker, tmp_path):
             }
         ],
     )
-    # The model's structured output is {evaluations} only - the prompt echo is added by the
-    # agent. context.parameters / filters / qualifiers are passed through verbatim (TDD 9); a
-    # null key (the structured output's nullable fields) is dropped rather than reaching the caller.
+    # The agent adds the prompt echo; null context keys must be dropped before reaching the caller.
     final_response = AIMessage(
         content=(
             '{"evaluations": '

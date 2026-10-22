@@ -46,43 +46,24 @@ class Settings(BaseSettings):
 
     gemini_api_key: SecretStr = Field(min_length=1)
     gemini_model: str = Field(min_length=1, default="gemini-3.5-flash-lite")
-    # Size of IntentAgent's dedicated schema/policy-fetch thread pool (review: was a hardcoded
-    # module constant). 8 is not a request-concurrency limit - it only bounds how many
-    # schema/policy fetches can be in flight at once; a slow/unreachable platform ties up a
-    # worker for its own timeout x retry course (see IntentAgent._run_in_fetch_executor), so
-    # this is sized to absorb a burst of concurrent cold caches without spending as many threads
-    # as the LLM client's own connection pool, not to cap overall request throughput.
+    # Bounds concurrent schema/policy fetches, not request concurrency.
     fetch_executor_max_workers: PositiveInt = 8
     tool_call_max_iterations: PositiveInt = 5
     schema_preview_chars: PositiveInt = 12000
-    # Per-LLM-call ceiling - mirrors the other *_TIMEOUT_SECONDS fields, which each bound a
-    # single outbound call. 3s is sized for the common path (skill activation, answer, one
-    # validation retry) to fit the request budget below; Gemini's own 10s client default
-    # would not. It is not the end-to-end guarantee: extra tool-call rounds (up to
-    # TOOL_CALL_MAX_ITERATIONS per attempt) add calls, and REQUEST_TIMEOUT_SECONDS is what
-    # actually caps the whole request.
+    # Per LLM call; sized so activation + answer + one retry fit inside request_timeout_seconds.
     llm_timeout_seconds: PositiveFloat = 3.0
-    # Whole-extraction deadline (PRD: answer within 10s end to end), spanning the schema/policy
-    # fetch (ENG-9671: both moved inside this deadline, see IntentAgent.run_extraction) and
-    # every LLM call, tool-call round and validation retry of one request. Introspection keeps
-    # its own timeout, ahead of this one.
+    # Whole-extraction deadline: schema/policy fetch, every LLM call and retry (not introspection).
     request_timeout_seconds: PositiveFloat = 10.0
-    # Extra attempts after the first, so the LLM is invoked at most 1 + this many times per
-    # request on validation failure (TDD 4.9, open decision 1: default N=1). 0 disables retry.
+    # Extra LLM attempts after a validation failure; 0 disables retry.
     validation_max_retries: NonNegativeInt = 1
 
     indykite_base_url: HttpUrl
     ik_app_agent_key: SecretStr = Field(min_length=1)
-    # Per-fetch ceiling, same "must fit inside request_timeout_seconds" rule as
-    # llm_timeout_seconds (see _reject_fetch_timeouts_over_request_timeout) - sized to leave
-    # the LLM calls a real share of the 10s budget alongside it, not to be a generous allowance
-    # in its own right. Tune against the platform's actual observed latency.
+    # Per fetch; leaves the LLM calls a real share of request_timeout_seconds.
     schema_fetch_timeout_seconds: PositiveFloat = 3.0
     schema_refresh_ttl_minutes: PositiveFloat = 5.0
 
-    # Per-attempt ceiling, same rule as schema_fetch_timeout_seconds above - policy_fetch_retry_
-    # attempts multiplies it, so both are sized together to leave room for the schema fetch and
-    # the LLM calls in the same request_timeout_seconds budget, not just the first attempt.
+    # Per attempt; multiplied by policy_fetch_retry_attempts within the same request budget.
     policy_fetch_timeout_seconds: PositiveFloat = 2.0
     policy_refresh_ttl_minutes: PositiveFloat = 5.0
     policy_fetch_retry_attempts: PositiveInt = 2
@@ -95,21 +76,16 @@ class Settings(BaseSettings):
     introspect_client_id: str = Field(min_length=1)
     introspect_client_secret: SecretStr = Field(min_length=1)
     introspect_timeout_seconds: PositiveFloat = 5.0
-    # The `aud` value this agent expects on an incoming access token, checked in
-    # _validate_introspection_claims.
+    # The `aud` value expected on an incoming access token.
     expected_token_audience: str = Field(min_length=1, default="intent_agent")
 
-    # Audit log delivery (TDD 4.9 record, IAG-shaped delivery - see audit/). The keys mirror the
-    # Agent Gateway's `audit.` config section one to one, flattened to AUDIT_* env vars. Unlike
-    # the IAG, where omitting the section disables auditing, AUDIT_DELIVERY has no default:
-    # the TDD requires every request to produce one audit record, so a deployment can't
-    # silently run without a delivery configured.
+    # Audit delivery, mirroring the Agent Gateway's `audit.` config. No default: every request
+    # must be audited, so a deployment can't silently run without a delivery configured.
     audit_delivery: _AuditDelivery
-    # Buffered delivery through a bounded in-memory queue drained by a background worker
-    # (IAG `audit.async`); records are dropped with a warning once the queue is full.
+    # Bounded in-memory queue + background worker; records are dropped once it is full.
     audit_async: bool = False
     audit_async_buffer_size: PositiveInt = 512
-    # Webhook delivery (IAG `audit.http.*`) - all required when AUDIT_DELIVERY is `webhook`.
+    # Webhook delivery - all required when AUDIT_DELIVERY is `webhook`.
     audit_http_url: HttpUrl | None = None
     audit_http_method: _AuditHttpMethod | None = None
     audit_http_auth_type: _AuditHttpAuthType | None = None
@@ -118,8 +94,7 @@ class Settings(BaseSettings):
     audit_http_api_key: SecretStr | None = None
     audit_http_api_key_header: str = Field(min_length=1, default="X-API-Key")
     audit_http_timeout_seconds: PositiveFloat = 5.0
-    # File delivery (IAG `audit.file.*`) - path/format/rotation required when AUDIT_DELIVERY is
-    # `file`. The directory is created at startup if missing.
+    # File delivery - path/format/rotation required when AUDIT_DELIVERY is `file`.
     audit_file_storage_path: Path | None = None
     audit_file_format: _AuditFileFormat | None = None
     audit_file_rotation_strategy: _AuditFileRotationStrategy | None = None
@@ -134,9 +109,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _require_webhook_config(self) -> "Settings":
-        """Reject AUDIT_DELIVERY=webhook without the HTTP settings the sender needs, at startup
-        rather than on the first record it fails to deliver (same rules as the IAG's HTTPConfig).
-        """
+        """Reject AUDIT_DELIVERY=webhook without the HTTP settings the sender needs."""
         if self.audit_delivery != "webhook":
             return self
         if self.audit_http_url is None:
@@ -153,8 +126,7 @@ class Settings(BaseSettings):
         ):
             message = "audit: mTLS requires AUDIT_HTTP_MTLS_CERTIFICATE_FILE_PATH and AUDIT_HTTP_MTLS_PRIVATE_KEY_PATH"
             raise ValueError(message)
-        # SecretStr isn't stripped by str_strip_whitespace, so a whitespace-only key has to be
-        # caught here rather than surfacing later as a bare ValueError from the sender.
+        # SecretStr isn't stripped by str_strip_whitespace, so catch a whitespace-only key here.
         if self.audit_http_auth_type == "api-key" and (
             self.audit_http_api_key is None or not self.audit_http_api_key.get_secret_value().strip()
         ):
@@ -164,9 +136,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _require_file_config(self) -> "Settings":
-        """Reject AUDIT_DELIVERY=file without a storage path, format and rotation strategy (same
-        rules as the IAG's FileConfig).
-        """
+        """Reject AUDIT_DELIVERY=file without a storage path, format and rotation strategy."""
         if self.audit_delivery != "file":
             return self
         if self.audit_file_storage_path is None:
@@ -193,9 +163,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _reject_llm_timeout_over_request_timeout(self) -> "Settings":
-        """Reject a per-call timeout longer than the whole-request deadline - the per-call
-        limit could then never fire before the request one, so it would be dead config.
-        """
+        """Reject a per-call LLM timeout longer than the whole-request deadline (it could never fire)."""
         if self.llm_timeout_seconds > self.request_timeout_seconds:
             message = "LLM_TIMEOUT_SECONDS must not exceed REQUEST_TIMEOUT_SECONDS"
             raise ValueError(message)
@@ -203,23 +171,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _reject_fetch_timeouts_over_request_timeout(self) -> "Settings":
-        """Reject a schema/policy fetch timeout longer than the whole-request deadline - same
-        dead-config reasoning as _reject_llm_timeout_over_request_timeout, now that both fetches
-        run inside request_timeout_seconds too (ENG-9671, review).
+        """Reject a schema/policy fetch timeout longer than the whole-request deadline.
 
-        Deliberately per-field only, not a combined/retry-multiplied budget (review: a prior
-        version of this validator also rejected schema_fetch_timeout_seconds +
-        policy_fetch_timeout_seconds x policy_fetch_retry_attempts exceeding
-        request_timeout_seconds - reverted, since that check was inconsistent with this exact
-        sibling validator and every other budget knob here: LLM_TIMEOUT_SECONDS is checked the
-        same single-field way despite TOOL_CALL_MAX_ITERATIONS/VALIDATION_MAX_RETRIES letting
-        several LLM calls multiply its own worst case well past request_timeout_seconds too, and
-        nothing rejects that combination either. The one property every one of these fields
-        actually needs is "could this single call ever fire before the whole request already
-        timed out" - asyncio.timeout(request_timeout_seconds) is what truly enforces the total
-        budget, cutting off whichever phase is in flight and reporting it correctly (see
-        run_extraction's phase tracking), not a requirement that every possible combination of
-        retries/iterations mathematically sums to fit underneath it.
+        Per field only, like the LLM check: the request deadline itself enforces the total budget,
+        so retries and iterations aren't required to sum to fit under it.
         """
         if self.schema_fetch_timeout_seconds > self.request_timeout_seconds:
             message = "SCHEMA_FETCH_TIMEOUT_SECONDS must not exceed REQUEST_TIMEOUT_SECONDS"

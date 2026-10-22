@@ -1,20 +1,7 @@
-"""Golden eval fixtures (TDD 7.2): one JSON file per prompt under this directory, loaded and
-validated up front so a malformed fixture fails the run before any LLM call is spent.
+"""Golden eval fixtures: loaded and validated up front, so a malformed one fails the run before any LLM call.
 
-A fixture is `{prompt, jwt_sub, expected, category, data_model[, subject_type]}`: `expected` is
-the complete response the agent must return for `prompt` - either `{prompt, evaluations}` or the
-4.7 error shape `{prompt, error, reason, obligation}` for a prompt that must be refused;
-`data_model` names a schema under `schema/` (`<data_model>_schema.json`) served to the agent in
-place of the platform's `GET /data-schema/v1`, plus, when present, the access policies of that
-model (`<data_model>_policies.json`, in the shape of `GET /access/v1/policies`) served in place
-of the platform's policy listing; `jwt_sub` is the caller's id the agent binds, as IAG supplies
-it per request; `subject_type` is the caller's node type - optional when the data model has
-exactly one DigitalTwin type (it is that type), required when it has several; `confidence`
-(optional) is the rating the fixture expects the model to give, taken as written and only
-reported. Every action a golden answer names must be one a policy of the caller's subject type
-grants on that evaluation's resource type - graph edges are never action names, the same rule
-the pipeline applies at run time - so a fixture naming anything else is rejected at load time
-instead of reading as a model failure.
+A fixture is `{prompt, jwt_sub, expected, category, data_model[, subject_type, confidence]}` (see
+docs/testing.md); a golden answer the pipeline could never produce is rejected at load time.
 """
 
 import json
@@ -35,18 +22,14 @@ from indykite.intent_agent.subject_binding import (
 FIXTURES_DIR = Path(__file__).parent
 SCHEMA_DIR = FIXTURES_DIR / "schema"
 
-# TDD 7.2's fixture categories, in report order. Fixtures spell them freely
-# ("single-intent", "Subject Search", "adversarial_subject_spoof"); canonical_category maps every
-# spelling onto one of these, and any other value is a load error - a mis-spelt category would
-# otherwise silently drop the fixture out of the gate that depends on it (see scoring).
+# In report order. An unknown spelling is a load error, so a fixture can't silently drop out of a gate.
 SINGLE_INTENT = "single intent"
 MULTI_INTENT = "multi intent"
 SUBJECT_SEARCH = "subject search"
 RESOURCE_SEARCH = "resource search"
 AMBIGUOUS = "ambiguous"
 OUT_OF_SCOPE = "out of scope"
-# The adversarial categories (TDD 7.2: subject spoof, injection, oversized resource.id) all feed
-# the injection-resistance gate - see is_adversarial.
+# Every adversarial category feeds the injection-resistance gate.
 ADVERSARIAL_SUBJECT_SPOOF = "adversarial subject spoof"
 ADVERSARIAL_SQL_INJECTION = "adversarial sql injection"
 ADVERSARIAL_OVERSIZED_INPUT = "adversarial oversized input"
@@ -72,8 +55,6 @@ __all__ = [
     "load_schema",
 ]
 
-# The platform's policy listing shape (GET /access/v1/policies): {"results": [{"policy": {...},
-# "tags": [...]}, ...]}. The pipeline works on the `results` entries.
 NO_POLICIES: list[dict[str, Any]] = []
 
 
@@ -82,27 +63,23 @@ def is_adversarial(category: str) -> bool:
     return category.startswith(_ADVERSARIAL_PREFIX)
 
 
-# Every adversarial category, in report order - the injection-resistance gate requires each one
-# to be present in a run, so a category can't drop out of the suite unnoticed.
+# A full run must contain each of these, so a category can't drop out of the suite unnoticed.
 ADVERSARIAL_CATEGORIES = tuple(category for category in CATEGORIES if is_adversarial(category))
-# The 4.7 error shape (errors.error_response) - a golden refusal and a judged refusal alike.
+# The error shape (errors.error_response) - a golden refusal and a judged refusal alike.
 REFUSAL_KEYS = frozenset({"prompt", "error", "reason", "obligation"})
 
 
 def policy_entries(document: object) -> list[dict[str, Any]]:
-    """The `results` entries of a policy listing document; `[]` for anything else (load_policies
-    has already rejected a file that isn't shaped as a listing).
-    """
+    """The `results` entries of a policy listing document; `[]` for anything else."""
     if not isinstance(document, dict) or not isinstance(document.get("results"), list):
         return NO_POLICIES
     return [entry for entry in document["results"] if isinstance(entry, dict)]
 
 
 def policies_for_subject(entries: list[dict[str, Any]], subject_type: str) -> list[dict[str, Any]]:
-    """The listing entries whose policy subject type is `subject_type` - the narrowing the
-    platform's `GET /access/v1/policies?subject_type=` applies, so what the runner serves for a
-    fixture's caller (runner.FixturePolicyClient) and what the loader checks its golden answer
-    against (_check_actions_producible) is one and the same set.
+    """The entries whose policy subject type is `subject_type`, as `?subject_type=` narrows the listing.
+
+    Shared by the runner and the loader, so both see the same set.
     """
     return [
         entry
@@ -134,7 +111,7 @@ class Fixture:
     schema_path: Path
     expected: dict[str, Any]
     policies_path: Path | None = None
-    # The rating the fixture expects, as written - only shown in the report.
+    # Only shown in the report, never judged.
     confidence: str | None = None
 
     @property
@@ -149,8 +126,9 @@ class Fixture:
 
 
 def canonical_category(value: str) -> str:
-    """Map a fixture's category spelling onto CATEGORIES: case, `-`/`_` and repeated spaces
-    don't matter. Raises ValueError for anything that isn't one of them.
+    """Map a category spelling onto CATEGORIES, ignoring case, `-`/`_` and repeated spaces.
+
+    Raises ValueError for anything else.
     """
     canonical = re.sub(r"[\s_-]+", " ", value).strip().lower()
     if canonical not in CATEGORIES:
@@ -160,10 +138,7 @@ def canonical_category(value: str) -> str:
 
 
 def _load_json_object(path: Path, what: str) -> dict[str, Any]:
-    """Parse `path` as a JSON object, or raise FixtureError naming the file - the same error path
-    as a malformed fixture, so a bad data-model or policy file is a usage error (exit 2), not a
-    traceback.
-    """
+    """Parse `path` as a JSON object; raises FixtureError naming the file (a usage error, not a traceback)."""
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
     except OSError as exc:
@@ -180,9 +155,9 @@ def _load_json_object(path: Path, what: str) -> dict[str, Any]:
 
 @cache
 def load_schema(path: Path) -> dict[str, Any]:
-    """The JGF data schema at `path`, parsed once per process (fixtures share a handful of models).
-    It must be an object with a `graph` object holding `nodes` (object) and `edges` (array) - the
-    shape every reader in the pipeline expects.
+    """The JGF data schema at `path`, parsed once per process.
+
+    Raises FixtureError unless it has a `graph` object with `nodes` (object) and `edges` (array).
     """
     document = _load_json_object(path, "data model schema")
     graph = document.get("graph")
@@ -198,9 +173,7 @@ def load_schema(path: Path) -> dict[str, Any]:
 
 @cache
 def load_policies(path: Path) -> dict[str, Any]:
-    """The policy listing at `path` (the `GET /access/v1/policies` shape: an object whose
-    `results` is an array of `{"policy": {...}, "tags": [...]}` entries), parsed once per process.
-    """
+    """The policy listing at `path` (`{"results": [{"policy": ..., "tags": ...}]}`), parsed once per process."""
     document = _load_json_object(path, "policy listing")
     results = document.get("results")
     if not isinstance(results, list) or not all(
@@ -212,12 +185,9 @@ def load_policies(path: Path) -> dict[str, Any]:
 
 
 def _as_model_output(fixture: Fixture) -> list[dict[str, Any]]:
-    """The golden evaluations as the model would have to produce them for the binding to yield
-    them: a subject that isn't the caller carries the `subject_source` marker back - "search"
-    for a bare type (a Subject Search), "prompt" for an identified second subject - since the
-    response strips the markers but the checks below key on them. Copies; the fixture's own
-    evaluations are never touched. An anonymous caller (blank `jwt_sub`) is bound without an id,
-    so its own evaluations read as searches here - the lenient reading, never a false rejection.
+    """Copies of the golden evaluations as the model must emit them, `subject_source` markers restored.
+
+    A non-caller subject gets "prompt" when it has an id, else "search".
     """
     caller = (fixture.subject_type, fixture.jwt_sub)
     reconstructed: list[dict[str, Any]] = []
@@ -232,8 +202,9 @@ def _as_model_output(fixture: Fixture) -> list[dict[str, Any]]:
 
 
 def _check_actions_producible(fixture: Fixture) -> None:
-    """Reject a golden answer the pipeline could never return: first every action against the
-    caller's policies (for a precise message), then a round trip through normalize_intent_response.
+    """Raise FixtureError for a golden answer the pipeline could never return.
+
+    Actions are checked against the caller's policies first, for a precise message, then a round trip.
     """
     schema = load_schema(fixture.schema_path)
     policies = policies_for_subject(fixture.policies, fixture.subject_type)
@@ -255,15 +226,12 @@ def _check_actions_producible(fixture: Fixture) -> None:
 
 
 def _check_round_trip(fixture: Fixture, schema: dict[str, Any], policies: list[dict[str, Any]]) -> None:
-    """Feed the golden evaluations, markers restored, through the real normalisation as the
-    fixture's caller and require the response to equal `expected`. A rejection means the
-    pipeline would feed this answer back to the model; a different response means the pipeline
-    rewrites it (rebinds a subject the gate doesn't cover, completes a marker, drops a search
-    over a non-DigitalTwin type or a duplicate, strips a blank id ...) - either way the fixture
-    could only ever read as a model failure.
+    """Raise FixtureError unless the real normalisation, as the fixture's caller, returns `expected`.
+
+    A rejected or rewritten golden answer could only ever read as a model failure.
     """
     model_output = json.dumps(
-        # The rating never changes the response, so any valid level stands in for the model's.
+        # The rating never changes the response, so any valid level will do.
         {"evaluations": _as_model_output(fixture), "confidence": CONFIDENCE_LEVELS[0], "explanation": "golden answer"}
     )
     caller = RequestSubject(id=fixture.jwt_sub or None, type=fixture.subject_type)
@@ -318,12 +286,7 @@ _DATA_MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 def _require_data_model(raw: dict[str, Any], path: Path) -> str:
     """`raw["data_model"]` as a bare model name - the stem of a file directly under `schema/`.
 
-    It is interpolated into the schema and policy file names, so anything with a path separator or
-    a `..` segment would name a file outside `schema/`: `../outside` resolves and loads today. The
-    files it can reach are narrow (a `*_schema.json` that parses as JGF, a `*_policies.json` in the
-    listing shape) and a fixture author can already edit the runner itself, so this is input
-    validation rather than a boundary - the same reason `canonical_category` refuses an unknown
-    category: a fixture must not quietly read something other than the model it names.
+    It is interpolated into file names, so a separator or `..` would read a file outside `schema/`.
     """
     data_model = _require_str(raw, "data_model", path)
     if not _DATA_MODEL.match(data_model):
@@ -336,13 +299,7 @@ def _require_data_model(raw: dict[str, Any], path: Path) -> str:
 
 
 def _evaluation_shape_problem(evaluation: dict[str, Any]) -> str | None:
-    """Why this golden evaluation isn't a shape the pipeline can return, or None. Mirrors what
-    subject_binding rejects or drops: `resource` must be an object with a non-blank string
-    `type`; `action`, when present (absent is the Action Search shape), an object with a
-    non-blank string `name` (a present-but-blank name is dropped, never returned); `subject`,
-    when present, an object; `context`, when present, an object whose `parameters` and
-    `qualifiers` are objects and whose `filters` is a string.
-    """
+    """Why this golden evaluation isn't a shape the pipeline can return (mirrors subject_binding), or None."""
     resource = evaluation.get("resource")
     if not isinstance(resource, dict) or not isinstance(resource.get("type"), str) or not resource["type"].strip():
         return "'resource' must be an object with a non-empty string 'type'"
@@ -391,9 +348,9 @@ def _validate_expected(expected: object, prompt: str, path: Path) -> dict[str, A
 
 
 def _resolve_subject_type(raw: dict[str, Any], schema: dict[str, Any], path: Path) -> str:
-    """The caller's node type: the fixture's own `subject_type`, else the data model's single
-    DigitalTwin type. Either way it must be a node type of the data model, or run_extraction
-    would refuse the request before the LLM ever saw the prompt.
+    """The caller's node type: the fixture's `subject_type`, else the data model's single DigitalTwin type.
+
+    Raises FixtureError unless it is a node type of the data model.
     """
     node_types = set(_node_types(schema))
     if "subject_type" in raw:
@@ -415,9 +372,9 @@ def _resolve_subject_type(raw: dict[str, Any], schema: dict[str, Any], path: Pat
 
 
 def load_fixture(path: Path, *, schema_dir: Path | None = None) -> Fixture:
-    """Parse and validate one fixture file - every problem is a FixtureError naming the file.
-    Data models are looked up under `schema_dir`, by default the `schema/` directory next to
-    the fixture.
+    """Parse and validate one fixture file; every problem is a FixtureError naming the file.
+
+    Data models are looked up under `schema_dir` (default: `schema/` next to the fixture).
     """
     schema_dir = schema_dir if schema_dir is not None else path.parent / "schema"
     try:
@@ -464,9 +421,9 @@ def load_fixture(path: Path, *, schema_dir: Path | None = None) -> Fixture:
 
 
 def load_fixtures(directory: Path = FIXTURES_DIR, *, schema_dir: Path | None = None) -> list[Fixture]:
-    """Every `*.json` fixture directly under `directory` (schemas live in `schema/`, not here),
-    sorted by id. An empty directory is a FixtureError: a suite with nothing in it can't gate
-    anything.
+    """Every `*.json` fixture directly under `directory`, sorted by id.
+
+    Raises FixtureError for an empty directory: an empty suite can't gate anything.
     """
     paths = sorted(path for path in directory.glob("*.json") if path.is_file())
     if not paths:

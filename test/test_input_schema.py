@@ -37,9 +37,7 @@ _POLICIES = [
 
 
 def _variant(field_schema: dict[str, Any], type_name: str) -> dict[str, Any]:
-    """Return the `anyOf` branch of `field_schema` matching `type_name` (or itself, if
-    `field_schema` isn't a nullable/union field to begin with). Raises if none matches.
-    """
+    """Return the `anyOf` branch (or the schema itself if not a union) whose type is `type_name`."""
     for variant in field_schema.get("anyOf", [field_schema]):
         if variant.get("type") == type_name:
             return variant
@@ -107,17 +105,13 @@ def test_build_input_schema_enums_come_from_policies(schema, policies, expected)
 
 
 def test_build_input_schema_allows_subject_id_for_the_second_subject_case():
-    """subject.id must be part of the LLM's output schema - the second-subject case
-    (SKILL.md) requires the LLM to set it explicitly for a marked evaluation.
-    subject_binding._bind_subject still overrides it on every other evaluation regardless
-    of what the LLM puts here (TDD 4.7).
-    """
+    """subject.id is in the output schema so the LLM can set it for a second-subject evaluation."""
     schema = build_input_schema(_load_schema_fixture())
     assert "id" in schema["$defs"]["_Subject"]["properties"]
 
 
 def test_build_input_schema_context_has_exactly_the_tdd_keys():
-    """context must expose exactly parameters/filters/qualifiers (TDD 4.6), not an open object."""
+    """context exposes exactly parameters/filters/qualifiers, not an open object."""
     schema = build_input_schema(_load_schema_fixture())
     context_properties = schema["$defs"]["_Context"]["properties"]
     assert set(context_properties.keys()) == {"parameters", "filters", "qualifiers"}
@@ -135,11 +129,7 @@ def test_build_input_schema_top_level_is_attack_second_subject_explanation_evalu
 
 
 def test_context_shape_check_covers_every_structured_output_context_key():
-    """subject_binding's post-assembly context check is the belt-and-braces behind the
-    structured output's _Context (the enum/types are a hint to Gemini, not a guarantee), so
-    the two must list the same keys with the same expected types - a key added to one and not
-    the other would silently go unchecked.
-    """
+    """subject_binding's context check and the structured output's _Context list the same keys and types."""
     assert set(_CONTEXT_KEY_TYPES) == set(_Context.model_fields)
     for key, expected in _CONTEXT_KEY_TYPES.items():
         annotation = _Context.model_fields[key].annotation
@@ -157,10 +147,7 @@ def test_policy_triples_reads_each_granted_combination():
 
 
 def test_build_input_schema_drops_pydantic_only_keys():
-    """`title`/`default` are pydantic-generated noise; `default` isn't even in Gemini's
-    supported `response_json_schema` keys (google.genai.types.GenerateContentConfig's
-    docstring), so both are stripped from the schema handed to Gemini.
-    """
+    """`title`/`default` are stripped: Gemini's response_json_schema doesn't support `default`."""
     serialized = json.dumps(build_input_schema(_load_schema_fixture()))
     assert '"title"' not in serialized
     assert '"default"' not in serialized
@@ -219,9 +206,7 @@ def test_render_schema_summary_tolerates_missing_or_malformed_graph_sections():
 
 
 def test_graph_readers_tolerate_a_non_object_graph():
-    """A platform response whose `graph` isn't an object reads as an empty graph everywhere - the
-    summary, the enum derivation and the DigitalTwin walk - never an AttributeError on `.get`.
-    """
+    """A non-object `graph` reads as an empty graph everywhere, never an AttributeError."""
     malformed = {"graph": "?"}
     assert render_schema_summary(malformed, _POLICIES).count("- (none)") == len(["nodes", "edges", "policies"])
     action_name = build_input_schema(malformed, _POLICIES)["$defs"]["_Action"]["properties"]["name"]
@@ -230,7 +215,7 @@ def test_graph_readers_tolerate_a_non_object_graph():
 
 
 def test_render_schema_summary_is_far_smaller_than_the_raw_document():
-    """The point of the summary: a real captured schema fits well inside SCHEMA_PREVIEW_CHARS."""
+    """A real captured schema's summary fits well inside SCHEMA_PREVIEW_CHARS."""
     schema = json.loads((Path(__file__).parent / "fixtures" / "canbank_schema.json").read_text())
     raw = json.dumps(schema, indent=2)
     summary = render_schema_summary(schema)
@@ -239,9 +224,7 @@ def test_render_schema_summary_is_far_smaller_than_the_raw_document():
 
 
 def test_render_schema_summary_flags_platform_internal_types_instead_of_marking_them_subjects():
-    """_Application carries the DigitalTwin label in a real schema but is never what a prompt is
-    about; seen live as a Subject Search candidate when it was listed as a DigitalTwin.
-    """
+    """_Application carries the DigitalTwin label but is never what a prompt is about."""
     schema = {
         "graph": {
             "nodes": {"_Application": {"metadata": {"properties": {}, "system_labels": [{"name": "DigitalTwin"}]}}},
@@ -255,9 +238,7 @@ def test_render_schema_summary_flags_platform_internal_types_instead_of_marking_
 
 
 def test_build_input_schema_requires_resource_id():
-    """A required field is what makes flash-lite fill the identifier in at all; "" is the
-    "many resources" value and subject_binding drops it again.
-    """
+    """resource.id is required because the model fills required fields far more reliably; "" means many."""
     resource = build_input_schema(_load_schema_fixture())["$defs"]["_Resource"]
     assert resource["required"] == ["id"]
     assert resource["properties"]["id"]["type"] == "string"

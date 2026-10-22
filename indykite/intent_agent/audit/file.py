@@ -1,6 +1,6 @@
-"""File audit delivery (the IAG's `audit.file`): one `audit-<service>-<unixNano>.<format>` file
-at a time under the storage path, rotated by age, size or both, in JSON lines, CSV or plain
-`key=value` text. Write failures are logged and never raised into the request path.
+"""File audit delivery: rotating `audit-<service>-<unixNano>.<format>` files (json, csv or txt).
+
+Write failures are logged and never raised into the request path.
 """
 
 import asyncio
@@ -26,7 +26,7 @@ _FILE_MODE = 0o600
 
 @dataclass(frozen=True, slots=True)
 class FileConfig:
-    """The IAG's `audit.file.*` keys."""
+    """File delivery settings."""
 
     storage_path: Path
     file_format: FileFormat
@@ -47,8 +47,7 @@ class FileSender:
         self._opened_at = 0.0
         self._bytes_written = 0
         self._csv_header_written = False
-        # mkdir's mode is masked by the umask like touch's; pin it on the directory this
-        # sender creates (an operator-provided one keeps whatever mode it was given).
+        # mkdir's mode is masked by the umask; pin it only on a directory this sender creates.
         created = not config.storage_path.is_dir()
         config.storage_path.mkdir(mode=_DIR_MODE, parents=True, exist_ok=True)
         if created:
@@ -78,8 +77,7 @@ class FileSender:
             try:
                 self._rotate_if_needed()
             except OSError:
-                # The current file is still open (the successor is opened before it's closed),
-                # so the record can still be appended to it rather than lost.
+                # The current file is still open, so the record is appended to it rather than lost.
                 logger.exception("audit: rotate file")
             try:
                 self._bytes_written += self._append(message)
@@ -97,9 +95,7 @@ class FileSender:
         else:
             rotate = aged_out or too_big
         if rotate:
-            # Open the successor before closing the current file: if opening fails (disk full,
-            # permissions) the current file stays in service and the record still lands
-            # somewhere, instead of every later record being dropped as "sender closed".
+            # Open the successor first so a failed open leaves the current file in service.
             successor = self._open_file()
             self._close_file()
             self._adopt(successor)
@@ -112,13 +108,11 @@ class FileSender:
         """Create and open the next `audit-<service>-<unixNano>.<format>` file, owner-only."""
         name = f"audit-{self._service}-{time.time_ns()}.{self._config.file_format}"
         path = self._config.storage_path / name
-        # exist_ok=False: never append to a file this process didn't create (unknown perms,
-        # unknown content) - the nanosecond name makes a collision a bug, not a rotation.
+        # Never append to a file this process didn't create (unknown perms and content).
         path.touch(mode=_FILE_MODE, exist_ok=False)
-        # touch's mode is masked by the process umask; the record carries the prompt and
-        # evaluations, so pin the exact owner-only mode rather than trust the environment.
+        # touch's mode is masked by the umask; records hold prompts, so pin owner-only access.
         path.chmod(_FILE_MODE)
-        # newline="" so the csv module controls line endings itself, as it documents.
+        # newline="" so the csv module controls line endings itself.
         return path.open("a", encoding="utf-8", newline="")
 
     def _adopt(self, handle: io.TextIOWrapper) -> None:
@@ -161,7 +155,7 @@ class FileSender:
 
 
 def _text_line(message: AuditMessage) -> str:
-    """The IAG's txt shape: `[timestamp] field=value field=value ...`, one record per line."""
+    """Render one record as `[timestamp] field=value field=value ...`."""
     row = dict(zip(FIELD_NAMES, message.to_row(), strict=True))
     timestamp = row.pop("timestamp")
     pairs = " ".join(f"{name}={value}" for name, value in row.items())

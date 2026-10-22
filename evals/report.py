@@ -1,7 +1,4 @@
-"""Rendering a finished eval run: the gate verdicts, the per-category breakdown and every
-failure with an expected/actual diff - as plain text for the terminal and CI log, Markdown
-for the GitHub job summary / PR comment, and JSON for the run artifact.
-"""
+"""Render a finished eval run as text (terminal/CI log), Markdown (job summary) or JSON (artifact)."""
 
 import difflib
 import html
@@ -56,9 +53,7 @@ def build_report(
     max_p95_latency: float = MAX_P95_LATENCY_SECONDS,
     full_suite: bool = True,
 ) -> Report:
-    """Score a run: categories and gates over `results`. `full_suite` is False for a `--only`
-    subset, where a missing adversarial category is the selection, not a gap in the suite.
-    """
+    """Score a run: categories and gates over `results`. `full_suite` is False for an `--only` subset."""
     return Report(
         generated_at=datetime.now(UTC).isoformat(timespec="seconds"),
         model=model,
@@ -77,9 +72,7 @@ def _pretty(value: Any) -> str:  # noqa: ANN401 - any JSON value
 
 
 def response_diff(result: FixtureResult) -> str:
-    """A unified diff from the golden answer to the response, keys sorted so only real
-    differences show. Empty for a passing result.
-    """
+    """A unified diff (keys sorted) from the golden answer to the response; empty for a pass."""
     if result.passed:
         return ""
     lines = difflib.unified_diff(
@@ -98,9 +91,7 @@ def _rating(result: FixtureResult) -> str:
 
 
 def _fence(content: str, info: str = "") -> list[str]:
-    """`content` in a Markdown code fence longer than any run of backticks inside it, so a
-    hostile fixture prompt or a diff containing ``` can't close the block early.
-    """
+    """`content` in a code fence longer than any backtick run inside it, so hostile text can't close it."""
     longest = max((len(run) for run in re.findall(r"`+", content)), default=0)
     fence = "`" * max(3, longest + 1)
     return [fence + info, content, fence]
@@ -132,9 +123,7 @@ _CATEGORY_HEADERS = ["category", "fixtures", "passed", "failed", "forced matches
 
 
 def _gate_lines(report: Report) -> list[str]:
-    """One line per gate, and its offenders on the next when it has any - a slow fixture that
-    still matched its golden answer appears nowhere else in the report.
-    """
+    """One line per gate, plus its offenders - the only place a slow but matching fixture appears."""
     lines: list[str] = []
     for gate in report.gates:
         lines.append(f"  [{_STATUS[gate.passed]}] {gate.name}: {gate.observed} (required: {gate.required})")
@@ -198,8 +187,7 @@ def render_markdown(report: Report) -> str:
             f"| {gate.name} | {gate.required} | {gate.observed} | {_MARK[gate.passed]} {_STATUS[gate.passed]} |"
             for gate in report.gates
         ),
-        # Offenders under the table rather than as a column: the ids are long, the list can be,
-        # and most gates have none on a green run.
+        # Under the table, not a column: the ids are long and most gates have none.
         *_markdown_offenders(report),
         "",
         "| Category | Fixtures | Passed | Failed | Forced matches | Exceptions | Pass rate |",
@@ -210,8 +198,7 @@ def render_markdown(report: Report) -> str:
     if failures:
         lines += ["", f"### Failures ({len(failures)})"]
         for result in failures:
-            # Everything model- or fixture-authored is HTML-escaped inside the <summary> and
-            # fenced elsewhere: adversarial prompts are hostile text by design.
+            # Escape/fence all model- or fixture-authored text: adversarial prompts are hostile.
             summary = (
                 f"<code>{html.escape(result.fixture.id)}</code> [{html.escape(result.fixture.category)}] "
                 f"outcome={html.escape(result.outcome)} - {html.escape(result.verdict.detail)}"

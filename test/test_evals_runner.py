@@ -1,7 +1,4 @@
-"""The eval runner (evals/runner.py) over the real IntentAgent pipeline with a scripted LLM:
-subject binding from the fixture, one agent per data model, judged results in fixture order,
-per-fixture exception isolation and the concurrency bound.
-"""
+"""evals/runner.py over the real IntentAgent pipeline with a scripted LLM."""
 
 import asyncio
 import json
@@ -19,8 +16,7 @@ from indykite.intent_agent.errors import no_intent_error
 
 _ACTIVATE_EXTRACT_INTENT = {"name": "activate_skill", "args": {"name": "extract-intent"}, "id": "call-1"}
 _PROMPT = "Can I access the document doc123?"
-# What the model answers (no subject - the pipeline binds the caller) and what the caller gets
-# (the caller bound, and the `parameters` object the pipeline gives every evaluation).
+# The model's answer has no subject; the pipeline binds the caller and adds an empty `parameters` object.
 _MODEL_EVALUATION = {"action": {"name": "CAN_ACCESS"}, "resource": {"type": "Document", "id": "doc123"}, "context": {}}
 _BOUND_EVALUATION = {
     **_MODEL_EVALUATION,
@@ -30,11 +26,7 @@ _BOUND_EVALUATION = {
 
 
 class _ScriptedLLM:
-    """A stand-in for ChatGoogleGenerativeAI: activates extract-intent on the first call of every
-    conversation, then answers each prompt from `script` (a dict -> its JSON, an exception -> raised,
-    a string -> free text without ever activating the skill). Tracks how many conversations are in
-    flight at once.
-    """
+    """A ChatGoogleGenerativeAI stand-in: activates extract-intent, then answers from `script`; tracks concurrency."""
 
     def __init__(self, script: dict[str, object], *, delay: float = 0.0) -> None:
         self.script = script
@@ -62,8 +54,7 @@ class _ScriptedLLM:
         if not any(isinstance(message, ToolMessage) for message in messages):
             return Mock(text="", content="", tool_calls=[_ACTIVATE_EXTRACT_INTENT])
         self.prompts_seen.append(prompt)
-        # The model rates every answer (an empty one too - the pipeline ignores it there); a
-        # script entry that doesn't rate itself is rated high.
+        # A script entry that doesn't rate itself is rated high.
         text = json.dumps({"explanation": "A policy matches the prompt.", "confidence": "high", **answer})
         return Mock(text=text, content=text, tool_calls=[])
 
@@ -279,9 +270,7 @@ def test_agents_serve_their_data_models_policies(settings, eval_fixture, eval_sc
 
 
 def test_run_fixture_reruns_once_when_the_only_outcome_was_a_timeout(settings, eval_fixture, monkeypatch, caplog):
-    """A per-call timeout is a latency spike, not a judgement of the answer: the fixture is
-    rerun once, the rerun's answer is what gets judged, and the rerun is reported.
-    """
+    """A timeout is a latency spike, not a verdict: the fixture is rerun once and the rerun judged."""
     monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "0.05")
     from indykite.intent_agent.config import Settings as _Settings
 

@@ -1,7 +1,6 @@
-"""Webhook audit delivery (the IAG's `audit.http`): one POST/PUT per record with the record
-as the JSON body, authenticated with mTLS (TLS 1.3 minimum, like the IAG), an API key header,
-or nothing. A failed delivery - connection error, timeout, or a 4xx/5xx from the receiver - is
-logged and dropped; it is never retried and never fails the request being audited.
+"""Webhook audit delivery: one JSON POST/PUT per record, with mTLS, an API key or no auth.
+
+A failed delivery is logged and dropped; it is never retried and never fails the request.
 """
 
 import logging
@@ -23,7 +22,7 @@ AuthType = Literal["mTLS", "no-auth", "api-key"]
 
 @dataclass(frozen=True, slots=True)
 class HttpConfig:
-    """The IAG's `audit.http.*` keys."""
+    """Webhook delivery settings."""
 
     url: str
     method: HttpMethod
@@ -81,7 +80,7 @@ class HttpSender:
 
 
 def _mtls_context(config: HttpConfig) -> ssl.SSLContext:
-    """A client TLS context presenting the configured certificate, TLS 1.3 minimum like the IAG."""
+    """Build a TLS 1.3+ client context presenting the configured certificate."""
     if config.mtls_certificate_file_path is None or config.mtls_private_key_path is None:
         message = "audit: mTLS requires mtls_certificate_file_path and mtls_private_key_path"
         raise ValueError(message)

@@ -1,8 +1,6 @@
-"""Buffered audit delivery (the IAG's `audit.async`): records go on a bounded in-memory queue
-and one background worker drains it into the real sender, so a slow webhook or disk never
-holds up a request. The trade-off is the same as the IAG's - when the queue is full the record
-is dropped with a warning, not blocked on. The queue is drained on close() before the inner
-sender is closed.
+"""Buffered audit delivery: a bounded queue drained into the real sender by one background worker.
+
+A record is dropped with a warning when the queue is full; close() drains the queue first.
 """
 
 import asyncio
@@ -22,8 +20,7 @@ _STOP = object()
 class AsyncSender:
     """Wraps another sender behind a bounded asyncio.Queue and a single worker task.
 
-    The worker is started lazily on the first send() (it needs a running event loop, which
-    there isn't yet when Settings are loaded and the sender is built), and stopped by close().
+    The worker starts on the first send(), since it needs a running event loop.
     """
 
     def __init__(self, inner: "Sender", *, buffer_size: int) -> None:
@@ -39,9 +36,7 @@ class AsyncSender:
         return self._queue.maxsize
 
     async def send(self, message: AuditMessage) -> None:
-        """Enqueue the record without waiting. Drops it (with a warning) if the queue is full or
-        the sender is shutting down - never blocks the request path.
-        """
+        """Enqueue without waiting; drop with a warning if the queue is full or the sender is closing."""
         if self._closing:
             logger.warning("audit: dropping payload while sender is stopping")
             return

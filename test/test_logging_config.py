@@ -79,14 +79,8 @@ def test_build_logging_config_routes_everything_to_stdout():
 
 
 def test_captured_warnings_reach_the_json_stdout_handler(capsys):
-    """logging.captureWarnings(capture=True) (see __main__.main()) must route warnings.warn()
-    through the same JSON stdout handler every other log line uses, at WARNING severity - not
-    just that captureWarnings gets called (main()'s own test mocks it out), but that a real
-    warning actually becomes one JSON line on stdout. dictConfig mutates the root/uvicorn
-    loggers process-wide, and emitting the captured warning creates/touches the "py.warnings"
-    logger itself, so this snapshots and restores all of them afterward instead of leaking
-    into every other test in the suite.
-    """
+    """A captured warnings.warn() becomes one WARNING JSON line on stdout."""
+    # dictConfig and captureWarnings mutate loggers process-wide; snapshot and restore them.
     affected_loggers = [
         logging.getLogger(name) for name in (None, "uvicorn", "uvicorn.access", "uvicorn.error", "py.warnings")
     ]
