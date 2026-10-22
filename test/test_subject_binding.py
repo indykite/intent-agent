@@ -1,3 +1,4 @@
+import copy
 import json
 
 import pytest
@@ -263,7 +264,8 @@ def test_bind_subject_search_at_index_0_is_not_a_gate_for_a_second_subject():
 )
 def test_bind_subject_search_marker_without_a_searched_type_falls_back_to_override(evaluation):
     """A Subject Search marker without a usable subject type, or a wrong marker value, gets the caller's subject."""
-    data = {"evaluations": [evaluation]}
+    # A copy: _bind_subject changes the evaluation in place, and the parameters are shared module-level dicts.
+    data = {"evaluations": [copy.deepcopy(evaluation)]}
     _bind_subject(data, subject_id="roy", subject_type="User")
     assert data["evaluations"][0]["subject"] == {"type": "User", "id": "roy"}
 

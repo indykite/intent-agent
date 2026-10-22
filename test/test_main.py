@@ -2,7 +2,7 @@ import time
 from http import HTTPStatus
 
 import httpx2
-from prometheus_client import generate_latest
+from prometheus_client import REGISTRY
 from starlette.applications import Starlette
 from starlette.responses import PlainTextResponse
 from starlette.routing import Route
@@ -51,12 +51,17 @@ def test_unknown_path_returns_404():
 
 
 def test_metrics_middleware_records_request_count_and_latency():
+    """One request adds one to the count and one latency observation; the counters are process-wide."""
+    count_labels = {"method": "GET", "path": "/ping", "status": "200"}
+    latency_labels = {"method": "GET", "path": "/ping"}
+    count_before = REGISTRY.get_sample_value("http_requests_total", count_labels) or 0.0
+    latency_before = REGISTRY.get_sample_value("http_request_duration_seconds_count", latency_labels) or 0.0
+
     response = _instrumented_client().get("/ping")
     assert response.status_code == HTTPStatus.OK
 
-    exposition = generate_latest().decode()
-    assert 'http_requests_total{method="GET",path="/ping",status="200"} 1.0' in exposition
-    assert 'http_request_duration_seconds_count{method="GET",path="/ping"} 1.0' in exposition
+    assert REGISTRY.get_sample_value("http_requests_total", count_labels) == count_before + 1
+    assert REGISTRY.get_sample_value("http_request_duration_seconds_count", latency_labels) == latency_before + 1
 
 
 _STARTUP_TIMEOUT_SECONDS = 5.0

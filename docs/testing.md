@@ -5,6 +5,18 @@ as described in [`CONTRIBUTING.md`](../CONTRIBUTING.md#running-the-agent-locally
 introspection service (`manual_testing/mock_introspect.py` on port 9001,
 `INTROSPECT_URL=http://127.0.0.1:9001/introspect`) unless a section says otherwise.
 
+## In a pull request
+
+Every pull request reports `make fix` then `make build_integration` in "How it was tested". On top
+of that, by what the change touches:
+
+| Change | Also run, and paste the result |
+| --- | --- |
+| The skill, the schema or policy handling, subject binding, the validation loop, the model settings | `make evals`: the per-category summary (see [Golden eval suite](#golden-eval-suite)) |
+| Authentication, the executor, the audit record or its delivery | The relevant steps of [Trying the audit log by hand](#trying-the-audit-log-by-hand) |
+| Schema caching, TTLs or the startup path | The multi-instance stack in [`CONTRIBUTING.md`](../CONTRIBUTING.md#multi-instance-with-docker-compose) |
+| Tests, docs or comments only | Nothing more; say "None" in "Effect on requests, responses and the audit record" |
+
 ## Golden eval suite
 
 `evals/` holds the golden prompts and `python -m evals` runs them through the real
