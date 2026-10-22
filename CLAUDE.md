@@ -186,7 +186,9 @@ Eight modules carry whole service:
   a `taskId` or with invalid subject metadata (`InvalidParamsError`, audited via
   `IntentExecutor.audit_refused_message`) before the SDK starts or loads a task - every message is a
   new task, and a caller's mistake never reaches the executor (which the SDK would log as a failed
-  execution). `IntentExecutor._subject_params` re-checks the metadata as a second layer.
+  execution). `IntentExecutor._subject_params` re-checks the metadata as a second layer. Nothing
+  reads a task back, so `RequestScopedTaskStore` deletes each request's task once it is answered
+  (completed, failed or raised) instead of keeping every task in memory for the process's life.
 - **`skills.py`** — `SKILL.md` discovery/YAML-frontmatter parsing under `skills/`, builds the
   tier-1 system-prompt catalog (`skill_catalog_preamble.txt` + skill names/descriptions) and the
   A2A `AgentSkill` list for the agent card.

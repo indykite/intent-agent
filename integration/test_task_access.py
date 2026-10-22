@@ -204,3 +204,30 @@ def test_audit_latency_includes_introspection(client, mocker, tmp_path, token):
 
     (record,) = _audit_records(tmp_path)
     assert record["latency_ms"] >= delay_s * 1000
+
+
+@pytest.mark.parametrize(
+    "extraction",
+    [
+        pytest.param(ExtractionResult(text="{}", outcome=Outcome.SUCCESS), id="completed"),
+        pytest.param(ExtractionResult(text="{}", outcome=Outcome.ERROR), id="failed"),
+        pytest.param(RuntimeError("extraction blew up"), id="raised"),
+    ],
+)
+def test_a_task_is_deleted_once_answered(client, mocker, extraction):
+    saved = []
+    save = InMemoryTaskStore.save
+
+    async def _record_save(store, task, context):
+        await save(store, task, context)
+        saved.append((store, task.id, context))
+
+    mocker.patch.object(InMemoryTaskStore, "save", _record_save)
+    mocker.patch.object(IntentAgent, "run_extraction", mocker.AsyncMock(side_effect=[extraction]))
+
+    response = _send_message(client, "alice-token")
+
+    assert response.status_code == HTTP_200_OK
+    assert saved
+    for store, task_id, context in saved:
+        assert asyncio.run(store.get(task_id, context)) is None
