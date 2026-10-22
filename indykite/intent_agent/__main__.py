@@ -1,8 +1,6 @@
 """Entrypoint: `python -m indykite.intent_agent`.
 
-Starts the A2A JSON-RPC app on `INTENT_PORT` and an observability app (`/health` +
-`/metrics`, matching this repo's Dockerfile HEALTHCHECK) on `HEALTH_PORT` in a
-background thread.
+Serves the A2A app on `INTENT_PORT` and `/health` + `/metrics` on `HEALTH_PORT` in a background thread.
 """
 
 import logging
@@ -41,7 +39,7 @@ class MetricsMiddleware(BaseHTTPMiddleware):
     """Record per-request count and latency for the main uvicorn app."""
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        """Time the request and record it under the route's path (not raw URL, to avoid label cardinality blowup)."""
+        """Time the request and record it under the route path (not the raw URL, to bound label cardinality)."""
         start = time.perf_counter()
         response = await call_next(request)
         duration = time.perf_counter() - start
@@ -88,9 +86,7 @@ def main() -> None:
     log_level = settings.log_level
     logging_config = build_logging_config(log_level)
     logging.config.dictConfig(logging_config)
-    # Route warnings.warn() (e.g. langchain_google_genai's sampling-parameter warnings) through
-    # the "py.warnings" logger - and so through our own JSON formatter/handler - instead of the
-    # warnings module's default of unstructured text straight to stderr.
+    # Send warnings.warn() through the JSON logging handler instead of plain text on stderr.
     logging.captureWarnings(capture=True)
 
     app, agent = build_app(settings)

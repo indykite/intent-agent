@@ -1,6 +1,4 @@
-"""Golden fixture loading (evals/fixtures.py): the shape every fixture file must have, the
-category spellings, the caller's subject type, and the shipped suite itself.
-"""
+"""Golden fixture loading (evals/fixtures.py)."""
 
 import json
 
@@ -61,7 +59,7 @@ def test_loads_a_refusal_fixture(eval_fixture_file):
     ],
 )
 def test_category_spellings_are_canonicalised(spelling, canonical):
-    """The TDD, the fixtures and the task tracker each spell the categories differently."""
+    """Category spellings that differ in case, separators and spacing map to one canonical name."""
     assert canonical_category(spelling) == canonical
 
 
@@ -81,8 +79,7 @@ def test_unknown_category_is_rejected_naming_the_file(eval_fixture_file):
         ({"category": ""}, "'category' must be a non-empty string"),
         ({"data_model": ""}, "'data_model' must be a non-empty string"),
         ({"data_model": "missing_model"}, "data model 'missing_model' has no schema file"),
-        # A data_model is interpolated into the schema / policies file names, so it has to be one
-        # path segment: `../outside` resolved and loaded a *_schema.json from outside schema/.
+        # data_model is interpolated into file names, so it must be a single path segment.
         ({"data_model": "../outside"}, "data model '../outside' is not a bare model name"),
         ({"data_model": "nested/user_model"}, "data model 'nested/user_model' is not a bare model name"),
         ({"data_model": ".."}, "data model '..' is not a bare model name"),
@@ -135,10 +132,7 @@ def test_malformed_fixture_is_rejected(eval_fixture_file, fields, problem):
     ],
 )
 def test_golden_evaluation_with_a_shape_the_pipeline_never_returns_is_rejected(eval_fixture_file, evaluation, problem):
-    """A golden evaluation the pipeline would reject or drop (a malformed resource/action/context,
-    a blank action name) can never be matched, so it is a fixture error at load time - not a
-    traceback out of the producibility check, and not a run that reads as a model failure.
-    """
+    """A golden evaluation the pipeline would reject or drop is a fixture error at load time."""
     expected = {"prompt": "Can I access the document doc123?", "evaluations": [evaluation]}
     path = eval_fixture_file("bad_test_1", expected=expected)
 
@@ -281,11 +275,7 @@ def test_load_fixtures_rejects_an_empty_directory(tmp_path):
 
 
 def test_shipped_suite_loads_and_covers_the_gated_categories():
-    """The fixtures in evals/ are the validated spec CI runs the pipeline against: every one must
-    load, the injection gate needs adversarial fixtures to exist, the forced-match gate needs
-    refusal fixtures, and every subject/resource type a golden answer names must be a node type
-    of its own data model (a caller or resource type the schema doesn't have can't be bound).
-    """
+    """Every shipped fixture loads, the gated categories are present, and golden types exist in the schema."""
     fixtures = load_fixtures()
 
     assert len(fixtures) >= 20  # noqa: PLR2004 - the suite as first committed; only ever grows
@@ -330,9 +320,7 @@ def test_policies_file_next_to_the_schema_is_picked_up_and_widens_the_action_voc
 def test_golden_answer_must_carry_the_parameters_object_the_pipeline_sets(
     eval_fixture_file, eval_schema_file, eval_policies_file
 ):
-    """Normalisation gives every evaluation a `context.parameters` object, so a golden answer
-    without one could never equal the response: rejected at load.
-    """
+    """A golden answer without the `context.parameters` object the pipeline always sets is rejected."""
     eval_schema_file()
     eval_policies_file("user_model", [("User", "CHECK_MEMBERSHIP", "Document")])
     expected = {
@@ -394,9 +382,7 @@ def test_golden_answer_must_carry_the_parameters_object_the_pipeline_sets(
     ],
 )
 def test_golden_answer_the_pipeline_rewrites_is_rejected(eval_fixture_file, evaluations, problem):
-    """The loader feeds the golden answer through the real normalisation: whatever the pipeline
-    would rebind, drop or refuse can never come back as written, so it is a fixture error.
-    """
+    """A golden answer that normalisation would rebind, drop or refuse is a fixture error."""
     expected = {"prompt": "Can I access the document doc123?", "evaluations": evaluations}
 
     with pytest.raises(FixtureError, match=rf"the pipeline returns a different response .* {problem}"):
@@ -424,10 +410,7 @@ def test_fixture_without_a_policies_file_has_the_empty_listing(eval_fixture_file
 def test_golden_policy_action_is_checked_for_the_caller_and_the_resource_type(
     eval_fixture_file, eval_schema_file, eval_policies_file, triple, reason
 ):
-    """The loader's check is scoped the way the run is: the runner serves only the caller's
-    subject type's policies and the pipeline accepts a policy action only on its own resource
-    type, so a policy for {reason} doesn't make the golden action producible.
-    """
+    """A policy for another subject or resource type doesn't make the golden action producible."""
     eval_schema_file(digital_twins=("User", "Customer"), resources=("Document", "Folder"))
     eval_policies_file("user_model", [triple])
     expected = {
@@ -562,9 +545,7 @@ def test_every_adversarial_category_feeds_the_injection_gate():
     ],
 )
 def test_malformed_schema_file_is_a_fixture_error(eval_fixture_file, content, problem):
-    """A bad data-model file follows the same error path as a bad fixture (exit 2 from the CLI),
-    never a traceback out of json or a later AttributeError.
-    """
+    """A malformed data-model file raises FixtureError, not a raw json or attribute error."""
     path = eval_fixture_file()
     (path.parent / "schema" / "user_model_schema.json").write_text(content, encoding="utf-8")
     load_schema.cache_clear()

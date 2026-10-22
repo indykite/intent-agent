@@ -26,11 +26,7 @@ RATING = '"explanation": "Customer buy Stock matches.", "confidence": "high"'
 
 
 def schema_with_stocks() -> dict[str, Any]:
-    """The shared schema fixture plus a Stock node and a Customer-buy->Stock edge, so the
-    mocked "buy AAPL" answer passes the validation loop (TDD 4.8) instead of being retried.
-    Kept out of the fixture file: the unit tests pin its exact vocabulary and rely on
-    Stock/BUY being off-schema.
-    """
+    """The schema fixture plus Stock and Customer-buy->Stock (not in the file: unit tests need them off-schema)."""
     schema = load_schema_fixture()
     schema["graph"]["nodes"]["Stock"] = {"metadata": {"properties": {}, "node_count": 1}}
     schema["graph"]["edges"].append({"source": "Customer", "relation": "buy", "target": "Stock", "directed": True})

@@ -1,23 +1,17 @@
-"""Structured error responses and startup-failure exceptions (TDD 4.7, 4.4)."""
+"""Structured error responses and startup-failure exceptions."""
 
 
 class SubjectTypeMismatchError(Exception):
     """Raised when the caller-supplied subject_type isn't a node type in the schema.
 
-    Caught per-request in run_extraction() and turned into subject_type_mismatch_error() -
-    an invalid subject_type doesn't get fixed by retrying, but it must not take down an
-    otherwise-healthy process either.
+    Fails only that request (as subject_type_mismatch_error), never the process.
     """
 
 
 class IntentValidationError(Exception):
-    """Raised when the LLM's extraction output can't be accepted as-is: not JSON, a
-    subject.type / action.name / resource.type that isn't in the cached schema (TDD 4.8),
-    or a context whose filters / parameters / qualifiers have the wrong type.
+    """Raised when the LLM's extraction output is not JSON, off-schema or mis-shaped.
 
-    Caught per-attempt in IntentAgent.run_extraction(), which feeds `errors` back to the LLM
-    as validation_feedback_error() and retries (TDD 4.9) - up to VALIDATION_MAX_RETRIES times -
-    before giving up with no_intent_error().
+    run_extraction feeds `errors` back to the LLM and retries up to VALIDATION_MAX_RETRIES times.
     """
 
     def __init__(self, errors: list[str]) -> None:
@@ -27,18 +21,11 @@ class IntentValidationError(Exception):
 
 
 class InvalidAppAgentKeyError(Exception):
-    """Raised when IK_APP_AGENT_KEY isn't a well-formed JWT with a `sub` claim.
-
-    A malformed app-agent key is a real configuration error and must fail the process
-    loudly at startup, not silently degrade (e.g. to a hashed cache key) while continuing
-    to attempt a schema fetch with a broken credential.
-    """
+    """Raised when IK_APP_AGENT_KEY isn't a well-formed JWT with a `sub` claim; fails startup."""
 
 
 def error_response(prompt: str, reason: str, obligation: str) -> dict[str, str]:
-    """Build the TDD's structured error shape (4.7): {"error", "reason", "obligation"}
-    instead of "evaluations".
-    """
+    """Build the structured error shape {prompt, error, reason, obligation} used instead of evaluations."""
     return {
         "prompt": prompt,
         "error": "Unable to extract intent from prompt.",
@@ -48,7 +35,7 @@ def error_response(prompt: str, reason: str, obligation: str) -> dict[str, str]:
 
 
 def schema_unavailable_error(prompt: str) -> dict[str, str]:
-    """Build the 4.7 error shape for when the schema can't be used to verify subject_type."""
+    """Build the error for when the schema can't be used to verify subject_type."""
     return error_response(
         prompt,
         "Data schema unavailable - cannot verify the supplied subject type against it.",
@@ -57,7 +44,7 @@ def schema_unavailable_error(prompt: str) -> dict[str, str]:
 
 
 def policy_unavailable_error(prompt: str) -> dict[str, str]:
-    """Build the 4.7 error shape for when no access policy exists for the caller's subject type."""
+    """Build the error for when no access policy exists for the caller's subject type."""
     return error_response(
         prompt,
         "Access policies for the supplied subject type are unavailable.",
@@ -66,13 +53,7 @@ def policy_unavailable_error(prompt: str) -> dict[str, str]:
 
 
 def schema_not_populated_error(prompt: str) -> dict[str, str]:
-    """Build the 4.7 error shape for when the schema is fetched but the data model has no
-    node types beyond the platform's own bootstrap node (_Application) - i.e. nothing has
-    been modeled yet. Distinct from schema_unavailable_error (the fetch itself failed) and
-    from subject_type_mismatch_error (real types exist, the supplied subject_type just isn't
-    one of them) - there's nothing yet to validate subject_type against, so this is neither a
-    fetch failure nor a mismatch.
-    """
+    """Build the error for a fetched schema with no node types beyond the bootstrap _Application."""
     return error_response(
         prompt,
         "Data schema is available but the data model hasn't been populated with any entity types yet.",
@@ -81,12 +62,9 @@ def schema_not_populated_error(prompt: str) -> dict[str, str]:
 
 
 def subject_type_mismatch_error(prompt: str) -> dict[str, str]:
-    """Build the 4.7 error shape for when the caller-supplied subject_type isn't a valid type
-    in the schema.
+    """Build the error for a caller-supplied subject_type that isn't a type in the schema.
 
-    Deliberately generic, unlike the log line for the same failure (which does include the
-    schema's actual node type names): the caller of the intent-agent's API shouldn't learn
-    the shape of the underlying data schema just by tripping this check.
+    Deliberately generic so the caller can't learn the schema's node types from it.
     """
     return error_response(
         prompt,
@@ -96,14 +74,9 @@ def subject_type_mismatch_error(prompt: str) -> dict[str, str]:
 
 
 def no_intent_error(prompt: str) -> dict[str, str]:
-    """Build the 4.7 error shape for when no coherent intent could be extracted.
+    """Build the error for no coherent intent: an empty evaluations list or retries exhausted.
 
-    Covers both the LLM's own empty evaluations list (its "nothing coherent" signal,
-    SKILL.md) and the TDD 4.9 terminal failure: output still not JSON / off-schema after
-    the retry budget. Deliberately generic, like subject_type_mismatch_error: the specific
-    off-schema values reach the server-side log, but the caller shouldn't learn the
-    schema's vocabulary from an error message. An empty evaluations list must never reach
-    the caller as a bare success response.
+    Deliberately generic so the caller can't learn the schema's vocabulary from it.
     """
     return error_response(
         prompt,
@@ -112,14 +85,10 @@ def no_intent_error(prompt: str) -> dict[str, str]:
     )
 
 
-# The two ways subject_binding._vocabulary_reason reports a value it couldn't match to the data
-# schema (off-schema, or left blank because nothing matched) - shared so validation_feedback_error
-# can tell those apart from shape problems without guessing at the wording.
+# Error suffixes shared with subject_binding so validation_feedback_error can group errors by kind.
 SCHEMA_MEMBERSHIP_SUFFIX = "is not defined in the data schema"
 SCHEMA_BLANK_SUFFIX = "is missing or blank"
-# A type or action name no access policy uses (subject_binding._vocabulary_reason).
 POLICY_MEMBERSHIP_SUFFIX = "is not named by any access policy"
-# Each part is valid, but no single policy grants them together (subject_binding._policy_combination_errors).
 SCHEMA_RELATIONSHIP_SUFFIX = "is not a combination any access policy grants"
 SCHEMA_VALUE_SUFFIXES = (
     SCHEMA_MEMBERSHIP_SUFFIX,
@@ -141,14 +110,10 @@ _FEEDBACK_OBLIGATION = (
 
 
 def validation_feedback_error(prompt: str, errors: list[str]) -> dict[str, str]:
-    """Build the 4.7 error shape fed back to the LLM as the follow-up message before a retry
-    (TDD 4.9). `reason` lists what was wrong (every error, one per line - not just the first,
-    or the LLM can only fix one thing per retry), not the schema's valid values: the LLM
-    already holds the full schema from activate_skill, and the structured-output enum
-    re-constrains the retry. The errors are split into two headed groups, values it couldn't
-    match to the data schema (off-schema or left blank) and malformed shape (not JSON, a missing
-    key, a mis-typed context), so the LLM isn't told to change a type when it's the shape that's
-    wrong, or vice versa. `obligation` tells it what to return instead.
+    """Build the error fed back to the LLM before a retry, listing every error.
+
+    Errors are grouped into schema/policy value mismatches and malformed shape, so the LLM
+    knows which kind of fix each needs.
     """
     schema_errors = [error for error in errors if error.endswith(SCHEMA_VALUE_SUFFIXES)]
     shape_errors = [error for error in errors if not error.endswith(SCHEMA_VALUE_SUFFIXES)]
@@ -167,12 +132,9 @@ def validation_feedback_error(prompt: str, errors: list[str]) -> dict[str, str]:
 
 
 def llm_timeout_error(prompt: str) -> dict[str, str]:
-    """Build the 4.7 error shape for a timeout during the LLM interaction phase of
-    run_extraction: a single call past LLM_TIMEOUT_SECONDS, or the whole tool-call/retry
-    sequence past REQUEST_TIMEOUT_SECONDS. The server log tells the two apart; the caller's
-    remedy is the same either way. Reserved for that phase specifically (review, ENG-9671) -
-    the deadline firing during the schema or policy fetch instead is request_timeout_error,
-    since "the model did not respond" would misattribute a slow platform dependency to Gemini.
+    """Build the error for a timeout during the LLM phase (per-call or whole-request deadline).
+
+    A deadline hit during the schema or policy fetch is request_timeout_error instead.
     """
     return error_response(
         prompt,
@@ -182,13 +144,7 @@ def llm_timeout_error(prompt: str) -> dict[str, str]:
 
 
 def request_timeout_error(prompt: str) -> dict[str, str]:
-    """Build the 4.7 error shape for REQUEST_TIMEOUT_SECONDS firing during the schema or policy
-    fetch phase of run_extraction (review, ENG-9671), before the LLM interaction it precedes
-    ever starts - genuinely distinct from llm_timeout_error (the model itself was slow) and
-    from schema_unavailable_error (the fetch tried and failed outright, not just ran out of
-    the request's own time budget while a platform dependency was slow). The remedy is the
-    same as llm_timeout_error's either way, so only the reason differs.
-    """
+    """Build the error for REQUEST_TIMEOUT_SECONDS expiring during the schema or policy fetch."""
     return error_response(
         prompt,
         "The request could not be completed within the time budget.",

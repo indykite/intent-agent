@@ -33,9 +33,7 @@ def _mock_async_client(mocker, *, response=None, side_effect=None):
 
 @pytest.mark.parametrize("token", ["", "   ", "\t\n"])
 def test_rejects_blank_token(token):
-    """An empty or whitespace-only token must be rejected before any introspection call is made,
-    as the caller's fault (TokenFailure.CALLER).
-    """
+    """A blank token is rejected as the caller's fault before any introspection call."""
     with pytest.raises(auth.TokenValidationError) as excinfo:
         asyncio.run(auth.validate_access_token(token, _INTROSPECT_CONFIG))
 
@@ -53,11 +51,7 @@ def test_returns_claims_for_active_token(mocker):
 
 
 def test_accepts_active_token_regardless_of_act_claim(mocker):
-    """The act claim is irrelevant to the Intent Agent - delegation is already validated
-    upstream by IAG before the request ever reaches it (per team discussion on PR #9). A token
-    with an act claim (or without one) must be accepted the same way, based only on active
-    (and, independently, its audience).
-    """
+    """The act claim is ignored: delegation is validated upstream by the IAG."""
     claims = {"active": True, "sub": "user-1", "aud": "intent_agent", "act": {"sub": "unrelated-actor"}}
     _mock_async_client(mocker, response=httpx2.Response(200, json=claims))
 
@@ -67,9 +61,7 @@ def test_accepts_active_token_regardless_of_act_claim(mocker):
 
 
 def test_rejects_inactive_token(mocker):
-    """An introspection response with active=False must raise TokenValidationError as the
-    caller's fault (TokenFailure.CALLER) - the one RFC 7662 answer that is about the token.
-    """
+    """active=False is the caller's fault."""
     _mock_async_client(mocker, response=httpx2.Response(200, json={"active": False}))
 
     with pytest.raises(auth.TokenValidationError, match="Token is not active") as excinfo:
@@ -80,10 +72,7 @@ def test_rejects_inactive_token(mocker):
 
 @pytest.mark.parametrize("payload", [{"sub": "user-1"}, {"active": None}, {"active": "true"}, {"active": 1}])
 def test_rejects_response_that_does_not_say_whether_active(mocker, payload):
-    """An answer that omits `active`, or doesn't make it a boolean, isn't an answer about the token
-    at all (RFC 7662 2.2 requires the boolean): it's the IdP's fault (TokenFailure.PROVIDER), not
-    an inactive token - the same split the IAG's introspectionRefusal makes.
-    """
+    """A missing or non-boolean `active` is the IdP's fault, not an inactive token."""
     _mock_async_client(mocker, response=httpx2.Response(200, json=payload))
 
     with pytest.raises(auth.TokenValidationError, match="did not say whether") as excinfo:
@@ -93,11 +82,7 @@ def test_rejects_response_that_does_not_say_whether_active(mocker, payload):
 
 
 def test_accepts_active_token_missing_sub(mocker):
-    """An active token with no sub claim must be accepted - this token authenticates the
-    calling client, not any subject (subject_type/subject_id come from the caller-supplied
-    message metadata instead, see IntentExecutor._subject_params), and a client-credentials-grant
-    token - the expected case now - typically has no sub claim at all.
-    """
+    """No sub is fine: the token authenticates the calling client, the subject comes from message metadata."""
     claims = {"active": True, "aud": "intent_agent"}
     _mock_async_client(mocker, response=httpx2.Response(200, json=claims))
 
@@ -107,10 +92,7 @@ def test_accepts_active_token_missing_sub(mocker):
 
 
 def test_rejects_token_with_wrong_audience(mocker):
-    """A token whose `aud` doesn't include this agent's expected audience must be rejected as
-    the caller's fault (TokenFailure.CALLER) - it's a real, active token, just not scoped to
-    this agent (e.g. reused from a different resource server).
-    """
+    """An active token scoped to another audience is the caller's fault."""
     claims = {"active": True, "aud": "some-other-service"}
     _mock_async_client(mocker, response=httpx2.Response(200, json=claims))
 
@@ -121,10 +103,7 @@ def test_rejects_token_with_wrong_audience(mocker):
 
 
 def test_logs_both_audiences_on_mismatch(mocker, caplog):
-    """The server-side log for an audience mismatch must name both the token's actual `aud`
-    and the expected one - the caller-facing message stays generic (like "Token is not
-    active"), so this diagnostic detail has to live in the log, not be lost entirely.
-    """
+    """The log names both audiences, since the caller-facing message stays generic."""
     claims = {"active": True, "aud": "some-other-service"}
     _mock_async_client(mocker, response=httpx2.Response(200, json=claims))
     caplog.set_level("INFO")
@@ -137,10 +116,7 @@ def test_logs_both_audiences_on_mismatch(mocker, caplog):
 
 
 def test_rejects_token_missing_audience(mocker):
-    """An active token with no `aud` claim at all must be rejected the same as a wrong one -
-    a token genuinely scoped to this agent is expected to carry it once audience checking is
-    in effect, so a missing claim can't be treated as "audience unconstrained".
-    """
+    """A missing `aud` is rejected like a wrong one, not treated as unconstrained."""
     claims = {"active": True}
     _mock_async_client(mocker, response=httpx2.Response(200, json=claims))
 
@@ -151,9 +127,7 @@ def test_rejects_token_missing_audience(mocker):
 
 
 def test_accepts_token_with_audience_as_array_containing_expected(mocker):
-    """`aud` may legally be an array of audiences (RFC 7519 4.1.3) - the token must be accepted
-    if the expected audience is anywhere in it, not only when it's the sole value.
-    """
+    """An `aud` array is accepted when it contains the expected audience."""
     claims = {"active": True, "aud": ["some-other-service", "intent_agent"]}
     _mock_async_client(mocker, response=httpx2.Response(200, json=claims))
 
@@ -163,10 +137,7 @@ def test_accepts_token_with_audience_as_array_containing_expected(mocker):
 
 
 def test_rejects_audience_using_the_configured_expected_value(mocker):
-    """expected_audience must actually be used, not a hardcoded string - a token scoped to a
-    non-default expected audience must be accepted when that audience is configured, and a
-    default-scoped one rejected in that same configuration.
-    """
+    """The configured expected_audience is used, not a hardcoded one."""
     claims = {"active": True, "aud": "custom-resource"}
     _mock_async_client(mocker, response=httpx2.Response(200, json=claims))
     config = replace(_INTROSPECT_CONFIG, expected_audience="custom-resource")
@@ -178,10 +149,7 @@ def test_rejects_audience_using_the_configured_expected_value(mocker):
 
 @pytest.mark.parametrize("status", [500, 503, 400, 404])
 def test_rejects_unexpected_status_as_provider_fault(mocker, status):
-    """A status instead of an RFC 7662 answer must raise TokenValidationError as the IdP's fault
-    (TokenFailure.PROVIDER) - it says nothing about the token. 4xx and 5xx alike: the IAG's
-    introspectionStatusRefusal makes no finer split, and neither does this.
-    """
+    """Any non-200 status, 4xx and 5xx alike, is the IdP's fault."""
     _mock_async_client(mocker, response=httpx2.Response(status))
 
     with pytest.raises(auth.TokenValidationError, match=f"status {status}") as excinfo:
@@ -191,10 +159,7 @@ def test_rejects_unexpected_status_as_provider_fault(mocker, status):
 
 
 def test_rejects_401_as_our_own_credentials_being_invalid(mocker):
-    """A 401 from the introspection endpoint means OUR client credentials are invalid (RFC 7662
-    2.3), not the token - the message must say so. It is still classified like any other status
-    instead of an answer (TokenFailure.PROVIDER), as the IAG does; only the message differs.
-    """
+    """A 401 means our own client credentials are invalid; still classified as PROVIDER."""
     _mock_async_client(mocker, response=httpx2.Response(401))
 
     with pytest.raises(auth.TokenValidationError, match="our own client credentials") as excinfo:
@@ -214,9 +179,7 @@ def test_rejects_non_json_response(mocker):
 
 
 def test_rejects_non_object_json_response(mocker):
-    """A valid JSON body that isn't an object (e.g. a list) must raise TokenValidationError as the
-    IdP's fault, not AttributeError.
-    """
+    """A non-object JSON body is the IdP's fault, not an AttributeError."""
     _mock_async_client(mocker, response=httpx2.Response(200, json=["not", "an", "object"]))
 
     with pytest.raises(auth.TokenValidationError) as excinfo:
@@ -231,10 +194,7 @@ def test_rejects_non_object_json_response(mocker):
     ids=["connect-error", "timeout"],
 )
 def test_wraps_network_failure_as_service_fault(mocker, error):
-    """A network failure reaching the IdP must raise TokenValidationError, not leak httpx2's own
-    exception - and as this service's fault (TokenFailure.SERVICE): it never got an answer, so
-    nothing was said about the token.
-    """
+    """A network failure is wrapped as this service's fault, not leaked as an httpx2 exception."""
     _mock_async_client(mocker, side_effect=error)
 
     with pytest.raises(auth.TokenValidationError, match="request failed") as excinfo:

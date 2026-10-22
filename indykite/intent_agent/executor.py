@@ -1,6 +1,4 @@
-"""A2A executor: runs the extraction, emits the task events, and audits every request exactly
-once (TDD 4.9).
-"""
+"""A2A executor: runs the extraction, emits the task events, and audits every request exactly once."""
 
 import json
 import logging
@@ -62,20 +60,9 @@ def _message_from_body(body: bytes) -> Message | None:
 
 
 def subject_from_message(message: Message | None) -> tuple[str, str]:
-    """Read subject_type/subject_id from the caller-supplied message metadata - IAG
-    resolves the caller's own identity itself and supplies both per request, instead of
-    subject_id coming from a token's `sub` claim and subject_type from static config.
+    """Return (subject_type, subject_id) from the message metadata.
 
-    Both are required (ENG-9810) - InvalidParamsError (JSON-RPC -32602) if either is missing or blank
-    (whitespace-only counts as blank). subject_id used to be reliably populated from the
-    token's own `sub` claim, so a real authenticated caller was never actually anonymous in
-    practice; now that IAG must supply it explicitly instead, a missing subject_id is a
-    caller-side bug (it forgot to resolve/attach the caller's identity), not a legitimate
-    anonymous-caller request, and must be rejected the same as a missing subject_type rather
-    than silently proceeding with an unidentified caller. Either present but not a string
-    (e.g. a nested object) is also rejected - str(some_dict) would otherwise silently coerce it
-    into a Python repr and bind that into every evaluation and audit record, instead of
-    surfacing the malformed request to the caller.
+    Raises InvalidParamsError (JSON-RPC -32602) if either is missing, blank or not a string.
     """
     metadata = dict(message.metadata) if message and message.metadata else {}
     subject_type = _require_metadata_string(metadata, "subject_type")
@@ -88,9 +75,7 @@ def subject_from_message(message: Message | None) -> tuple[str, str]:
 
 
 def _require_metadata_string(metadata: dict[str, Any], key: str) -> str:
-    """Return metadata[key] as a stripped string, or "" if absent/blank - raising
-    InvalidParamsError if it's present but not a string at all (see subject_from_message).
-    """
+    """Return metadata[key] stripped, or "" if absent; InvalidParamsError if it isn't a string."""
     value = metadata.get(key)
     if value is None:
         return ""
@@ -100,20 +85,12 @@ def _require_metadata_string(metadata: dict[str, Any], key: str) -> str:
 
 
 def _llm_provider(model: str) -> str:
-    """The provider family of a configured model name: the segment before the first `-` of
-    its last path component, so "gemini-3.5-flash-lite" (or "models/gemini-3.5-flash-lite")
-    audits as "gemini". Derived from GEMINI_MODEL rather than hard-coded, so the record can't
-    disagree with what is actually configured.
-    """
+    """Return the provider family of a model name, e.g. "models/gemini-3.5-flash-lite" -> "gemini"."""
     return model.rsplit("/", 1)[-1].split("-", 1)[0]
 
 
 class _RequestAudit:
-    """Accumulates the per-request audit fields as the request progresses, the way the IAG's
-    token service builds up its `attempt` before sending - so every exit path (rejected
-    token, extraction, unexpected failure) turns into one record through the same
-    `record()`. Every request produces exactly one record (TDD 4.9).
-    """
+    """Accumulates one request's audit fields so every exit path yields one record via `record()`."""
 
     def __init__(
         self,
@@ -124,8 +101,9 @@ class _RequestAudit:
         prompt: str,
         started: float | None = None,
     ) -> None:
-        """Capture what's known before the request is handled: ids, prompt, and the start time
-        (auth.REQUEST_STARTED_KEY when the middleware set it, so latency includes authentication).
+        """Capture what's known before the request is handled: ids, prompt and start time.
+
+        `started` is auth.REQUEST_STARTED_KEY when the middleware set it, so latency includes authentication.
         """
         self._settings = settings
         self._started = time.perf_counter() if started is None else started
@@ -155,7 +133,6 @@ class _RequestAudit:
             request_id=self.request_id,
             subject_id=self.subject_id,
             subject_type=self.subject_type,
-            # v1.1: the ik_token actor claim (see auth.validate_ik_token) - no ITS yet.
             requesting_agent_id="",
             context_id=self.context_id,
             prompt=self.prompt,
@@ -183,21 +160,8 @@ class IntentExecutor(AgentExecutor):
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         """Handle one A2A task: extract intent, emit the result artifact, audit the outcome.
 
-        A rejected request is audited too, like the IAG audits every rejection - as
-        `outcome = error` with the same reason the caller gets (TDD owner's decision) - and so
-        is an unexpected exception, so a request can't slip through unrecorded. Auditing never
-        changes the request's own outcome: see _audit.
-
-        Exactly one of the three `_audit` calls below ever runs for a given request, by
-        construction rather than by a guard flag: the `try` block's own two `except` clauses
-        audit-and-reraise immediately, so nothing past this method's `try` statement can also
-        run when one of them fires; the line auditing `result` is reachable only once the `try`
-        block has run to completion without raising, at which point neither `except` clause can
-        fire for it any more. `_emit_terminal_status`, called after that line, is deliberately
-        outside the `try` - a failure there propagates straight out instead of through either
-        `except`, so it can never trigger a second audit for a request already recorded as a
-        success. That is also why the audit itself has to happen between `_run_extraction` and
-        `_emit_terminal_status`, not after both: see `_emit_terminal_status`'s docstring.
+        Exactly one audit record per request, rejections and exceptions included.
+        `_emit_terminal_status` stays outside the `try` so its failure can't audit twice.
         """
         audit_record = _RequestAudit.for_context(self._agent.settings, context)
         try:
@@ -219,13 +183,7 @@ class IntentExecutor(AgentExecutor):
         await self._emit_terminal_status(context, event_queue, result)
 
     async def _audit(self, audit_record: _RequestAudit, result: ExtractionResult) -> None:
-        """Record the request's outcome; never raises.
-
-        The sender contract is already "log, don't raise", but building the record or a
-        misbehaving sender could still fail - and that must not override what the request
-        itself produced: the A2A error / exception being re-raised in `execute`, or a result whose
-        artifact the caller already has. An audit failure is logged with the request id instead.
-        """
+        """Record the request's outcome; never raises, so an audit failure can't change the response."""
         try:
             await self._audit_sender.send(audit_record.record(result))
         except Exception:
@@ -263,8 +221,9 @@ class IntentExecutor(AgentExecutor):
 
     @staticmethod
     def _authenticate(context: RequestContext) -> None:
-        """Refuse an unauthenticated call - fails closed if wired without the middleware. Reaching
-        this is a wiring bug, not the caller's, so it is InternalError (JSON-RPC -32603).
+        """Refuse an unauthenticated call with InternalError (JSON-RPC -32603).
+
+        Only reachable when the app is wired without BearerAuthMiddleware: a bug, not the caller's fault.
         """
         call_context = context.call_context
         if not call_context or not call_context.user.is_authenticated:
@@ -272,8 +231,9 @@ class IntentExecutor(AgentExecutor):
 
     @staticmethod
     def _subject_params(context: RequestContext) -> tuple[str, str]:
-        """subject_type/subject_id of the request (subject_from_message). The request handler
-        already refused invalid ones before the SDK started a task; this is the second layer.
+        """Return (subject_type, subject_id) via subject_from_message.
+
+        The request handler has already refused invalid ones; this is the second check.
         """
         return subject_from_message(context.message)
 
@@ -283,12 +243,7 @@ class IntentExecutor(AgentExecutor):
         event_queue: EventQueue,
         audit_record: _RequestAudit,
     ) -> ExtractionResult:
-        """Run the extraction for an authenticated request, emitting the task/artifact events.
-
-        Deliberately stops short of the terminal status event - `execute` audits the result
-        returned here first, then calls `_emit_terminal_status` (see that docstring for why
-        the terminal event has to come after the audit, not before).
-        """
+        """Run the extraction for an authenticated request, emitting all but the terminal event."""
         logger.info(
             "Received message for %s: %s",
             self._agent.settings.intent_agent_name,
@@ -327,37 +282,11 @@ class IntentExecutor(AgentExecutor):
     async def _emit_terminal_status(
         self, context: RequestContext, event_queue: EventQueue, result: ExtractionResult
     ) -> None:
-        """Emit the task's terminal status, after the request has already been audited.
+        """Emit the terminal status (COMPLETED on success, else FAILED); call only after auditing.
 
-        The terminal TaskState reflects the outcome (ENG-9804): TASK_STATE_COMPLETED only for
-        a successful extraction, TASK_STATE_FAILED for every other outcome (validation failure,
-        no-intent/unmatched, timeout, schema unavailable, ...) - the caller's artifact JSON
-        still carries the fixed {prompt, error, reason, obligation} shape (errors.py) either way,
-        this only changes what the task's own status reports.
-
-        A fixed summary message (the detailed reason stays in the artifact JSON's `reason`
-        field, not duplicated here) must land in the task's `history`, not just sit on the
-        terminal status - a2a's TaskManager only archives a status's message into history once
-        a *later* TaskStatusUpdateEvent supersedes it. So the message is carried on one last
-        WORKING update first, replacing the pre-extraction "Extracting intent..." placeholder as
-        the final word instead of leaving it there, and the truly final status is left
-        message-free - never the terminal one itself: DefaultRequestHandler.on_message_send
-        returns on the *first* terminal-state Task snapshot it sees, so a message on that event
-        would never get superseded/archived, it would just sit unread in `status.message`. The
-        caller gets back the bare terminal event, with the summary text already archived as
-        history's last entry.
-
-        Called only after `execute` has already audited `result`, never before: `ActiveTask.
-        _run_producer` awaits `execute` in full before it ever looks at the outcome, but
-        `DefaultRequestHandler.on_message_send` doesn't wait for that - it returns as soon as its
-        own subscription sees the terminal Task snapshot enqueued here, which reaches it through
-        the event queue/consumer concurrently with `execute` still running. Auditing after
-        enqueuing that terminal event would race the caller-visible response against `execute`'s
-        own remaining code; a test driving the request through a short-lived event loop (e.g.
-        starlette's TestClient without `with client:`, which tears its portal down as soon as the
-        ASGI call returns) can then close out from under that task before the write finishes,
-        dropping the record while the response the caller got was already correct. Auditing first
-        makes the record exist before a caller can possibly observe "done".
+        The summary goes on a final WORKING update because a2a archives a status message into
+        history only once a later event supersedes it. The caller may get its response as soon
+        as the terminal event is queued, which is why the audit must already be written.
         """
         is_success = result.outcome == Outcome.SUCCESS
         terminal_state = TaskState.TASK_STATE_COMPLETED if is_success else TaskState.TASK_STATE_FAILED

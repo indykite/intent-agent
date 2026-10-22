@@ -11,9 +11,7 @@ from indykite.intent_agent.audit.message import (
     utc_timestamp,
 )
 
-# TDD 4.9's field table, in its order, plus ENG-9671's policy_version/policy_fetch_failed - a
-# deliberate, TDD-owner-confirmed pair of additions alongside their schema_version/(no failure
-# counterpart) siblings, not a departure from "exactly these, nothing else" otherwise.
+# The audit record's fields, in wire order.
 _TDD_FIELDS = (
     "timestamp",
     "request_id",
@@ -38,13 +36,13 @@ _UUID_PATTERN = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f
 
 
 def test_record_has_exactly_the_tdd_fields_in_order(audit_message):
-    """The wire shape is the TDD 4.9 table verbatim: same names, same order, no IAG extras."""
+    """The record has exactly these fields, in this order."""
     assert FIELD_NAMES == _TDD_FIELDS
     assert tuple(json.loads(audit_message().to_json())) == _TDD_FIELDS
 
 
 def test_outcome_vocabulary_is_the_tdd_one(audit_message):
-    """`outcome` is one of the four TDD values, serialized lowercase."""
+    """`outcome` is one of four values, serialized lowercase."""
     assert {outcome.value for outcome in Outcome} == {"success", "validation_failed", "unmatched", "error"}
     assert json.loads(audit_message(outcome=Outcome.VALIDATION_FAILED).to_json())["outcome"] == "validation_failed"
 
@@ -67,17 +65,13 @@ def test_to_row_flattens_every_field_to_a_string(audit_message):
 
 
 def test_to_row_renders_unattempted_policy_fetch_as_blank_not_the_word_none(audit_message):
-    """policy_fetch_failed=None (no policy fetch attempted this request, review) must render as
-    "" in CSV/TXT output - the same "not applicable" sentinel schema_version/policy_version
-    already use - not str(None) ("None" as literal text), which would be the only non-"True"/
-    "False" value in that column and could break a downstream consumer expecting a strict bool.
-    """
+    """policy_fetch_failed=None renders as "", the "not applicable" sentinel, not the text "None"."""
     row = audit_message(policy_fetch_failed=None).to_row()
     assert row[_TDD_FIELDS.index("policy_fetch_failed")] == ""
 
 
 def test_utc_timestamp_is_rfc3339_utc_with_fraction():
-    """RFC 3339 / ISO 8601, UTC (`Z`), sub-second precision - the IAG's RFC3339Nano shape."""
+    """RFC 3339, UTC (`Z`), sub-second precision."""
     stamp = utc_timestamp()
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z", stamp)
     assert datetime.fromisoformat(stamp).utcoffset().total_seconds() == 0
@@ -95,11 +89,7 @@ def test_schema_version_is_canonical_and_stable():
 
 
 def test_policy_version_is_canonical_and_stable_regardless_of_entry_order():
-    """Key order within an entry, and the entries' own order in the list, must not change the
-    hash (review: sort_keys=True alone only canonicalizes dict keys, not list order - the same
-    policy state fetched in a different order must still hash identically); content must;
-    empty/None both hash to "".
-    """
+    """Neither key order nor entry order changes the hash; content does; empty/None hash to ""."""
     policy_a = {"policy": {"actions": ["RENT"], "resource": {"type": "Car"}}, "tags": []}
     policy_b = {"policy": {"actions": ["OWN"], "resource": {"type": "Car"}}, "tags": []}
     policies_ab = [policy_a, policy_b]
@@ -116,9 +106,7 @@ def test_policy_version_is_canonical_and_stable_regardless_of_entry_order():
 
 
 def test_request_id_prefers_a_sane_incoming_header():
-    """A well-formed X-Request-ID (any header case) is kept so the record correlates with the
-    caller's own logs; blank or over-long values fall back to a generated UUID, as in the IAG.
-    """
+    """A well-formed X-Request-ID is kept; a blank or over-long one falls back to a generated UUID."""
     assert request_id_from_headers({"X-Request-ID": "abc-123"}) == "abc-123"
     assert request_id_from_headers({"x-request-id": " abc-123 "}) == "abc-123"
     assert request_id_from_headers({"x-request-id": "a" * _MAX_REQUEST_ID_LENGTH}) == "a" * _MAX_REQUEST_ID_LENGTH

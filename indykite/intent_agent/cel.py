@@ -1,12 +1,6 @@
-"""CEL enforcement for `context.filters` (PRD context semantics, AuthZEN/COAZ precedent).
+"""CEL checks for `context.filters`: parse, one allowed variable, no reflection, size cap.
 
-A filter is the one place the extraction expresses a condition, and the contract is Common
-Expression Language (https://cel.dev/) over the resource's own properties. This module checks a
-filter the way the platform's `jarvis/pkg/cel` guards the scripts it runs - parse it, allow
-one variable, block the reflection functions, cap the size - but never evaluates it: that is
-the IBAC Engine's job downstream. A failed check is a validation error like an off-schema
-type: fed back to the LLM through the retry loop (errors.validation_feedback_error), not
-returned to the caller.
+Filters are never evaluated here (the IBAC Engine does that); failures feed the LLM retry loop.
 """
 
 from dataclasses import dataclass, field
@@ -15,35 +9,28 @@ import celpy
 from lark import Tree
 
 FILTER_VARIABLE = "resource"
-# Like the platform's evaluator: no host-type reflection from a filter, whether called as
-# `dyn(x)` or receiver-style as `x.dyn()`.
+# Like the platform's evaluator: no host-type reflection, as `dyn(x)` or `x.dyn()`.
 _BLOCKED_FUNCTIONS = frozenset({"dyn", "type"})
-# CEL's standard global functions and the `has` macro. The parser accepts any name, so the model's
-# `float(x)` / `toFloat(x)` (no such functions) would only fail when IBAC evaluates the filter.
+# The parser accepts any name, so an invented `float(x)` would otherwise only fail inside IBAC.
 _GLOBAL_FUNCTIONS = frozenset(
     {"bool", "bytes", "double", "duration", "has", "int", "matches", "size", "string", "timestamp", "uint"}
 )
-# Comprehension macros bind their first argument as a loop variable, a legitimate identifier
-# inside the macro's remaining arguments only (`resource.tags.exists(t, t == 'x')`).
+# These bind their first argument as a loop variable (`resource.tags.exists(t, t == 'x')`).
 _COMPREHENSION_MACROS = frozenset({"all", "exists", "exists_one", "filter", "map"})
 # Generous for a prompt-derived condition; a filter past it is runaway output, not intent.
 MAX_FILTER_LENGTH = 1000
-# The opening and closing quote of a string literal, the shortest form `_string_literal` accepts.
 _QUOTE_PAIR = 2
 
-# celpy's grammar rule names: a variable reference, with or without CEL's leading-dot absolute
-# form (`.subject.id`), and a global function call in the same two spellings.
+# celpy grammar rule names, each with and without CEL's leading-dot absolute form.
 _VARIABLE_NODES = frozenset({"ident", "dot_ident"})
 _GLOBAL_CALL_NODES = frozenset({"ident_arg", "dot_ident_arg"})
 _METHOD_CALL_NODE = "member_dot_arg"
-# CEL selects a field two ways, `resource.email` and `resource["email"]`, and they mean the same
-# thing - so the property check has to see both or the bracket form walks past it.
+# `resource.email` and `resource["email"]` mean the same, so the property check must see both.
 _MEMBER_DOT_NODE = "member_dot"
 _MEMBER_INDEX_NODE = "member_index"
 _MEMBER_ACCESS_NODES = frozenset({_MEMBER_DOT_NODE, _MEMBER_INDEX_NODE})
 
-# Fields of the AuthZEN resource object itself rather than of the graph node, so a filter may
-# name them even though the data schema's property list never does.
+# AuthZEN resource fields, never in the data schema's property list.
 _ALWAYS_KNOWN_PROPERTIES = frozenset({"id", "type"})
 
 _environment = celpy.Environment()
@@ -56,12 +43,9 @@ class _Findings:
     foreign: list[str] = field(default_factory=list)
     blocked: list[str] = field(default_factory=list)
     unknown: list[str] = field(default_factory=list)
-    # The properties read off the filter variable itself (`resource.<name>`, `resource["<name>"]`),
-    # so they can be checked against the resource type's own properties; a deeper access
-    # (`resource.a.b`) contributes only its first name, the one the data schema can speak for.
+    # Properties read off the filter variable; `resource.a.b` contributes only `a`.
     attributes: list[str] = field(default_factory=list)
-    # `resource[<expression>]`, where the property read is only known once the expression is
-    # evaluated - so it can't be matched against the schema's property list at all.
+    # `resource[<expression>]`: the property read can't be matched against the schema.
     computed_index: bool = False
 
     def note(self, names: list[str], name: str) -> None:
@@ -70,9 +54,7 @@ class _Findings:
 
 
 def _bare_identifier(argument: object) -> str | None:
-    """The name if `argument` is exactly one identifier (a chain of single-child wrapper rules
-    ending in `ident`), the only form a comprehension's loop variable can take - else None.
-    """
+    """Return the name if `argument` is exactly one identifier, else None."""
     node = argument
     while isinstance(node, Tree) and node.data != "ident" and len(node.children) == 1:
         node = node.children[0]
@@ -82,10 +64,8 @@ def _bare_identifier(argument: object) -> str | None:
 
 
 def _walk_method_call(node: Tree, bound: frozenset[str], findings: _Findings) -> None:
-    """Visit a receiver-style call `x.method(args)`: a blocked method is recorded, and a
-    comprehension macro binds a bare-identifier first argument for its remaining arguments only.
-    """
-    # children: receiver, method name, and the argument list - absent for `x.size()`.
+    """Visit `x.method(args)`, recording blocked methods and binding comprehension loop variables."""
+    # The argument list is absent for `x.size()`.
     receiver, method, *rest = node.children
     method_name = str(method)
     if method_name in _BLOCKED_FUNCTIONS:
@@ -101,9 +81,7 @@ def _walk_method_call(node: Tree, bound: frozenset[str], findings: _Findings) ->
 
 
 def _string_literal(node: object) -> str | None:
-    """The value of a string-literal node (`'email'` -> `email`), or None for anything else - a
-    computed key, a number, a raw or triple-quoted literal this doesn't try to decode.
-    """
+    """Return a plain quoted string literal's value (`'email'` -> `email`), else None."""
     while isinstance(node, Tree) and node.data != "literal" and len(node.children) == 1:
         node = node.children[0]
     if not (isinstance(node, Tree) and node.data == "literal"):
@@ -114,12 +92,7 @@ def _string_literal(node: object) -> str | None:
 
 
 def _note_member_access(node: Tree, findings: _Findings) -> None:
-    """Record the property a `resource.x` / `resource["x"]` node reads. Anything else is skipped:
-    a nested access (`resource.a.b`, whose receiver is itself a member access) contributes only
-    its first name, and an access on another variable contributes nothing. An index whose key is
-    an expression rather than a literal names a property only at evaluation time, so it is noted
-    as computed instead - filter_errors reports it when it has a property list to check against.
-    """
+    """Record the property a `resource.x` / `resource["x"]` node reads, or flag a computed index."""
     receiver, key = node.children[0], node.children[1]
     if _bare_identifier(receiver) != FILTER_VARIABLE:
         return
@@ -152,9 +125,7 @@ def _walk_global_call(node: Tree, bound: frozenset[str], findings: _Findings) ->
 
 
 def _walk(node: object, bound: frozenset[str], findings: _Findings) -> None:
-    """Visit `node` with the loop variables in scope, recording foreign variables, blocked calls
-    and the properties read off the filter variable.
-    """
+    """Visit `node` with `bound` loop variables in scope, collecting into `findings`."""
     if not isinstance(node, Tree):
         return
     if node.data in _VARIABLE_NODES:
@@ -194,17 +165,10 @@ def conjuncts(expression: str) -> list[str] | None:
 
 
 def filter_errors(expression: str, properties: set[str] | None = None) -> list[str]:
-    """Every reason `expression` isn't an acceptable `context.filters` value; empty if it is.
+    """Return every reason `expression` isn't an acceptable `context.filters` value; empty if it is.
 
-    Messages are ready to be `reason` lines of errors.validation_feedback_error, in the same
-    style as subject_binding's shape checks (they file under its "Malformed shape" heading).
-
-    With `properties` - the resource type's own properties from the data schema - a filter that
-    reads a property the type doesn't have is an error too: seen live, flash-lite invents one to
-    widen a match (`resource.email == 'Volvo'` on a `Car`), which reads as a real condition
-    downstream and can't be answered. An empty or absent set disables that check rather than
-    failing every filter: a type the schema observed no properties for, or a schema that couldn't
-    be fetched, is no evidence that a property doesn't exist.
+    With `properties` (the resource type's schema properties), reading any other property is an
+    error too; an empty or absent set disables that check, as it is no evidence of absence.
     """
     if len(expression) > MAX_FILTER_LENGTH:
         return [f"context.filters is longer than {MAX_FILTER_LENGTH} characters"]

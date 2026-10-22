@@ -46,7 +46,7 @@ def test_posts_the_record_as_json_body(audit_message):
 
 
 def test_put_method_is_honoured(audit_message):
-    """AUDIT_HTTP_METHOD=PUT sends PUT, as the IAG allows."""
+    """AUDIT_HTTP_METHOD=PUT sends PUT."""
     seen = []
 
     def responder(request):
@@ -59,7 +59,7 @@ def test_put_method_is_honoured(audit_message):
 
 
 def test_api_key_auth_sets_the_configured_header(audit_message):
-    """`api-key` auth: the key rides in the configured header (IAG default `X-API-Key`)."""
+    """`api-key` auth: the key rides in the configured header."""
     seen = []
 
     def responder(request):
@@ -88,22 +88,18 @@ def test_no_auth_sends_no_credentials(audit_message):
     assert "authorization" not in seen[0]
 
 
-def test_api_key_auth_requires_a_key():
-    """Mirrors the IAG's startup validation: api-key auth with no key is a config error."""
-    with pytest.raises(ValueError, match="api-key auth requires api_key"):
-        _sender_with_transport(lambda _request: httpx2.Response(HTTPStatus.OK), auth_type="api-key")
-
-
-def test_mtls_requires_both_files():
-    """Mirrors the IAG's startup validation: mTLS needs the certificate and the key."""
-    with pytest.raises(ValueError, match="mTLS requires"):
-        _sender_with_transport(lambda _request: httpx2.Response(HTTPStatus.OK), auth_type="mTLS")
+@pytest.mark.parametrize(
+    ("auth_type", "message"),
+    [("api-key", "api-key auth requires api_key"), ("mTLS", "mTLS requires")],
+)
+def test_auth_requires_credentials(auth_type, message):
+    """api-key auth needs a key; mTLS needs both the certificate and the key."""
+    with pytest.raises(ValueError, match=message):
+        _sender_with_transport(lambda _request: httpx2.Response(HTTPStatus.OK), auth_type=auth_type)
 
 
 def test_error_status_is_logged_not_raised(caplog, audit_message):
-    """A 4xx/5xx from the receiver is logged with the status and otherwise ignored - never
-    retried, never surfaced to the request being audited (IAG behaviour).
-    """
+    """A 4xx/5xx from the receiver is logged with its status, never retried or raised."""
     caplog.set_level("ERROR")
 
     _send_and_close(
@@ -116,7 +112,7 @@ def test_error_status_is_logged_not_raised(caplog, audit_message):
 
 
 def test_transport_failure_is_logged_not_raised(caplog, audit_message):
-    """A connection error is logged and swallowed, like the IAG's "failed to send HTTP request"."""
+    """A connection error is logged and swallowed."""
     caplog.set_level("ERROR")
 
     def responder(_request):
@@ -129,11 +125,7 @@ def test_transport_failure_is_logged_not_raised(caplog, audit_message):
 
 
 def _self_signed_pair(tmp_path):
-    """Write a throwaway self-signed certificate and key, for the mTLS client-side setup.
-
-    `cryptography` is only a transitive dependency (via PyJWT), so skip rather than fail if it
-    ever goes away - the mTLS path is config plumbing over the stdlib ssl module either way.
-    """
+    """Write a throwaway self-signed certificate and key (skipped if transitive `cryptography` is gone)."""
     from datetime import UTC, datetime, timedelta
 
     pytest.importorskip("cryptography")
@@ -169,9 +161,7 @@ def _self_signed_pair(tmp_path):
 
 
 def test_mtls_loads_the_client_certificate(tmp_path, caplog, audit_message):
-    """`mTLS`: the certificate and key are loaded into the client at startup (a bad pair would
-    fail here, not on the first record) and records still flow through the transport.
-    """
+    """`mTLS`: the certificate and key are loaded at startup and records still flow."""
     caplog.set_level("INFO")
     cert_path, key_path = _self_signed_pair(tmp_path)
     seen = []

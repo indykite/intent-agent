@@ -130,6 +130,31 @@ import error; then `codestyle_check` = `ruff check`, then `pytest test` runs.
 Run `uv run --locked ruff check` before assuming change clean; `make fix` autofixes what it
 can, but complexity/magic-value findings need manual refactor.
 
+## Code and test style
+
+- **Docstrings:** say what the function does in one line, plus its non-obvious contract (what it
+  raises, what it never returns, what must run before it) in a few more. No history: ticket
+  numbers, "seen live", TDD/PRD section references and the story behind a past fix belong in the
+  PR description and git history, not the code.
+- **Comments** explain *why*, never *what*. A comment that restates the next line goes.
+- **Text the model reads is prompt, not documentation.** The `@tool` functions in `agent.py`,
+  `_ActivateSkillArgs`, and the pydantic classes in `input_schema.py` (their docstrings and
+  `Field(description=...)` become the structured-output schema Gemini sees) change the model's
+  answers when reworded. Treat them like `skills/**/SKILL.md`: change them on purpose and run
+  `make evals`. `evals/__main__.py`'s module docstring is the `--help` text.
+- **Functions:** a function that does several things is split into private helpers in the same
+  module, not a new module (see module boundaries above).
+- **Tests:**
+    - one test file per module: `test/test_<module>.py` (`subject_binding.py` is tested in
+      `test_subject_binding.py`, not `test_agent.py`);
+    - helpers shared by several test files live in a module named `test_*.py`
+      (`test_extraction_helpers.py`), because pre-commit's `name-tests-test` hook requires that
+      name under `test/`;
+    - tests that differ only in their data are one `@pytest.mark.parametrize` test with
+      `pytest.param(..., id=...)`, not copies;
+    - a test docstring is one line on the behaviour checked, and only when the name doesn't
+      already say it.
+
 ## Architecture
 
 Code lives under `indykite/intent_agent/` (namespace package under `indykite/`).
@@ -346,13 +371,12 @@ exactly, in any evaluation order. Gates (TDD 7.1's four): correctness ≥85%, ev
 p95 of per-fixture wall time ≤10 s (retries included, nearest-rank; `--max-p95-latency` overrides it locally); exit 1 on any.
 `.github/workflows/eval-suite.yaml` runs it on PRs touching the service code (`indykite/` - a
 directory prefix, not a file list, so a refactor can't drop a module out of the check), the
-dependency pins (`pyproject.toml`, `uv.lock`) or `evals/` (decided by its `changes` job, not a
+dependency pins (`pyproject.toml`, `uv.lock`), `evals/` or the workflow itself (decided by its `changes` job, not a
 `paths:` filter, so the `golden-evals` check can be required: unrelated PRs skip it, which counts
 as passing), on pushes to `master` touching the same paths (both ignore release-please's
-`indykite/intent_agent/version.py` bump), and on demand; takes `GEMINI_API_KEY` from the `evals`
-GitHub environment (each run waits for a reviewer's approval; a fork PR skips the job so its code
-never gets the key, and is evaluated on `master` after merge or on a branch here a maintainer
-copies it to). Each data
+`indykite/intent_agent/version.py` bump), and on demand; a fork PR skips the job so its code
+never gets the Gemini key, and is evaluated on `master` after merge or on a branch here a
+maintainer copies it to. Each data
 model under `evals/schema/` has a `_schema.json` and a `_policies.json` in the platform listing
 shape (every golden answer's combinations must be granted there). The loader round-trips every golden answer
 through `normalize_intent_response` as the fixture's caller and rejects one that comes back

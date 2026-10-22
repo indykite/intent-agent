@@ -1,8 +1,4 @@
-"""Shared pytest fixtures: a fully populated audit record factory, a baseline Settings env, and
-factories for golden eval fixture files. (Fixtures live here rather than in a helper module
-because pre-commit's name-tests-test hook requires every other module under test/ to be a
-test_*.py file.)
-"""
+"""Shared fixtures (here, not in a helper module, because name-tests-test wants only test_*.py files under test/)."""
 
 import json
 from collections.abc import Iterable
@@ -47,9 +43,7 @@ def audit_message():
 
 @pytest.fixture
 def baseline_env(monkeypatch):
-    """A function setting every required Settings env var, with file audit delivery into the
-    given directory (a never-created placeholder by default - Settings never touches it).
-    """
+    """A function setting every required Settings env var, with file audit delivery into the given directory."""
 
     def _set(audit_storage_path="./.private/audit-never-created") -> None:
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
@@ -88,9 +82,7 @@ _EVAL_EVALUATION = {
 
 @pytest.fixture
 def eval_schema_file(tmp_path):
-    """A factory writing a small JGF data model under `<directory>/schema/<model>_schema.json`
-    (directory defaults to tmp_path/evals) and returning its path.
-    """
+    """A factory writing a small JGF data model to `<directory>/schema/<model>_schema.json`."""
 
     def _write(
         model: str = "user_model",
@@ -100,9 +92,7 @@ def eval_schema_file(tmp_path):
         relations: Iterable[str | tuple[str, str, str]] = ("CAN_ACCESS",),
         directory: Path | None = None,
     ) -> Path:
-        """A relation given as a bare name is a User -> Document edge; a (source, relation, target)
-        triple is that edge.
-        """
+        """A bare relation name is a User -> Document edge; a (source, relation, target) triple is that edge."""
         nodes = {"_Application": _jgf_node(digital_twin=True)}
         nodes.update({label: _jgf_node(digital_twin=True) for label in digital_twins})
         nodes.update({label: _jgf_node(digital_twin=False) for label in resources})
@@ -122,10 +112,7 @@ def eval_schema_file(tmp_path):
 
 @pytest.fixture
 def eval_policies_file(tmp_path):
-    """A factory writing `<directory>/schema/<model>_policies.json` (directory defaults to
-    tmp_path/evals) from (subject type, action, resource type) triples, in the shape of
-    `GET /access/v1/policies`, and returning its path.
-    """
+    """A factory writing `<directory>/schema/<model>_policies.json` from (subject, action, resource) triples."""
 
     def _write(model: str, triples: Iterable[tuple[str, str, str]], *, directory: Path | None = None) -> Path:
         results = [
@@ -143,13 +130,7 @@ def eval_policies_file(tmp_path):
 
 @pytest.fixture
 def eval_fixture_file(tmp_path, eval_schema_file, eval_policies_file):
-    """A factory writing one golden fixture file `<directory>/<name>.json` (directory defaults to
-    tmp_path/evals, with a `user_model` schema and the policy granting the default evaluation
-    alongside unless they already exist) and returning its path. `fields` override the fixture
-    document's keys; `expected` defaults to one matching evaluation for the default prompt, and an
-    `expected` with evaluations gets `"confidence": "high"` unless given (`confidence=None` leaves
-    the key out).
-    """
+    """A factory writing a golden fixture `<directory>/<name>.json` plus the default schema and policies."""
 
     def _write(name: str = "single_intent_test_1", *, directory: Path | None = None, **fields: Any) -> Path:
         directory = directory or tmp_path / "evals"

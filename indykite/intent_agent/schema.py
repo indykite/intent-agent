@@ -19,17 +19,10 @@ _SECONDS_PER_MINUTE = 60
 
 
 def _make_async_creation_runner(executor: ThreadPoolExecutor) -> AsyncCreator:
-    """Build a dogpile async_creation_runner (review) that refreshes an expired-but-present
-    entry on `executor` instead of the calling thread, so a caller whose request gets cancelled
-    (REQUEST_TIMEOUT_SECONDS firing mid-refresh) still got the stale value back immediately,
-    rather than losing the whole request while a perfectly usable schema was sitting right
-    there. See SchemaClient.get_cached's docstring for the failure mode this closes.
+    """Build a dogpile async_creation_runner that refreshes an expired entry on `executor`.
 
-    dogpile hands this exactly one caller (whichever one wins the per-key mutex) only when a
-    value already exists but is expired; a cold key with nothing cached at all always blocks
-    and regenerates synchronously instead - correct there, since there is nothing to serve in
-    the meantime. This must release the mutex itself once done (dogpile's own contract for
-    async_creation_runner), and must not raise - it runs detached from any request.
+    Callers get the stale value immediately, so a request deadline can't cancel the refresh and
+    lose it. The runner releases dogpile's mutex itself and never raises.
     """
 
     def _async_creation_runner(
@@ -43,11 +36,7 @@ def _make_async_creation_runner(executor: ThreadPoolExecutor) -> AsyncCreator:
                 else:
                     logger.error("schema_refresh_failed - keeping last known good schema")
             except Exception:
-                # Covers a cache.set() failure too (review), e.g. a Redis write dropping mid-
-                # refresh even though the fetch that just preceded it succeeded - not just
-                # creator()'s own exceptions. Either way this thread is fire-and-forget (nobody
-                # calls .result() on the future it runs in), so an uncaught exception here would
-                # otherwise vanish with nothing logged at all.
+                # Fire-and-forget thread: an uncaught exception (incl. from cache.set) would vanish unlogged.
                 logger.exception("schema_refresh_failed - keeping last known good schema")
             finally:
                 mutex.release()
@@ -58,15 +47,9 @@ def _make_async_creation_runner(executor: ThreadPoolExecutor) -> AsyncCreator:
 
 
 def build_schema_cache(settings: Settings, executor: ThreadPoolExecutor) -> CacheRegion:
-    """Pick the schema cache backend named by CACHE_BACKEND: Redis, or in-process memory
-    (the default) - single-instance deployments never need Redis running. Settings rejects
-    CACHE_BACKEND=redis with no REDIS_URL at startup, so redis_url is guaranteed set here.
+    """Build the schema cache region (Redis or memory, per CACHE_BACKEND).
 
-    Sets expiration_time from SCHEMA_REFRESH_TTL_MINUTES so SchemaClient.get_cached()
-    refreshes on-demand once an entry ages past it, instead of a per-instance background
-    timer - see get_cached()'s docstring for why that matters with multiple instances. The
-    refresh itself runs through `_make_async_creation_runner` (review) on the given executor,
-    not the calling coroutine - see that function's docstring for why.
+    Entries expire after SCHEMA_REFRESH_TTL_MINUTES and are refreshed on demand on `executor`.
     """
     ttl_seconds = settings.schema_refresh_ttl_minutes * _SECONDS_PER_MINUTE
     logger.info("Using cache backend %r with TTL %d seconds", settings.cache_backend, ttl_seconds)
@@ -75,8 +58,7 @@ def build_schema_cache(settings: Settings, executor: ThreadPoolExecutor) -> Cach
         return make_region(async_creation_runner=async_creation_runner).configure(
             "dogpile.cache.redis",
             expiration_time=ttl_seconds,
-            # `url` (not host/port) so dogpile hands the DSN as-is to redis.StrictRedis.from_url,
-            # preserving username/password/db/TLS scheme instead of dropping them.
+            # `url`, not host/port, so credentials, db and TLS scheme in the DSN are kept.
             arguments={"url": str(settings.redis_url)},
         )
     return make_region(async_creation_runner=async_creation_runner).configure(
@@ -85,19 +67,10 @@ def build_schema_cache(settings: Settings, executor: ThreadPoolExecutor) -> Cach
 
 
 def app_agent_key_gid(app_agent_key: str) -> str | None:
-    """Extract the stable, non-secret GID (the `sub` claim) from an IK_APP_AGENT_KEY JWT,
-    without verifying its signature (never anything that would require the signing key) - the
-    one piece every per-environment cache key (schema, policies) is scoped by, since a single
-    shared key would let clients pointed at different IndyKite environments silently overwrite
-    each other's cached data if they happen to share a Redis backend/region.
+    """Return the `sub` claim (environment GID) of an IK_APP_AGENT_KEY JWT, unverified.
 
-    None for a blank app_agent_key - the supported "IK not configured" state (see
-    SchemaClient.load()), which callers map to their own stable placeholder instead of
-    decoding, since there's nothing to decode and nothing will ever be fetched/cached under it
-    anyway. Any non-blank app_agent_key must be a valid JWT with a string `sub` claim - a
-    malformed one is a real configuration error and must fail the process loudly at startup
-    with a clear InvalidAppAgentKeyError, not silently degrade to a less specific cache key
-    while continuing to attempt a fetch with a broken credential.
+    Scopes per-environment cache keys. Returns None for a blank key; raises
+    InvalidAppAgentKeyError for a non-blank key that isn't a JWT with a string `sub`.
     """
     if not app_agent_key:
         return None
@@ -115,9 +88,7 @@ def app_agent_key_gid(app_agent_key: str) -> str | None:
 
 
 def _cache_key(app_agent_key: str) -> str:
-    """Build a cache key scoped to this specific IndyKite environment - see
-    app_agent_key_gid() for why. A blank app_agent_key hashes to a stable placeholder.
-    """
+    """Build the schema cache key scoped to this IndyKite environment."""
     gid = app_agent_key_gid(app_agent_key)
     return "ikg_schema:unconfigured" if gid is None else f"ikg_schema:{gid}"
 
@@ -133,11 +104,7 @@ class SchemaClient:
         timeout_seconds: float = 30.0,
         cache: CacheRegion,
     ) -> None:
-        """Store the connection details; no request is made until load()/preload().
-
-        cache has no default here - build_schema_cache above is the single place that
-        decides Redis-vs-Memory, so it's the one place that constructs a default.
-        """
+        """Store the connection details; no request is made until load()/preload()."""
         self._base_url = base_url
         self._app_agent_key = app_agent_key
         self._timeout_seconds = timeout_seconds
@@ -145,17 +112,7 @@ class SchemaClient:
         self._cache_key = _cache_key(app_agent_key)
 
     def load(self) -> dict[str, Any] | None:
-        """Fetch the graph schema from the Indykite platform, or None on failure.
-
-        resp.json() is inside the same try/except as the request itself (review) - a 2xx
-        response with a non-JSON or malformed body raises ValueError (json.JSONDecodeError),
-        not httpx2.HTTPError, and must count as a failed load the same way an HTTP error does,
-        not escape uncaught. That matters most for callers that never expected load() to raise
-        at all: preload() (would otherwise crash the process at cold start on a malformed
-        response) and _make_async_creation_runner's background refresh thread (an uncaught
-        exception there is never surfaced anywhere - the future it happens in is fire-and-
-        forget, so a malformed body would silently drop the refresh with nothing logged).
-        """
+        """Fetch the graph schema from the IndyKite platform; None on any failure, never raises."""
         if not self._base_url or not self._app_agent_key:
             logger.warning("IK base URL/app-agent key not set - schema unavailable")
             return None
@@ -165,9 +122,6 @@ class SchemaClient:
         try:
             with httpx2.Client(timeout=self._timeout_seconds) as client:
                 resp = client.get(url, headers=headers)
-                # A raw look at what the platform actually sent back, truncated like
-                # SCHEMA_PREVIEW_CHARS elsewhere - diagnoses an unexpected/empty schema (or a
-                # non-JSON error page) without guessing from the parsed summary line alone.
                 logger.debug("Schema response: status=%s body[:500]=%r", resp.status_code, resp.text[:500])
                 resp.raise_for_status()
                 schema = resp.json()
@@ -184,33 +138,10 @@ class SchemaClient:
             self._cache.set(self._cache_key, schema)
 
     def get_cached(self) -> dict[str, Any] | None:
-        """Return the cached schema. A cold cache - never fetched at all - blocks and fetches
-        right here, driven by the request that happens to observe it, rather than a
-        per-instance background timer: with multiple agent instances behind a load balancer, a
-        timer would have every instance refresh in near-lockstep instead of only the one
-        handling traffic doing the work.
+        """Return the cached schema, fetching it on a cold cache; None if unavailable, never raises.
 
-        Per TDD 4.4, a failed refresh must never lose the last known-good schema. Once an entry
-        exists, get_or_create's async_creation_runner (review, see build_schema_cache) returns
-        it immediately once the cache region's TTL has expired it, refreshing on a background
-        thread rather than this call. That matters specifically because the whole fetch now
-        runs inside REQUEST_TIMEOUT_SECONDS (ENG-9671): a synchronous refresh-then-fall-back-to-
-        stale here could get cancelled mid-flight by that deadline before ever reaching its own
-        fallback line, losing a request even though a perfectly usable schema was sitting right
-        there uncancelled in the cache the whole time. The async path can't lose it that way -
-        the stale value is handed back before any refresh attempt starts, not after one fails.
-
-        Tries peek_cached() first, which is what logs the cache key and hit/miss flag
-        get_or_create's own internal check does not - callers of get_cached() itself must
-        always go through a thread executor regardless (review, ENG-9671): with
-        CACHE_BACKEND=redis this whole method, peek included, is genuinely synchronous network
-        I/O, not a bounded in-process lookup, so nothing here is safe to call directly on the
-        event loop - see IntentAgent.get_cached_schema's docstring.
-
-        Any cache backend failure (e.g. CACHE_BACKEND=redis genuinely unreachable, not just a
-        miss) is treated the same as an unavailable schema rather than left to escape as an
-        unhandled exception (review) - run_extraction's own schema_unavailable_error path
-        already exists to answer exactly that.
+        An expired entry is served stale while it refreshes in the background, so a failed
+        refresh never loses it. With Redis this is network I/O, so it must not run on the event loop.
         """
         try:
             cached = self.peek_cached()
@@ -224,11 +155,9 @@ class SchemaClient:
             return None
 
     def peek_cached(self) -> dict[str, Any] | None:
-        """Return the cached schema if present, without ever calling load(). Only a genuine
-        miss (None here) needs get_cached()'s slower load()-on-miss path - but this lookup
-        itself is not necessarily cheap: with CACHE_BACKEND=redis it is a real network round
-        trip, not a bounded in-process one, so it must not be called directly on the event loop
-        either (review, ENG-9671) - see get_cached's docstring.
+        """Return the cached schema if present (None on a miss), never calling load().
+
+        With Redis this is network I/O, so it must not run on the event loop.
         """
         cached = self._cache.get(self._cache_key)
         logger.debug("cache_key=%s hit=%s", self._cache_key, cached is not NO_VALUE)

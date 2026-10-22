@@ -1,11 +1,6 @@
-"""Run golden fixtures through the real extraction pipeline (IntentAgent.run_extraction) with
-the real LLM, the fixture's data model served in place of the platform schema, and judge each
-response against its golden answer.
+"""Run golden fixtures through the real IntentAgent.run_extraction and judge each response.
 
-Everything downstream of the model is the production code path - skill activation, structured
-output, the validation/retry loop, subject binding, context normalisation - so a regression in
-any of it shows up here, not only a regression in the model or the skill text. No A2A transport
-or token introspection is involved: the subject is bound the way IAG supplies it per request.
+The fixture's data model and policies replace the platform's; no A2A transport or token introspection.
 """
 
 import asyncio
@@ -27,17 +22,9 @@ from indykite.intent_agent.errors import llm_timeout_error, request_timeout_erro
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONCURRENCY = 1
-# How many times a fixture whose only outcome was a timeout is rerun before that timeout counts
-# as its result. One: a single latency spike at the per-call limit is provider noise that would
-# otherwise fail an absolute gate (a refusal fixture answered with the timeout error is a miss),
-# while a fixture that times out twice in a row is a real latency finding and stays a miss.
+# One timeout is provider noise; a fixture that times out twice in a row is a real finding.
 DEFAULT_TIMEOUT_RETRIES = 1
-# The timeouts the suite runs the pipeline under, in place of the service's production values
-# (3 s per call, 10 s per request). Those are sized for the PRD's latency budget, which the p95
-# latency gate now measures directly from wall time; left in force here they turn a slow
-# provider hour into correctness failures instead ("the model did not respond in time" read as
-# a wrong answer), which is the wrong gate failing for the wrong reason. These only bound a
-# genuinely stuck call - a slow one still shows up, as the latency it actually took.
+# Generous, so a slow provider shows up as latency (the p95 gate) rather than as a wrong answer.
 DEFAULT_LLM_TIMEOUT_SECONDS = 20.0
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 60.0
 
@@ -46,9 +33,7 @@ ResultListener = Callable[[FixtureResult], None]
 
 @dataclass(frozen=True, slots=True)
 class RunOptions:
-    """How a suite run is paced: fixtures in flight at once, and reruns granted to a fixture
-    whose only outcome was a timeout (see run_fixture).
-    """
+    """How a suite run is paced: fixtures in flight at once, and reruns for a timed-out fixture."""
 
     concurrency: int = DEFAULT_CONCURRENCY
     timeout_retries: int = DEFAULT_TIMEOUT_RETRIES
@@ -72,19 +57,13 @@ class FixtureSchemaClient:
 
 
 class FixturePolicyClient:
-    """The one PolicyClient method IntentAgent uses, answered from a fixture policy listing:
-    `get_cached(subject_type)` returns the entries whose policy subject type matches - the same
-    narrowing the platform's `GET /access/v1/policies?subject_type=` applies - and reports the
-    fetch as succeeded.
-    """
+    """The one PolicyClient method IntentAgent uses, answered from a fixture policy listing."""
 
     def __init__(self, entries: list[dict[str, Any]]) -> None:
         self._entries = entries
 
     def get_cached(self, subject_type: str) -> tuple[list[dict[str, Any]], bool]:
-        """(matching entries, fetch_failed=False) - the same narrowing the loader checks golden
-        answers against (fixtures.policies_for_subject).
-        """
+        """The entries for `subject_type` (fixtures.policies_for_subject); the fetch never fails."""
         return policies_for_subject(self._entries, subject_type), False
 
 
@@ -94,9 +73,9 @@ def build_agents(
     *,
     llm: BaseChatModel | None = None,
 ) -> dict[Path, IntentAgent]:
-    """One IntentAgent per distinct data model the fixtures use, each serving that model's
-    schema and access policies. `llm` (a test double) is shared by all of them; None lets each
-    build the configured Gemini model the way the service does.
+    """One IntentAgent per distinct data model, serving that model's schema and policies.
+
+    `llm` (a test double) is shared by all of them; None builds the configured Gemini model.
     """
     by_model = {fixture.schema_path: fixture for fixture in fixtures}
     return {
@@ -143,11 +122,9 @@ async def run_fixture(
     *,
     timeout_retries: int = DEFAULT_TIMEOUT_RETRIES,
 ) -> FixtureResult:
-    """Extract one fixture's prompt and judge the response. An exception out of the pipeline is
-    recorded against the fixture instead of aborting the run - one provider hiccup must not
-    hide the other results. A response that is only the pipeline's timeout error is rerun up to
-    `timeout_retries` times (DEFAULT_TIMEOUT_RETRIES), and the reruns spent are reported on the
-    result; the timeouts themselves stay visible in the log.
+    """Extract and judge one fixture; an exception is recorded as its result instead of aborting the run.
+
+    A timeout-only response is rerun up to `timeout_retries` times; the reruns spent are set on the result.
     """
     result = await _extract_once(fixture, agent)
     retries = 0
@@ -168,10 +145,10 @@ async def run_suite(
     options: RunOptions = DEFAULT_RUN_OPTIONS,
     on_result: ResultListener | None = None,
 ) -> list[FixtureResult]:
-    """Run every fixture, at most `options.concurrency` at a time, in one event loop (the LLM
-    client's HTTP session is bound to the loop it first runs on). Results come back in fixture
-    order whatever the completion order; `on_result` is called as each one completes, for
-    progress.
+    """Run every fixture, at most `options.concurrency` at a time, in one event loop.
+
+    One loop because the LLM client's HTTP session is bound to it. Results come back in fixture
+    order; `on_result` is called as each completes. Raises ValueError for concurrency < 1.
     """
     if options.concurrency < 1:
         message = "concurrency must be at least 1"

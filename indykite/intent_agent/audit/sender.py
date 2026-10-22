@@ -1,10 +1,6 @@
-"""Audit delivery, shaped after the Agent Gateway's `audit` package: a `Sender` that a call
-site hands a record to and never hears back from (delivery failures are logged, never raised
-into the request path), picked at startup from AUDIT_DELIVERY - `file` or `webhook` - and
-optionally wrapped in the buffered `AsyncSender` (AUDIT_ASYNC).
+"""The audit `Sender` protocol and its factory, picked from AUDIT_DELIVERY (and AUDIT_ASYNC).
 
-The one place this diverges from the IAG is that there is no no-op sender: AUDIT_DELIVERY is
-required (see config.py), because the TDD requires every request to produce a record.
+There is no no-op sender: every request must produce an audit record.
 """
 
 from typing import Protocol
@@ -17,7 +13,7 @@ from indykite.intent_agent.config import Settings
 
 
 class Sender(Protocol):
-    """What every audit delivery implements (the IAG's `SenderCloser`)."""
+    """What every audit delivery implements."""
 
     async def send(self, message: AuditMessage) -> None:
         """Deliver one record. Never raises - a delivery failure is logged instead."""
@@ -27,12 +23,7 @@ class Sender(Protocol):
 
 
 def _required[T](value: T | None, env_var: str) -> T:
-    """Narrow a delivery-specific setting Settings' validators already guarantee is set.
-
-    Settings rejects a missing one at startup, so this only fires if a validator and this
-    factory ever disagree - a bug, reported with the env var it concerns rather than an
-    AttributeError deep inside a sender.
-    """
+    """Narrow a setting the Settings validators guarantee is set; raise ValueError naming `env_var` if not."""
     if value is None:
         message = f"audit: {env_var} is required"
         raise ValueError(message)

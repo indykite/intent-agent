@@ -1,6 +1,6 @@
-"""What the LLM is given from the caller's policies and the graph schema: the structured-output
-schema (build_input_schema, TDD 4.6) and the vocabulary summary for skill activation
-(render_schema_summary).
+"""The LLM's view of the caller's policies and the graph schema.
+
+build_input_schema gives the structured-output schema; render_schema_summary the vocabulary summary.
 """
 
 from typing import Any, Literal, get_args
@@ -15,10 +15,7 @@ CONFIDENCE_LEVELS: tuple[str, ...] = get_args(Confidence)
 
 
 def _graph(schema: dict[str, Any]) -> dict[str, Any]:
-    """The JGF `graph` object, or `{}` when the document has none or it isn't an object - every
-    reader below tolerates a missing or malformed section the same way, so a malformed platform
-    response reads as an empty graph rather than raising on `.get`.
-    """
+    """Return the JGF `graph` object, or `{}` when it is missing or not an object."""
     graph = schema.get("graph")
     return graph if isinstance(graph, dict) else {}
 
@@ -32,15 +29,16 @@ def _node_types(schema: dict[str, Any]) -> list[str]:
 
 
 def _policy_type(policy: dict[str, Any], key: str) -> str | None:
-    """The policy's subject.type / resource.type (`key`), or None when it isn't a non-empty string."""
+    """Return the policy's `key`.type, or None when it isn't a non-empty string."""
     part = policy.get(key)
     value = part.get("type") if isinstance(part, dict) else None
     return value if isinstance(value, str) and value else None
 
 
 def policy_triples(policies: list[dict[str, Any]] | None, schema: dict[str, Any]) -> set[tuple[str, str, str]]:
-    """Every (subject type, action, resource type) the policies grant over the schema's node
-    types - the whole vocabulary an evaluation may use. Malformed entries are skipped.
+    """Return every (subject type, action, resource type) the policies grant over schema node types.
+
+    Malformed entries are skipped.
     """
     node_types = set(_node_types(schema))
     triples: set[tuple[str, str, str]] = set()
@@ -93,17 +91,8 @@ class _Action(BaseModel):
 class _Resource(BaseModel):
     """AuthZEN resource."""
 
-    # Class docstrings and field descriptions reach Gemini as the schema's `description`s, so
-    # they're written for the model. The `id` description steers it toward filling the id in
-    # rather than restating the identifier as a context.filters term - seen live with flash-lite,
-    # which still prefers the filter form more often than not (test/test_golden_scenarios.py
-    # replays the answers it does give), and which drops the identifier altogether when told
-    # more forcefully never to use the filter form; subject_binding lifts the pure external_id
-    # filter form back into the id afterwards instead.
-    # Required (not nullable): Gemini fills a required field far more reliably than an optional
-    # one, and flash-lite dropped a person's identifier ("user nina") when it was optional. An
-    # empty string is the "many resources" answer and is removed again by
-    # subject_binding._drop_blank_resource_ids.
+    # Class docstrings and field descriptions reach Gemini as schema `description`s.
+    # Required because Gemini fills required fields far more reliably; "" means many resources.
     id: str = Field(
         description=(
             "The identifier (external_id) of the one resource instance the prompt names, e.g. an "
@@ -165,8 +154,7 @@ class _IntentInput(BaseModel):
             "for a 'who can' search."
         ),
     )
-    # Optional: a refusal (empty evaluations) gives only an explanation; subject_binding requires
-    # both on an answer with evaluations.
+    # Optional for a refusal; subject_binding requires it when there are evaluations.
     explanation: str | None = Field(
         default=None,
         description=(
@@ -214,10 +202,7 @@ def _has_digital_twin_label(node: object) -> bool:
 
 
 def digital_twin_types(schema: dict[str, Any]) -> list[str]:
-    """The node types that may be subjects (system label DigitalTwin), minus the platform's own
-    `_`-prefixed bootstrap nodes (`_Application`), sorted - the one place this label walk lives,
-    shared by the schema summary and the golden eval loader.
-    """
+    """Return the sorted DigitalTwin node types, excluding the platform's `_`-prefixed ones."""
     nodes = _graph(schema).get("nodes", {})
     if not isinstance(nodes, dict):
         return []
@@ -237,11 +222,7 @@ def _property_summary(name: str, spec: object) -> str:
 
 
 def _node_summary(label: str, node: object) -> str:
-    """One line for a node type: its label, whether it may be a subject, and its properties with types.
-    A `_`-prefixed type is the platform's own (`_Application`, the calling app) - it carries the
-    DigitalTwin label too but is never what a prompt is about, so it is flagged as internal
-    rather than as a Subject candidate.
-    """
+    """Render one node type's line: label, DigitalTwin or platform-internal flag, typed properties."""
     metadata = node.get("metadata", {}) if isinstance(node, dict) else {}
     if not isinstance(metadata, dict):
         metadata = {}
@@ -274,9 +255,7 @@ def _edge_summaries(schema: dict[str, Any]) -> list[str]:
 
 
 def render_schema_summary(schema: dict[str, Any], policies: list[dict[str, Any]] | None = None) -> str:
-    """The request's vocabulary in a few KB instead of the raw JGF: node types with their
-    properties, edges (how data is linked, never actions) and the combinations the policies grant.
-    """
+    """Render a compact vocabulary summary: node types with properties, edges and policy triples."""
     nodes = _graph(schema).get("nodes", {})
     node_lines = (
         [_node_summary(label, node) for label, node in sorted(nodes.items())] if isinstance(nodes, dict) else []
@@ -300,8 +279,9 @@ def render_schema_summary(schema: dict[str, Any], policies: list[dict[str, Any]]
 
 
 def build_input_schema(schema: dict[str, Any], policies: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    """The structured-output schema, with subject.type, action.name and resource.type each limited
-    to its part of policy_triples. JSON Schema can't tie the three together; validate_evaluations does.
+    """Return the structured-output schema with subject/action/resource enums from policy_triples.
+
+    The enums aren't tied together; validate_evaluations checks the combination.
     """
     triples = policy_triples(policies, schema)
     json_schema = _IntentInput.model_json_schema()

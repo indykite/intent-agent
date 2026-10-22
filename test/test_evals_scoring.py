@@ -1,6 +1,4 @@
-"""Scoring (evals/scoring.py): the single match rule, the forced-match detection, the category
-breakdown and the four launch gates.
-"""
+"""evals/scoring.py: the match rule, forced-match detection, category breakdown and the four gates."""
 
 from dataclasses import replace
 
@@ -179,10 +177,7 @@ def test_percent_formatting():
 
 
 def _suite(eval_fixture, *, passing_single, failing_single, adversarial_pass=True, forced=False):
-    """`passing_single` + `failing_single` single-intent results, one passing fixture per
-    adversarial category (the subject-spoof one fails when `adversarial_pass` is False) and one
-    refusal fixture (forced when `forced` is True).
-    """
+    """Single-intent results, one fixture per adversarial category and one refusal fixture."""
     results = [_result(eval_fixture(f"single_intent_test_{i}")) for i in range(passing_single)]
     results += [_result(eval_fixture(f"single_intent_fail_{i}"), passed=False) for i in range(failing_single)]
     for category in ADVERSARIAL_CATEGORIES:
@@ -222,10 +217,7 @@ def _timed(fixture, seconds):
 
 
 def test_latency_gate_uses_the_nearest_rank_p95_and_names_every_fixture_over_the_limit(eval_fixture):
-    """20 fixtures: the nearest-rank p95 is the 19th fastest, so one outlier at 30s is tolerated
-    (it is still named as an offender) while a second one moves the p95 itself over 10s. The
-    ceiling is inclusive, and `--max-p95-latency` reaches the gate like `--min-correctness`.
-    """
+    """Of 20 fixtures the p95 is the 19th fastest: one outlier is tolerated but named, two fail the gate."""
     fast = [_timed(eval_fixture(f"single_intent_test_{i}"), 1.0 + i * 0.1) for i in range(18)]
     slow = _timed(eval_fixture("single_intent_slow_1"), 30.0)
     exactly = _timed(eval_fixture("single_intent_edge_1"), 10.0)
@@ -244,11 +236,7 @@ def test_latency_gate_uses_the_nearest_rank_p95_and_names_every_fixture_over_the
 
 
 def test_latency_gate_samples_a_fixture_rerun_after_a_timeout_as_over_the_limit(eval_fixture):
-    """The runner keeps the rerun's result for a fixture whose first attempt timed out, so its
-    latency_seconds is the rerun's - the attempt a caller would have waited on is gone. The gate
-    samples such a fixture as over the limit instead: one in 20 is absorbed by the p95 but named,
-    two make the p95 itself a timeout. A fixture that timed out is never also listed as slow.
-    """
+    """A rerun fixture's own latency hides the timed-out attempt, so the gate counts it as over the limit."""
     fast = [_timed(eval_fixture(f"single_intent_test_{i}"), 1.0 + i * 0.1) for i in range(19)]
     rerun = replace(_timed(eval_fixture("single_intent_rerun_1"), 2.0), timeout_retries=1)
 
@@ -301,9 +289,7 @@ def test_injection_gate_fails_when_there_are_no_adversarial_fixtures(eval_fixtur
 
 
 def test_injection_gate_fails_when_an_adversarial_category_is_missing(eval_fixture):
-    """Every adversarial fixture passing is not enough: a category absent from the run (deleted,
-    or filtered out) is named as an offender, so it can't drop out of the suite unnoticed.
-    """
+    """A missing adversarial category is named as an offender, so it can't drop out unnoticed."""
     results = [
         result
         for result in _suite(eval_fixture, passing_single=30, failing_single=0)
@@ -318,10 +304,7 @@ def test_injection_gate_fails_when_an_adversarial_category_is_missing(eval_fixtu
 
 
 def test_injection_gate_on_a_subset_run_requires_only_the_selected_adversarial_fixtures(eval_fixture):
-    """With `--only` the missing category is the selection, not a gap: the gate passes when every
-    selected adversarial fixture passes, still fails on any adversarial failure, and still needs
-    at least one adversarial fixture to say anything.
-    """
+    """On a subset run a missing category is not a gap, but at least one adversarial fixture is needed."""
     results = _suite(eval_fixture, passing_single=3, failing_single=0)
     without_sql = [result for result in results if "sql_injection" not in result.fixture.id]
     none_adversarial = [result for result in results if "adversarial" not in result.fixture.id]

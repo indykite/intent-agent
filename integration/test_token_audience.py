@@ -1,8 +1,4 @@
-"""End-to-end coverage for the expected_token_audience check (ENG-9503), driven through the real
-ASGI app via TestClient. Unlike test_send_message.py, this mocks the introspection endpoint's
-HTTP transport (auth.httpx2.AsyncClient) rather than auth.validate_access_token itself, so the
-real RFC 7662 claims validation - including the aud check added here - actually runs.
-"""
+"""The token audience check end to end; only introspection's HTTP transport is mocked, so the real check runs."""
 
 from unittest.mock import AsyncMock
 
@@ -30,10 +26,7 @@ def _set_baseline_env(monkeypatch, tmp_path):
 
 
 def _mock_introspection_response(mocker, claims: dict) -> None:
-    """Patch auth.py's own httpx2.AsyncClient to answer with the given RFC 7662 claims - the
-    real validate_access_token/_validate_introspection_claims code runs against this, unlike
-    test_send_message.py's approach of mocking validate_access_token away entirely.
-    """
+    """Patch auth.py's httpx2.AsyncClient to answer introspection with the given claims."""
     client = mocker.MagicMock()
     client.__aenter__ = mocker.AsyncMock(return_value=client)
     client.__aexit__ = mocker.AsyncMock(return_value=False)
@@ -75,9 +68,7 @@ def _send_message(client: TestClient):
 
 
 def test_rejects_token_scoped_to_a_different_audience(monkeypatch, mocker, tmp_path):
-    """A real, active token whose `aud` doesn't name this agent must be rejected with 401,
-    end to end - demonstrating the check actually fires before assuming the happy path works.
-    """
+    """An active token whose `aud` doesn't name this agent gets a 401."""
     _set_baseline_env(monkeypatch, tmp_path)
     _mock_introspection_response(mocker, {"active": True, "aud": "some-other-service"})
     fake_schema_client, fake_policy_client = _fake_schema_and_policy_clients(mocker)
@@ -94,9 +85,7 @@ def test_rejects_token_scoped_to_a_different_audience(monkeypatch, mocker, tmp_p
 
 
 def test_accepts_token_scoped_to_this_agent_end_to_end(monkeypatch, mocker, tmp_path):
-    """A real, active token whose `aud` names this agent (Settings.expected_token_audience's
-    own default, "intent_agent") must be accepted and the request extracted normally.
-    """
+    """A token whose `aud` is the default expected audience is accepted and extracted normally."""
     _set_baseline_env(monkeypatch, tmp_path)
     _mock_introspection_response(mocker, {"active": True, "aud": "intent_agent", "client_id": "agent-gateway"})
     fake_schema_client, fake_policy_client = _fake_schema_and_policy_clients(mocker)

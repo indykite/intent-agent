@@ -36,11 +36,7 @@ _BEARER_SECURITY_SCHEME = "bearer"
 
 
 class TokenFailure(Enum):
-    """Whose fault a refused access token is - the three ways the IAG tells its introspection
-    failures apart (`idp/client.go`, `proxy/middlewares.go`'s `failureDecision`), so a caller
-    isn't told its token is bad when it's this service or the IdP that failed. _TOKEN_FAILURE_STATUS
-    maps each to the caller's HTTP status.
-    """
+    """Whose fault a refused access token is; _TOKEN_FAILURE_STATUS maps each to the caller's HTTP status."""
 
     CALLER = "caller"
     """The caller's token: missing, or the IdP says it is not active. 401."""
@@ -49,9 +45,8 @@ class TokenFailure(Enum):
     """This service: its request to the IdP never got an answer. 500."""
 
     PROVIDER = "provider"
-    """The IdP's answer: any status instead of an answer (4xx and 5xx alike, our own rejected client
-    credentials included - the IAG's `introspectionStatusRefusal` makes no finer split), or a body
-    that can't be read as one. 502."""
+    """The IdP's answer: any HTTP status instead of an answer (4xx and 5xx alike, our own rejected
+    client credentials included), or a body that can't be read as one. 502."""
 
 
 class TokenValidationError(Exception):
@@ -64,12 +59,7 @@ class TokenValidationError(Exception):
 
 
 def bearer_token(headers: Mapping[str, str]) -> str:
-    """Extract the Bearer token from a request's Authorization header.
-
-    Any non-Bearer scheme (or a missing/malformed header) is treated as no
-    token provided - not passed through as-is - so it can't be forwarded to
-    the introspection endpoint as if it were a bearer token.
-    """
+    """Extract the Bearer token from the Authorization header; "" if absent or another scheme."""
     auth_header = headers.get(_AUTHORIZATION_HEADER.lower()) or headers.get(_AUTHORIZATION_HEADER) or ""
     bearer_str = "bearer "
     if auth_header.lower().startswith(bearer_str):
@@ -79,9 +69,7 @@ def bearer_token(headers: Mapping[str, str]) -> str:
 
 @dataclass(frozen=True, slots=True)
 class IntrospectionConfig:
-    """Everything validate_access_token needs to reach the IdP and judge its answer, besides
-    the token itself
-    """
+    """IdP endpoint, client credentials and expected audience for validate_access_token."""
 
     introspect_url: str
     client_id: str
@@ -91,18 +79,10 @@ class IntrospectionConfig:
 
 
 async def validate_access_token(token: str, config: IntrospectionConfig) -> dict[str, Any]:
-    """
-    Validate an access token via RFC 7662 Token Introspection against
-    the external IdP.
+    """Validate an access token via RFC 7662 introspection and return its claims.
 
-    Sends a single POST /introspect call
-    Returns the introspection response body (claims) if the token is active and its `aud`
-    includes config.expected_audience.
-    Raises TokenValidationError if the token is inactive or scoped to a different audience, or
-    the call fails - classified (TokenFailure) the way the IAG's IdP client classifies the same
-    failures: only a missing/inactive/wrong-audience token is the caller's, a request that never
-    got an answer is this service's, and any status or body that isn't an RFC 7662 answer is the
-    IdP's.
+    Raises TokenValidationError, classified by TokenFailure, if the token is blank, inactive or
+    for another audience, or the IdP call fails.
     """
     if not token.strip():
         message = "No token provided"
@@ -125,9 +105,7 @@ async def validate_access_token(token: str, config: IntrospectionConfig) -> dict
         message = "Token introspection request failed"
         raise TokenValidationError(message, TokenFailure.SERVICE) from exc
 
-    # Any status instead of an answer is the IdP's, 4xx and 5xx alike, as in the IAG - the 401 is
-    # only singled out so the message and log name what actually needs fixing (RFC 7662 2.3: our
-    # own client credentials), not to classify it differently.
+    # Any non-200 is the IdP's; 401 is singled out only to name our own client credentials.
     if response.status_code == HTTPStatus.UNAUTHORIZED:
         logger.error("Token introspection rejected our own client credentials (introspect_client_id/secret)")
         message = "Introspection endpoint rejected our own client credentials"
@@ -165,9 +143,7 @@ def _validate_introspection_claims(payload: object, expected_audience: str) -> d
         message = "Token is not active"
         raise TokenValidationError(message, TokenFailure.CALLER)
 
-    # `aud` is legally either a single string or an array of strings (RFC 7519 4.1.3) - RFC 7662
-    # itself doesn't constrain its shape beyond "OPTIONAL... case sensitive string(s)", so both
-    # forms have to be accepted rather than assuming one.
+    # `aud` may be a single string or an array of strings (RFC 7519 4.1.3).
     aud = payload.get("aud")
     audiences = aud if isinstance(aud, list) else [aud]
     if expected_audience not in audiences:
@@ -193,9 +169,7 @@ RejectionHook = Callable[[Request, str], Awaitable[None]]
 
 
 def _caller_name(claims: Mapping[str, Any]) -> str:
-    """The token's `sub`, else its `client_id`; "" when it has neither (refused: a blank owner
-    would be shared by every such caller, see BearerAuthMiddleware).
-    """
+    """The token's `sub`, else its `client_id`; "" when it has neither, which BearerAuthMiddleware refuses."""
     for claim in ("sub", "client_id"):
         value = claims.get(claim)
         if isinstance(value, str) and value.strip():
@@ -204,9 +178,9 @@ def _caller_name(claims: Mapping[str, Any]) -> str:
 
 
 class BearerAuthMiddleware(BaseHTTPMiddleware):
-    """Introspects the Bearer token of every request on the wrapped route and sets `request.user`,
-    which the A2A SDK stores each task under (a second layer: app.SendMessageOnlyHandler already
-    refuses a message naming a `taskId`). Refusals go to `on_rejected` for auditing.
+    """Introspect every request's Bearer token and set `request.user`, the owner the A2A SDK stores tasks under.
+
+    Refusals are passed to `on_rejected` for auditing.
     """
 
     def __init__(self, app: ASGIApp, config: IntrospectionConfig, on_rejected: RejectionHook) -> None:
@@ -230,8 +204,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             logger.info("Token introspection: active token carries neither sub nor client_id")
             return await self._reject(request, _NO_CALLER_MESSAGE, HTTP_401_UNAUTHORIZED, token_sent=True)
 
-        # Starlette's conventional scope for any authenticated caller (what `@requires("authenticated")`
-        # checks). Nothing here checks scopes - the A2A SDK only reads `request.user`.
+        # Starlette's usual scope for an authenticated caller; the A2A SDK only reads `request.user`.
         request.scope["auth"] = AuthCredentials(["authenticated"])
         request.scope["user"] = SimpleUser(caller)
         return await call_next(request)

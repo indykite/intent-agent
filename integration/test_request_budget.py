@@ -1,7 +1,4 @@
-"""PRD: a request must be answered within 10s end to end. A hung LLM call must be cut off
-by LLM_TIMEOUT_SECONDS and surface as the fixed error shape through the real A2A stack -
-not just at the run_extraction level test_agent.py covers.
-"""
+"""A hung LLM call is cut off by LLM_TIMEOUT_SECONDS and surfaces as the timeout error through the A2A stack."""
 
 import asyncio
 import json
@@ -17,14 +14,12 @@ from indykite.intent_agent.errors import llm_timeout_error
 from integration.schema_fixtures import load_schema_fixture, policies
 
 _PRD_REQUEST_BUDGET_SECONDS = 10.0
-# Small so the test is quick, but the elapsed-time assertion is still well below the PRD
-# budget: a request that ignored the timeout would sleep for the whole budget and beyond.
+# Small for speed; a request ignoring the timeout would sleep past the whole budget.
 _LLM_TIMEOUT_SECONDS = 0.2
 _MAX_ELAPSED_SECONDS = 2.0
 
 
 def test_hung_llm_call_is_cut_off_within_request_budget(monkeypatch, mocker, tmp_path):
-    """Drive a SendMessage request through the ASGI app against an LLM that never answers."""
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("INTROSPECT_URL", "https://idp.example.com/introspect")
     monkeypatch.setenv("INTROSPECT_CLIENT_ID", "client-id")

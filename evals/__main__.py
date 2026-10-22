@@ -99,8 +99,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         parser.error("--timeout-retries must not be negative")
     if not 0.0 <= args.min_correctness <= 1.0:
         parser.error("--min-correctness must be between 0 and 1")
-    # Finite and positive: NaN compares false to everything, and `inf` would pass a `> 0` check
-    # while making `p95 <= limit` true for a timed-out fixture (or a timeout that never fires).
+    # NaN compares false to everything, and `inf` would pass a timed-out fixture (or never fire).
     if not _finite_positive(args.max_p95_latency):
         parser.error("--max-p95-latency must be a positive number")
     if not (_finite_positive(args.llm_timeout) and _finite_positive(args.request_timeout)):

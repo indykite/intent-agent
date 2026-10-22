@@ -1,6 +1,4 @@
-"""The `python -m evals` entrypoint (evals/__main__.py): argument handling, fixture selection,
-the report outputs and the exit status the CI gate relies on.
-"""
+"""The `python -m evals` entrypoint: arguments, fixture selection, report outputs and exit status."""
 
 import json
 import logging
@@ -28,12 +26,9 @@ def _results_for(fixtures, *, failing=(), latency=0.0):
 
 @pytest.fixture
 def suite(tmp_path, eval_fixture_file, baseline_env, monkeypatch, caplog):
-    """A fixture directory with a passing suite and the env Settings needs - and no `.env` in the
-    working directory, so a developer's own file can't leak into the run. main() quietens the
-    `indykite` logger for the whole process; caplog restores both levels at teardown so the
-    schema tests' log assertions aren't affected by running after these.
-    """
+    """A passing fixture directory and the Settings env, run from tmp_path so no developer `.env` leaks in."""
     monkeypatch.chdir(tmp_path)
+    # main() quietens the `indykite` logger; caplog restores its level so later tests' log assertions still work.
     caplog.set_level(logging.INFO, logger="evals")
     caplog.set_level(logging.getLogger("indykite").level, logger="indykite")
     baseline_env()
@@ -84,7 +79,6 @@ def test_gate_failure_exits_one(suite, run_suite, capsys, caplog):
 
 
 def test_latency_failure_exits_one(suite, run_suite, capsys):
-    """A p95 over the limit fails the run like any other gate: the PRD's 10 s is a release gate."""
     run_suite.latency = 30.0
 
     assert main(["--fixtures", str(suite)]) == EXIT_GATE_FAILED
@@ -129,10 +123,7 @@ def test_only_subset_with_an_adversarial_fixture_passes_without_the_other_catego
 
 
 def test_suite_runs_under_its_own_timeouts_not_the_services(suite, run_suite, monkeypatch):
-    """The pipeline's production timeouts (3 s / 10 s) would turn a slow provider into wrong
-    answers; the suite substitutes generous ones so slowness lands on the latency gate instead,
-    and the flags override them. `.env`-style values for the two are ignored either way.
-    """
+    """Generous suite timeouts (overridable by flag) replace the env ones, so slowness lands on the latency gate."""
     monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "3")
     monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "10")
 
@@ -200,7 +191,6 @@ def test_out_of_range_arguments_are_rejected_by_argparse(suite, run_suite, argv)
 
 
 def test_malformed_schema_file_is_a_usage_error(suite, run_suite, caplog):
-    """A bad data-model file follows the same path as a bad fixture: logged, exit 2, no run."""
     from evals.fixtures import load_schema
 
     (suite / "schema" / "user_model_schema.json").write_text("{", encoding="utf-8")

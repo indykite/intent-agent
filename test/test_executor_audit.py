@@ -1,7 +1,4 @@
-"""IntentExecutor emits exactly one TDD 4.9 audit record per request - on success, on a rejected
-token (like the IAG audits every rejection), and on an unexpected failure - and (ENG-9804) the
-A2A task's own terminal state reflects that same success/failure classification.
-"""
+"""IntentExecutor audits every request exactly once and sets the task's terminal state to match."""
 
 import asyncio
 import json
@@ -33,12 +30,8 @@ _DEFAULT_METADATA = object()
 
 
 def _context(headers, *, metadata=_DEFAULT_METADATA, authenticated=True):
-    """A RequestContext carrying `headers` and a one-part user message, as the A2A routes
-    build it, for an authenticated caller unless `authenticated=False`. subject_type/subject_id
-    now come from the message's metadata (the caller resolves them, not a token) - defaults to a
-    full pair so most tests don't need to specify it; a test exercising the metadata itself (e.g.
-    a missing subject_type, or no metadata object at all - pass metadata=None for that) passes its
-    own.
+    """A RequestContext with `headers` and a one-part user message, for an authenticated caller unless
+    `authenticated=False`; metadata defaults to a full subject (pass metadata=None for none).
     """
     user = StarletteUser(SimpleUser("caller-1")) if authenticated else UnauthenticatedUser()
     message = a2a_types.Message(
@@ -66,9 +59,7 @@ def _executor(baseline_env, mocker, *, result=None, run_extraction=None):
 
 
 def _execute(executor, context, mocker):
-    """Run one request through the executor with a fake event queue, returned so a test can
-    inspect which events it was sent (e.g. the terminal TaskStatusUpdateEvent, ENG-9804).
-    """
+    """Run one request through the executor and return the fake event queue."""
     event_queue = mocker.Mock(enqueue_event=mocker.AsyncMock())
     asyncio.run(executor.execute(context, event_queue))
     return event_queue
@@ -84,37 +75,25 @@ def _status_events(event_queue):
 
 
 def _terminal_task_state(event_queue):
-    """The State of the last TaskStatusUpdateEvent enqueued - the task's own final word on
-    whether the request succeeded, distinct from the audit record's `outcome`.
-    """
+    """The State of the last TaskStatusUpdateEvent enqueued."""
     return _status_events(event_queue)[-1].state
 
 
 def _history_summary_message(event_queue):
-    """The summary message text that ends up as the task's last `history` entry (ENG-9804).
-
-    One last WORKING status carries this message, followed by a message-free terminal status -
-    a2a's TaskManager only archives a status's message into `history` once a *later*
-    TaskStatusUpdateEvent supersedes it, so the WORKING update's message ends up in history and
-    the truly final status is left message-free; see executor.py's _emit_terminal_status for the
-    full mechanism. Asserts that shape holds (the last status has no message of its own) rather than
-    just reading whichever status happens to carry one.
-    """
+    """The summary text on the last WORKING status, which a2a archives into history before the terminal one."""
     statuses = _status_events(event_queue)
     assert not statuses[-1].HasField("message"), "the final status must be message-free"
     return statuses[-2].message.parts[0].text
 
 
 def _sole_record(sender):
-    """The one record the request produced - exactly one, per TDD 4.9."""
+    """The one record the request produced, asserting there is exactly one."""
     assert sender.send.await_count == _MAX_RECORDS_PER_REQUEST
     return sender.send.await_args.args[0]
 
 
 def test_success_records_the_extraction(baseline_env, mocker):
-    """The terminal record carries the pipeline's classification, the token's subject, the A2A
-    context id, the caller's request id, and what the caller was sent.
-    """
+    """The record carries the pipeline's classification, the subject, the ids and what the caller was sent."""
     result = ExtractionResult(
         text="{...}",
         outcome=Outcome.SUCCESS,
@@ -152,24 +131,7 @@ def test_success_records_the_extraction(baseline_env, mocker):
 
 
 def test_audit_ordering_around_the_terminal_task_event(baseline_env, mocker):
-    """Two properties about where the audit write sits relative to the terminal Task status
-    event, both regressions for the same CI-only failure (the audit file ended up empty despite
-    a fully correct response):
-
-    1. The audit write must happen before the terminal event reaches the queue -
-       DefaultRequestHandler.on_message_send returns to the caller as soon as its own
-       subscription observes that event, via a separate producer/consumer task racing this
-       coroutine's own remaining code (see executor.py's _emit_terminal_status). Auditing only
-       after enqueuing the terminal event lets a short-lived event loop driving the request
-       (e.g. starlette's TestClient without `with client:`) tear itself down once the response
-       is sent, before this coroutine's own tail finishes - dropping the record.
-    2. A failure enqueuing that event, after the record was already written, must not be
-       treated by execute()'s `except Exception` handler as a fresh failure and produce a
-       second, synthetic record for the same request - enforced structurally (see
-       _emit_terminal_status's docstring: it runs after execute()'s own `try` block, outside
-       of it, so a failure there can never reach either `except` clause a second time), not by
-       a guard flag.
-    """
+    """The audit record is written before the terminal event, and a failed enqueue doesn't add a second one."""
     success_result = ExtractionResult(text="{...}", outcome=Outcome.SUCCESS, evaluations=_EVALUATIONS)
 
     executor, sender, _agent = _executor(baseline_env, mocker, result=success_result)
@@ -213,13 +175,7 @@ def test_audit_ordering_around_the_terminal_task_event(baseline_env, mocker):
     ids=["validation_failed", "unmatched", "error"],
 )
 def test_non_success_outcomes_surface_as_task_state_failed(baseline_env, mocker, outcome):
-    """The task's own terminal state must tell the caller success from failure without them
-    having to parse the artifact JSON for an "error" key (ENG-9804) - every outcome other than
-    SUCCESS (a validation failure, no-intent/unmatched, a timeout or other pipeline error)
-    surfaces as TASK_STATE_FAILED, never TASK_STATE_COMPLETED - with a fixed summary message
-    (the detailed reason stays in the artifact JSON, not duplicated here), not left on the
-    pre-extraction "Extracting intent..." placeholder.
-    """
+    """Every non-success outcome ends the task as TASK_STATE_FAILED with a fixed summary message."""
     executor, _sender, _agent = _executor(
         baseline_env, mocker, result=ExtractionResult(text="{...}", outcome=outcome, message="did not work out")
     )
@@ -231,10 +187,7 @@ def test_non_success_outcomes_surface_as_task_state_failed(baseline_env, mocker,
 
 
 def test_policy_fetch_failure_is_recorded_on_the_audit_trail(baseline_env, mocker):
-    """When the pipeline couldn't retrieve policies (ENG-9671), the audit record carries that
-    alongside the caller-facing `context.parameters.policy_fetch_failed` marker, for server-side
-    visibility even though the request itself still succeeds.
-    """
+    """A failed policy fetch is recorded on the audit record even when the request succeeds."""
     result = ExtractionResult(
         text="{...}",
         outcome=Outcome.SUCCESS,
@@ -252,7 +205,7 @@ def test_policy_fetch_failure_is_recorded_on_the_audit_trail(baseline_env, mocke
 
 
 def test_generates_a_request_id_when_the_caller_sends_none(baseline_env, mocker):
-    """No X-Request-ID means a server-generated UUID (TDD: `request_id` (UUID), server)."""
+    """No X-Request-ID means a server-generated UUID."""
     executor, sender, _agent = _executor(
         baseline_env,
         mocker,
@@ -268,10 +221,7 @@ def test_generates_a_request_id_when_the_caller_sends_none(baseline_env, mocker)
 
 
 def test_unauthenticated_call_is_audited_as_error_and_still_rejected(baseline_env, mocker):
-    """An unauthenticated call reaching the executor (the middleware wasn't wired) fails closed
-    as InternalError (JSON-RPC -32603, a wiring bug, not the caller's) AND is audited with the
-    same message.
-    """
+    """An unauthenticated call reaching the executor is InternalError, audited with the same message."""
     executor, sender, agent = _executor(baseline_env, mocker)
 
     with pytest.raises(InternalError) as excinfo:
@@ -288,9 +238,7 @@ def test_unauthenticated_call_is_audited_as_error_and_still_rejected(baseline_en
 
 
 def test_missing_subject_type_is_audited_as_error_and_rejected(baseline_env, mocker):
-    """A caller-supplied subject_type is required (IAG resolves and supplies it, not the
-    token) - missing/blank it is InvalidParamsError (JSON-RPC -32602), audited with its message.
-    """
+    """A missing subject_type is InvalidParamsError, audited as `error` with its message."""
     executor, sender, agent = _executor(baseline_env, mocker)
 
     context = _context({"authorization": "Bearer good-token"}, metadata={"subject_id": "user-1"})
@@ -305,11 +253,7 @@ def test_missing_subject_type_is_audited_as_error_and_rejected(baseline_env, moc
 
 
 def test_missing_subject_id_is_audited_as_error_and_rejected(baseline_env, mocker):
-    """A caller-supplied subject_id is required too (ENG-9810) - it used to come reliably from
-    the token's own sub claim, so a missing one now is a caller-side bug (IAG forgot to resolve
-    and attach the caller's identity), not a legitimate anonymous-caller request. Missing/blank
-    is InvalidParamsError, audited the same way a missing subject_type is.
-    """
+    """A missing subject_id is InvalidParamsError, audited like a missing subject_type."""
     executor, sender, agent = _executor(baseline_env, mocker)
 
     context = _context({"authorization": "Bearer good-token"}, metadata={"subject_type": "Customer"})
@@ -323,9 +267,7 @@ def test_missing_subject_id_is_audited_as_error_and_rejected(baseline_env, mocke
 
 
 def test_whitespace_only_subject_type_is_audited_as_error_and_rejected(baseline_env, mocker):
-    """A whitespace-only subject_type must count as blank - the same InvalidParamsError as a
-    missing one, not a value that happens to be truthy and slips past the check.
-    """
+    """A whitespace-only subject_type counts as missing."""
     executor, sender, agent = _executor(baseline_env, mocker)
 
     context = _context({"authorization": "Bearer good-token"}, metadata={"subject_type": "   "})
@@ -340,9 +282,7 @@ def test_whitespace_only_subject_type_is_audited_as_error_and_rejected(baseline_
 
 @pytest.mark.parametrize("key", ["subject_type", "subject_id"])
 def test_non_string_metadata_value_is_audited_as_error_and_rejected(baseline_env, mocker, key):
-    """A non-string subject_type/subject_id (e.g. a nested object) must be rejected outright,
-    not silently str()-coerced into a Python repr and bound into every evaluation/audit record.
-    """
+    """A non-string subject_type/subject_id is rejected rather than str()-coerced."""
     executor, sender, agent = _executor(baseline_env, mocker)
 
     context = _context(
@@ -359,10 +299,7 @@ def test_non_string_metadata_value_is_audited_as_error_and_rejected(baseline_env
 
 
 def test_missing_metadata_object_is_audited_as_error_and_rejected(baseline_env, mocker):
-    """A message with no metadata object at all (metadata=None, not just an empty/incomplete
-    one) must be the same InvalidParamsError as a missing subject_type, not an unhandled
-    TypeError from treating None as a mapping.
-    """
+    """A message with no metadata object is the same InvalidParamsError as a missing subject_type."""
     executor, sender, agent = _executor(baseline_env, mocker)
 
     context = _context({"authorization": "Bearer good-token"}, metadata=None)
@@ -444,9 +381,7 @@ def test_rejected_request_without_a_readable_message_is_still_audited(baseline_e
     ],
 )
 def test_llm_provider_is_derived_from_the_configured_model(baseline_env, monkeypatch, mocker, model, provider):
-    """llm_provider comes from GEMINI_MODEL, not a hard-coded constant, so the record can't
-    disagree with what is configured - the family prefix of the model name.
-    """
+    """llm_provider is the family prefix of the configured GEMINI_MODEL."""
     baseline_env()
     monkeypatch.setenv("GEMINI_MODEL", model)
     executor, sender, _agent = _executor(
@@ -461,9 +396,7 @@ def test_llm_provider_is_derived_from_the_configured_model(baseline_env, monkeyp
 
 
 def test_audit_failure_does_not_change_a_successful_request(baseline_env, mocker, caplog):
-    """A sender that blows up (against its own contract) must not turn a request whose artifact
-    the caller already has into an error - it is logged with the request id instead.
-    """
+    """A raising audit sender doesn't fail a successful request; the failure is logged."""
     caplog.set_level("ERROR")
     executor, sender, _agent = _executor(
         baseline_env, mocker, result=ExtractionResult(text="{...}", outcome=Outcome.SUCCESS)
@@ -478,9 +411,7 @@ def test_audit_failure_does_not_change_a_successful_request(baseline_env, mocker
 
 
 def test_audit_failure_does_not_override_the_rejection(baseline_env, mocker, caplog):
-    """A sender failure while auditing a rejection must not replace it with the sender's own
-    exception - the caller still gets the rejection, and the audit failure is logged.
-    """
+    """A raising audit sender doesn't replace the rejection; the failure is logged."""
     caplog.set_level("ERROR")
     executor, sender, _agent = _executor(baseline_env, mocker)
     sender.send.side_effect = RuntimeError("audit backend down")
@@ -493,9 +424,7 @@ def test_audit_failure_does_not_override_the_rejection(baseline_env, mocker, cap
 
 
 def test_unexpected_failure_is_audited_and_re_raised(baseline_env, mocker):
-    """A crash inside the pipeline still leaves one record behind (outcome=error, the exception
-    as the message) and still propagates - auditing must never swallow the failure.
-    """
+    """A pipeline crash is audited as `error` and still propagates."""
     executor, sender, _agent = _executor(
         baseline_env, mocker, run_extraction=mocker.AsyncMock(side_effect=RuntimeError("boom"))
     )

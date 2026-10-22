@@ -12,18 +12,14 @@ _DEFAULT_LLM_TIMEOUT_SECONDS = 3.0
 _DEFAULT_SCHEMA_FETCH_TIMEOUT_SECONDS = 3.0
 _DEFAULT_POLICY_FETCH_TIMEOUT_SECONDS = 2.0
 _DEFAULT_VALIDATION_MAX_RETRIES = 1
-# PRD: a request must be answered within 10s end to end. REQUEST_TIMEOUT_SECONDS enforces it;
-# the per-call default is sized so the common path (skill activation, answer, one retry
-# answer) fits inside it, with extra tool-call rounds still cut off by the request deadline.
+# The common path (skill activation, answer, one retry answer) must fit the 10s request budget.
 _PRD_REQUEST_BUDGET_SECONDS = 10.0
 _LLM_CALLS_ON_COMMON_RETRIED_PATH = 3
 
 
 @pytest.fixture(autouse=True)
 def _clean_settings_env(monkeypatch):
-    """Strip every Settings field's env var so ambient/shell env can't leak into a test -
-    each test opts back in explicitly via _set_baseline_env/monkeypatch.setenv.
-    """
+    """Strip every Settings field's env var so the shell environment can't leak into a test."""
     for field_name in Settings.model_fields:
         monkeypatch.delenv(field_name.upper(), raising=False)
 
@@ -36,8 +32,7 @@ def _set_baseline_env(monkeypatch):
     monkeypatch.setenv("INTROSPECT_CLIENT_SECRET", "client-secret")
     monkeypatch.setenv("IK_APP_AGENT_KEY", "test-app-agent-key")
     monkeypatch.setenv("INDYKITE_BASE_URL", "https://ikg.example.com")
-    # AUDIT_DELIVERY is required (TDD 4.9: every request produces a record); Settings never
-    # creates the directory, so a placeholder path is fine here.
+    # Settings never creates the directory, so a placeholder path is fine.
     monkeypatch.setenv("AUDIT_DELIVERY", "file")
     monkeypatch.setenv("AUDIT_FILE_STORAGE_PATH", "./.private/audit-never-created")
     monkeypatch.setenv("AUDIT_FILE_FORMAT", "json")
@@ -52,10 +47,11 @@ def _set_webhook_env(monkeypatch, auth_type="no-auth"):
     monkeypatch.setenv("AUDIT_HTTP_AUTH_TYPE", auth_type)
 
 
-def test_requires_gemini_api_key(monkeypatch):
-    """Settings must fail fast when GEMINI_API_KEY is missing, not default to empty."""
+@pytest.mark.parametrize("env_var", ["GEMINI_API_KEY", "IK_APP_AGENT_KEY", "INDYKITE_BASE_URL"])
+def test_requires_setting(monkeypatch, env_var):
+    """Settings fails fast when a required setting is missing, instead of defaulting to blank."""
     _set_baseline_env(monkeypatch)
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv(env_var, raising=False)
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
 
@@ -83,10 +79,25 @@ def test_defaults(monkeypatch):
     assert settings.expected_token_audience == "intent_agent"  # noqa: S105 - an aud value, not a secret
 
 
-def test_rejects_blank_gemini_api_key(monkeypatch):
-    """A whitespace-only GEMINI_API_KEY must fail validation, not be treated as set."""
+@pytest.mark.parametrize(
+    ("env_var", "value"),
+    [
+        pytest.param("GEMINI_API_KEY", "   ", id="blank_gemini_api_key"),
+        pytest.param("IK_APP_AGENT_KEY", "   ", id="blank_ik_app_agent_key"),
+        pytest.param("INDYKITE_BASE_URL", "   ", id="blank_indykite_base_url"),
+        pytest.param("BIND_HOST", "not-an-ip", id="malformed_bind_host"),
+        pytest.param("LOG_LEVEL", "TRACE", id="unknown_log_level"),
+        pytest.param("EXPECTED_TOKEN_AUDIENCE", "   ", id="blank_expected_token_audience"),
+        pytest.param("CACHE_BACKEND", "redis", id="redis_backend_without_redis_url"),
+        pytest.param("CACHE_BACKEND", "memcached", id="unknown_cache_backend"),
+        pytest.param("VALIDATION_MAX_RETRIES", "-1", id="negative_validation_max_retries"),
+        pytest.param("AUDIT_DELIVERY", "stdout", id="unknown_audit_delivery"),
+    ],
+)
+def test_rejects_invalid_setting(monkeypatch, env_var, value):
+    """A blank, malformed or unsupported setting fails validation at startup."""
     _set_baseline_env(monkeypatch)
-    monkeypatch.setenv("GEMINI_API_KEY", "   ")
+    monkeypatch.setenv(env_var, value)
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
 
@@ -99,22 +110,6 @@ def test_gemini_api_key_does_not_leak_in_repr(monkeypatch):
     assert settings.gemini_api_key.get_secret_value() == "test-key"
 
 
-def test_requires_ik_app_agent_key(monkeypatch):
-    """Settings must fail fast when IK_APP_AGENT_KEY is missing, not default to blank."""
-    _set_baseline_env(monkeypatch)
-    monkeypatch.delenv("IK_APP_AGENT_KEY", raising=False)
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
-
-
-def test_rejects_blank_ik_app_agent_key(monkeypatch):
-    """A whitespace-only IK_APP_AGENT_KEY must fail validation, not be treated as set."""
-    _set_baseline_env(monkeypatch)
-    monkeypatch.setenv("IK_APP_AGENT_KEY", "   ")
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
-
-
 def test_ik_app_agent_key_does_not_leak_in_repr(monkeypatch):
     """SecretStr must mask IK_APP_AGENT_KEY from logs/tracebacks that repr() the Settings object."""
     _set_baseline_env(monkeypatch)
@@ -122,43 +117,19 @@ def test_ik_app_agent_key_does_not_leak_in_repr(monkeypatch):
     assert "test-app-agent-key" not in repr(settings)
 
 
-@pytest.mark.parametrize("bad_url", ["not-a-url", "ftp://ikg.example.com"])
-def test_rejects_malformed_indykite_base_url(monkeypatch, bad_url):
-    """INDYKITE_BASE_URL must be a well-formed http(s) URL, not just any non-blank string."""
+@pytest.mark.parametrize(
+    ("env_var", "bad_url"),
+    [
+        ("INDYKITE_BASE_URL", "not-a-url"),
+        ("INDYKITE_BASE_URL", "ftp://ikg.example.com"),
+        ("INTROSPECT_URL", "not-a-url"),
+        ("INTROSPECT_URL", "ftp://idp.example.com/introspect"),
+    ],
+)
+def test_rejects_malformed_url(monkeypatch, env_var, bad_url):
+    """URL settings must be well-formed http(s) URLs, not just any non-blank string."""
     _set_baseline_env(monkeypatch)
-    monkeypatch.setenv("INDYKITE_BASE_URL", bad_url)
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
-
-
-def test_requires_indykite_base_url(monkeypatch):
-    """Settings must fail fast when INDYKITE_BASE_URL is missing, not default to blank."""
-    _set_baseline_env(monkeypatch)
-    monkeypatch.delenv("INDYKITE_BASE_URL", raising=False)
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
-
-
-def test_rejects_blank_indykite_base_url(monkeypatch):
-    """A blank/whitespace-only INDYKITE_BASE_URL must fail validation, not be treated as set."""
-    _set_baseline_env(monkeypatch)
-    monkeypatch.setenv("INDYKITE_BASE_URL", "   ")
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
-
-
-def test_rejects_malformed_bind_host(monkeypatch):
-    """BIND_HOST must be a valid IP address, not an arbitrary hostname."""
-    _set_baseline_env(monkeypatch)
-    monkeypatch.setenv("BIND_HOST", "not-an-ip")
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
-
-
-def test_rejects_unknown_log_level(monkeypatch):
-    """LOG_LEVEL must be one of the standard logging levels, not an arbitrary string."""
-    _set_baseline_env(monkeypatch)
-    monkeypatch.setenv("LOG_LEVEL", "TRACE")
+    monkeypatch.setenv(env_var, bad_url)
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
 
@@ -191,20 +162,9 @@ def test_rejects_matching_intent_and_health_ports(monkeypatch):
     ],
 )
 def test_rejects_missing_or_blank_introspect_config(monkeypatch, env_var, make_invalid):
-    """Settings must fail fast when introspection config is missing or whitespace-only,
-    not default to/treat it as blank.
-    """
+    """Missing or whitespace-only introspection config must fail validation."""
     _set_baseline_env(monkeypatch)
     make_invalid(monkeypatch, env_var)
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
-
-
-@pytest.mark.parametrize("bad_url", ["not-a-url", "ftp://idp.example.com/introspect"])
-def test_rejects_malformed_introspect_url(monkeypatch, bad_url):
-    """INTROSPECT_URL must be a well-formed http(s) URL, not just any non-blank string."""
-    _set_baseline_env(monkeypatch)
-    monkeypatch.setenv("INTROSPECT_URL", bad_url)
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
 
@@ -225,23 +185,11 @@ def test_introspect_client_secret_does_not_leak_in_repr(monkeypatch):
 
 
 def test_expected_token_audience_is_overridable(monkeypatch):
-    """EXPECTED_TOKEN_AUDIENCE must override the intent_agent_name-matching default - an IdP that
-    registers a different resource identifier for this agent must be able to configure it.
-    """
+    """EXPECTED_TOKEN_AUDIENCE overrides the intent_agent_name-matching default."""
     _set_baseline_env(monkeypatch)
     monkeypatch.setenv("EXPECTED_TOKEN_AUDIENCE", "custom-resource-id")
     settings = Settings(_env_file=None)
     assert settings.expected_token_audience == "custom-resource-id"  # noqa: S105 - an aud value, not a secret
-
-
-def test_rejects_blank_expected_token_audience(monkeypatch):
-    """A whitespace-only EXPECTED_TOKEN_AUDIENCE must fail validation, not silently accept every
-    audience (an empty expected value would make the `in` check in auth.py meaningless).
-    """
-    _set_baseline_env(monkeypatch)
-    monkeypatch.setenv("EXPECTED_TOKEN_AUDIENCE", "   ")
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
 
 
 @pytest.mark.parametrize(
@@ -254,19 +202,9 @@ def test_rejects_blank_expected_token_audience(monkeypatch):
     ],
 )
 def test_rejects_invalid_redis_url(monkeypatch, value):
-    """A malformed/whitespace-only REDIS_URL, an out-of-range port, or a non-redis scheme must
-    all fail validation - only a truly blank REDIS_URL disables Redis (see test_defaults).
-    """
+    """A malformed, whitespace-only, out-of-range-port or non-redis REDIS_URL must fail validation."""
     _set_baseline_env(monkeypatch)
     monkeypatch.setenv("REDIS_URL", value)
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
-
-
-def test_rejects_redis_backend_without_redis_url(monkeypatch):
-    """CACHE_BACKEND=redis with no REDIS_URL must fail fast - there's nothing to connect to."""
-    _set_baseline_env(monkeypatch)
-    monkeypatch.setenv("CACHE_BACKEND", "redis")
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
 
@@ -278,14 +216,6 @@ def test_accepts_redis_backend_with_redis_url(monkeypatch):
     monkeypatch.setenv("REDIS_URL", "redis://redis.example.com:6379")
     settings = Settings(_env_file=None)
     assert settings.cache_backend == "redis"
-
-
-def test_rejects_unknown_cache_backend(monkeypatch):
-    """CACHE_BACKEND must be one of the two supported backends, not an arbitrary string."""
-    _set_baseline_env(monkeypatch)
-    monkeypatch.setenv("CACHE_BACKEND", "memcached")
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
 
 
 @pytest.mark.parametrize("ttl", [0, -1])
@@ -306,24 +236,16 @@ def test_rejects_non_positive_schema_refresh_ttl(monkeypatch, ttl):
         "INTROSPECT_TIMEOUT_SECONDS",
         "LLM_TIMEOUT_SECONDS",
         "REQUEST_TIMEOUT_SECONDS",
+        "AUDIT_ASYNC_BUFFER_SIZE",
+        "AUDIT_FILE_ROTATION_INTERVAL_SECONDS",
+        "AUDIT_FILE_ROTATION_MAX_BYTES",
     ],
 )
 @pytest.mark.parametrize("value", [0, -1])
 def test_rejects_non_positive_numeric_settings(monkeypatch, env_var, value):
-    """TOOL_CALL_MAX_ITERATIONS, SCHEMA_PREVIEW_CHARS, and the timeout fields must all be
-    strictly positive - zero or negative would either skip the tool-call loop entirely,
-    truncate every schema preview to nothing, or make an instantly-timing-out call.
-    """
+    """Iteration, preview-size, timeout and audit-limit settings must be strictly positive."""
     _set_baseline_env(monkeypatch)
     monkeypatch.setenv(env_var, str(value))
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
-
-
-def test_rejects_negative_validation_max_retries(monkeypatch):
-    """VALIDATION_MAX_RETRIES is a count of extra attempts - negative is meaningless."""
-    _set_baseline_env(monkeypatch)
-    monkeypatch.setenv("VALIDATION_MAX_RETRIES", "-1")
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
 
@@ -336,18 +258,7 @@ def test_accepts_zero_validation_max_retries(monkeypatch):
 
 
 def test_default_timeouts_match_prd_request_budget(monkeypatch):
-    """REQUEST_TIMEOUT_SECONDS defaults to the PRD's 10s end-to-end limit, and the per-call
-    default is sized so the common retried path (activation + answer + one retry answer, each
-    at the per-call limit) fits inside it - Gemini's own 10s client default would not. Guards
-    against bumping either default without redoing that arithmetic.
-
-    The schema/policy fetch defaults (ENG-9671: both moved inside this same deadline) each fit
-    the same per-field rule the reject validator enforces, but their sum is not also claimed to
-    fit alongside the LLM path above - the LLM path's own worst case already leaves it almost no
-    room on its own, the same way it did before either fetch moved inside this deadline; the
-    request-level asyncio.timeout, not this arithmetic, is what actually bounds a request that
-    hits several of these ceilings at once.
-    """
+    """Default timeouts fit the 10s request budget: three LLM calls together, each fetch on its own."""
     _set_baseline_env(monkeypatch)
     settings = Settings(_env_file=None)
     assert settings.request_timeout_seconds <= _PRD_REQUEST_BUDGET_SECONDS
@@ -366,10 +277,7 @@ def test_default_timeouts_match_prd_request_budget(monkeypatch):
     ],
 )
 def test_rejects_a_fetch_or_llm_timeout_longer_than_request_timeout(monkeypatch, env_var, value):
-    """A per-call limit above the whole-request deadline could never fire first - dead config,
-    for the LLM call and, since ENG-9671 moved both inside the same deadline, the schema and
-    policy fetch too.
-    """
+    """A per-call LLM or fetch timeout above REQUEST_TIMEOUT_SECONDS is rejected as dead config."""
     _set_baseline_env(monkeypatch)
     monkeypatch.setenv(env_var, value)
     monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "10")
@@ -378,14 +286,7 @@ def test_rejects_a_fetch_or_llm_timeout_longer_than_request_timeout(monkeypatch,
 
 
 def test_accepts_fetch_timeouts_whose_retry_multiplied_sum_exceeds_the_request_budget(monkeypatch):
-    """The fetch-timeout validator is deliberately per-field only, not a combined/retry-
-    multiplied budget (review) - a schema timeout of 9s plus two 9s policy attempts (27s worst
-    case) must be accepted here, same as LLM_TIMEOUT_SECONDS is never checked against
-    TOOL_CALL_MAX_ITERATIONS/VALIDATION_MAX_RETRIES multiplying its own worst case either.
-    asyncio.timeout(REQUEST_TIMEOUT_SECONDS) is what actually enforces the total budget by
-    cutting off whichever phase is in flight, not a requirement that every possible combination
-    of retries mathematically sums to fit underneath it.
-    """
+    """Fetch timeouts are checked per field only; the request deadline bounds their combined worst case."""
     _set_baseline_env(monkeypatch)
     monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "10")
     monkeypatch.setenv("SCHEMA_FETCH_TIMEOUT_SECONDS", "9")
@@ -403,26 +304,15 @@ _DEFAULT_AUDIT_HTTP_TIMEOUT_SECONDS = 5.0
 
 
 def test_requires_audit_delivery(monkeypatch):
-    """Unlike the IAG (audit section absent = auditing off), AUDIT_DELIVERY has no default: the
-    TDD requires every request to produce an audit record, so a deployment can't silently
-    run without one configured.
-    """
+    """AUDIT_DELIVERY has no default, so a deployment can't silently run unaudited."""
     _set_baseline_env(monkeypatch)
     monkeypatch.delenv("AUDIT_DELIVERY", raising=False)
     with pytest.raises(ValidationError, match="audit_delivery"):
         Settings(_env_file=None)
 
 
-def test_rejects_unknown_audit_delivery(monkeypatch):
-    """AUDIT_DELIVERY is `file` or `webhook`, the IAG's two delivery types - nothing else."""
-    _set_baseline_env(monkeypatch)
-    monkeypatch.setenv("AUDIT_DELIVERY", "stdout")
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
-
-
 def test_audit_defaults_match_the_iag(monkeypatch):
-    """Every optional audit setting defaults to the IAG's documented default."""
+    """Every optional audit setting falls back to its documented default."""
     _set_baseline_env(monkeypatch)
     settings = Settings(_env_file=None)
     assert settings.audit_async is False
@@ -438,7 +328,7 @@ def test_audit_defaults_match_the_iag(monkeypatch):
     ["AUDIT_FILE_STORAGE_PATH", "AUDIT_FILE_FORMAT", "AUDIT_FILE_ROTATION_STRATEGY"],
 )
 def test_file_delivery_requires_its_settings(monkeypatch, env_var):
-    """AUDIT_DELIVERY=file without path/format/rotation fails at startup (IAG FileConfig rules)."""
+    """AUDIT_DELIVERY=file without path/format/rotation fails at startup."""
     _set_baseline_env(monkeypatch)
     monkeypatch.delenv(env_var, raising=False)
     with pytest.raises(ValidationError, match="audit: "):
@@ -450,22 +340,9 @@ def test_file_delivery_requires_its_settings(monkeypatch, env_var):
     [("AUDIT_FILE_FORMAT", "yaml"), ("AUDIT_FILE_ROTATION_STRATEGY", "daily")],
 )
 def test_rejects_unknown_file_format_or_rotation(monkeypatch, env_var, value):
-    """Formats are csv/json/txt and rotation is time/size/size-and-time, as documented for the IAG."""
+    """Formats are csv/json/txt and rotation is time/size/size-and-time."""
     _set_baseline_env(monkeypatch)
     monkeypatch.setenv(env_var, value)
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
-
-
-@pytest.mark.parametrize(
-    "env_var",
-    ["AUDIT_ASYNC_BUFFER_SIZE", "AUDIT_FILE_ROTATION_INTERVAL_SECONDS", "AUDIT_FILE_ROTATION_MAX_BYTES"],
-)
-@pytest.mark.parametrize("value", [0, -1])
-def test_rejects_non_positive_audit_limits(monkeypatch, env_var, value):
-    """A zero/negative queue size, rotation interval or size limit would rotate or drop on every record."""
-    _set_baseline_env(monkeypatch)
-    monkeypatch.setenv(env_var, str(value))
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
 
@@ -479,7 +356,7 @@ def test_rejects_non_positive_audit_limits(monkeypatch, env_var, value):
     ],
 )
 def test_webhook_delivery_requires_its_settings(monkeypatch, env_var, expected):
-    """AUDIT_DELIVERY=webhook without url/method/auth fails at startup (IAG HTTPConfig rules)."""
+    """AUDIT_DELIVERY=webhook without url/method/auth fails at startup."""
     _set_baseline_env(monkeypatch)
     _set_webhook_env(monkeypatch)
     monkeypatch.delenv(env_var, raising=False)
@@ -488,7 +365,7 @@ def test_webhook_delivery_requires_its_settings(monkeypatch, env_var, expected):
 
 
 def test_webhook_method_is_case_insensitive(monkeypatch):
-    """`post`/`put` in any case are accepted and normalised, like the IAG's strings.ToUpper."""
+    """`post`/`put` in any case are accepted and normalised to upper case."""
     _set_baseline_env(monkeypatch)
     _set_webhook_env(monkeypatch)
     monkeypatch.setenv("AUDIT_HTTP_METHOD", "put")
@@ -505,11 +382,15 @@ def test_rejects_other_webhook_methods(monkeypatch, method):
         Settings(_env_file=None)
 
 
-def test_mtls_requires_certificate_and_key(monkeypatch):
-    """The IAG's rule, verbatim in spirit: mTLS needs both files, named at startup."""
+@pytest.mark.parametrize(
+    ("auth_type", "message"),
+    [("mTLS", "mTLS requires"), ("api-key", "api-key auth requires AUDIT_HTTP_API_KEY")],
+)
+def test_webhook_auth_requires_credentials(monkeypatch, auth_type, message):
+    """mTLS needs a certificate and a key file; api-key auth needs a key."""
     _set_baseline_env(monkeypatch)
-    _set_webhook_env(monkeypatch, auth_type="mTLS")
-    with pytest.raises(ValidationError, match="mTLS requires"):
+    _set_webhook_env(monkeypatch, auth_type=auth_type)
+    with pytest.raises(ValidationError, match=message):
         Settings(_env_file=None)
 
 
@@ -520,14 +401,6 @@ def test_mtls_files_must_exist(monkeypatch, tmp_path):
     monkeypatch.setenv("AUDIT_HTTP_MTLS_CERTIFICATE_FILE_PATH", str(tmp_path / "missing-cert.pem"))
     monkeypatch.setenv("AUDIT_HTTP_MTLS_PRIVATE_KEY_PATH", str(tmp_path / "missing-key.pem"))
     with pytest.raises(ValidationError):
-        Settings(_env_file=None)
-
-
-def test_api_key_auth_requires_a_key(monkeypatch):
-    """The IAG's rule: api-key auth without a key is a config error."""
-    _set_baseline_env(monkeypatch)
-    _set_webhook_env(monkeypatch, auth_type="api-key")
-    with pytest.raises(ValidationError, match="api-key auth requires AUDIT_HTTP_API_KEY"):
         Settings(_env_file=None)
 
 
@@ -542,7 +415,7 @@ def test_audit_api_key_does_not_leak_in_repr(monkeypatch):
 
 
 def test_rejects_unknown_audit_auth_type(monkeypatch):
-    """Auth is mTLS, no-auth or api-key - the IAG's three."""
+    """Audit auth type must be mTLS, no-auth or api-key."""
     _set_baseline_env(monkeypatch)
     _set_webhook_env(monkeypatch, auth_type="basic")
     with pytest.raises(ValidationError):

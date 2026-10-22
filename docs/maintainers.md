@@ -48,8 +48,7 @@ tests and SAST Linting run, and the `golden-evals` check is skipped (skipped cou
        git push origin fork-pr-<N>
        ```
 
-    3. Run it: **Actions** → **Golden eval suite** → **Run workflow** on `fork-pr-<N>`, and approve
-       the `evals` environment if asked.
+    3. Run it: **Actions** → **Golden eval suite** → **Run workflow** on `fork-pr-<N>`.
     4. Post the result on the pull request. Merge only if all gates pass.
     5. Delete the `fork-pr-<N>` branch.
 

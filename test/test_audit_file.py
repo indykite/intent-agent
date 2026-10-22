@@ -48,7 +48,7 @@ def _files(tmp_path, suffix):
 
 
 def test_creates_storage_path_and_names_files_like_the_iag(tmp_path, audit_message):
-    """`audit-<service>-<unixNano>.<format>` under a directory created on demand, file 0600."""
+    """`audit-<service>-<unixNano>.<format>` in a directory created on demand, file mode 0600."""
     sender = _sender(tmp_path)
     _send_all(sender, audit_message())
 
@@ -59,11 +59,7 @@ def test_creates_storage_path_and_names_files_like_the_iag(tmp_path, audit_messa
 
 
 def test_modes_are_pinned_regardless_of_umask(tmp_path, audit_message):
-    """The umask only ever strips bits from mkdir's/touch's mode - a hostile one (here: no
-    owner write) would leave a directory nothing can be created in and a file the sender
-    can't append to. Both modes are pinned after creation, so the record lands and the
-    directory and file end up exactly 0750 / 0600 either way.
-    """
+    """Even under a umask without owner write, the record lands and the modes end up 0750 / 0600."""
     previous_umask = os.umask(0o277)
     try:
         _send_all(_sender(tmp_path), audit_message())
@@ -78,9 +74,7 @@ def test_modes_are_pinned_regardless_of_umask(tmp_path, audit_message):
 
 
 def test_existing_storage_directory_keeps_its_mode(tmp_path, audit_message):
-    """An operator-provided directory is used as-is - its mode is theirs to decide, only a
-    directory the sender itself creates gets the pinned mode.
-    """
+    """Only a directory the sender creates gets the pinned mode; an operator's one is left as-is."""
     storage = tmp_path / "audit"
     storage.mkdir(mode=0o700)
     storage.chmod(0o700)
@@ -102,7 +96,7 @@ def test_json_format_writes_one_record_per_line(tmp_path, audit_message):
 
 
 def test_csv_format_writes_header_then_rows(tmp_path, audit_message):
-    """CSV: the TDD field names as the header row once per file, then one row per record."""
+    """CSV: the field names as a header row once per file, then one row per record."""
     _send_all(_sender(tmp_path, file_format="csv"), audit_message(), audit_message(request_id="req-2"))
 
     with _files(tmp_path, "csv")[0].open(encoding="utf-8", newline="") as handle:
@@ -115,7 +109,7 @@ def test_csv_format_writes_header_then_rows(tmp_path, audit_message):
 
 
 def test_txt_format_writes_bracketed_timestamp_and_key_value_pairs(tmp_path, audit_message):
-    """TXT, the IAG's shape: `[timestamp] field=value ...`, one record per line."""
+    """TXT: `[timestamp] field=value ...`, one record per line."""
     _send_all(_sender(tmp_path, file_format="txt"), audit_message(message="no bearer token"))
 
     line = _files(tmp_path, "txt")[0].read_text(encoding="utf-8")
@@ -136,11 +130,7 @@ def test_rotates_by_size(tmp_path, audit_message):
 
 
 def test_rotates_by_time(tmp_path, audit_message):
-    """`time`: a file older than rotation_interval_seconds is closed before the next record.
-
-    A zero interval means every file is "older than the interval" by the time a record
-    arrives, so each record lands in a fresh file (the one opened at construction stays empty).
-    """
+    """`time`: with a zero interval each record lands in a fresh file (the initial one stays empty)."""
     sender = _sender(tmp_path, rotation_interval_seconds=0.0)
     _send_all(sender, audit_message(), audit_message(request_id="req-2"))
 
@@ -166,7 +156,7 @@ def test_does_not_rotate_below_thresholds(tmp_path, audit_message):
 
 
 def test_write_failure_is_logged_not_raised(tmp_path, caplog, mocker, audit_message):
-    """A disk error must never reach the request path (IAG: "audit: write record" and carry on)."""
+    """A disk error is logged and never reaches the request path."""
     caplog.set_level("ERROR")
     sender = _sender(tmp_path)
     mocker.patch.object(FileSender, "_append", side_effect=OSError("disk full"))
@@ -199,10 +189,7 @@ def test_current_path_uses_the_configured_extension(tmp_path, file_format):
 
 
 def test_failed_rotation_keeps_the_current_file(tmp_path, caplog, mocker, audit_message):
-    """If the successor file can't be opened, the current one stays in service: the rotation
-    failure is logged and the record is still written, rather than every later record being
-    dropped as if the sender were closed.
-    """
+    """If the successor file can't be opened, the current one stays in service and the record is written."""
     caplog.set_level("ERROR")
     sender = _sender(tmp_path, rotation_strategy="size", rotation_max_bytes=10)
     asyncio.run(sender.send(audit_message()))
