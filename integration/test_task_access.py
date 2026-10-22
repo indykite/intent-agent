@@ -231,3 +231,25 @@ def test_a_task_is_deleted_once_answered(client, mocker, extraction):
     assert saved
     for store, task_id, context in saved:
         assert asyncio.run(store.get(task_id, context)) is None
+
+
+def test_a_message_asking_to_return_immediately_is_refused(client, mocker, tmp_path):
+    """Its task could never be read back, and its cleanup would run before its work ended."""
+    run_extraction = mocker.patch.object(IntentAgent, "run_extraction", mocker.AsyncMock())
+    message = {
+        "role": "ROLE_USER",
+        "parts": [{"text": "Can I buy 50 shares of AAPL?"}],
+        "messageId": "integration-test-1",
+        "metadata": {"subject_type": "Customer", "subject_id": "test-subject"},
+    }
+
+    response = _rpc(
+        client, "SendMessage", {"message": message, "configuration": {"returnImmediately": True}}, "alice-token"
+    )
+
+    assert response.json()["error"]["code"] == _INVALID_PARAMS
+    assert response.json()["error"]["message"] == "returnImmediately is not supported"
+    run_extraction.assert_not_awaited()
+    (record,) = _audit_records(tmp_path)
+    assert record["outcome"] == "error"
+    assert record["message"] == "returnImmediately is not supported"
