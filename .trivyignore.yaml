@@ -4,3 +4,8 @@ licenses:
     paths:
       - "LICENSE"
     statement: "Repository's own LICENSE file, not a third-party dependency license"
+vulnerabilities:
+  - id: GHSA-6q48-6c7w-9gw2
+    statement: ENG-10168 - auto-filed 2026-10-23T10:08:44Z by trivy-notify
+  - id: CVE-2026-114603
+    statement: ENG-10168 - auto-filed 2026-10-23T10:08:44Z by trivy-notify
