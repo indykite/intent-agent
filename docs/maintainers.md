@@ -29,6 +29,21 @@ A security-sensitive report must not stay public: don't discuss the details in t
 reporter to use the private routes in [`SECURITY.md`](../SECURITY.md), and close or delete the
 issue.
 
+## Reviewing a pull request
+
+Before approving, check the description against the
+[pull request template](../.github/PULL_REQUEST_TEMPLATE.md):
+
+- **Related issue:** `Fixes #N` for an `accepted` issue, or "trivial" when the change qualifies
+  ([`CONTRIBUTING.md` § What counts as trivial](../CONTRIBUTING.md#what-counts-as-trivial)). CI,
+  Docker and chart changes and cross-module refactors are never trivial.
+- **"Effect on requests, responses and the audit record" and "How it was tested"** are filled in,
+  with "None" and a reason when nothing changes. The checks match what the change touches
+  ([`docs/testing.md` § In a pull request](testing.md#in-a-pull-request)).
+- **The ticked boxes match the diff.** If anything under `/.github/` (workflows included),
+  `/chart/` or another shared tooling file changes, "Shared tooling and CI configuration untouched"
+  must be unticked and the change named in the description; CODEOWNERS asks its owners to review.
+
 ## Pull requests from forks
 
 GitHub never gives repository secrets to a fork's workflows, so on a fork pull request the build,
