@@ -110,6 +110,7 @@ Commonly tuned optional settings:
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `INTENT_PORT`, `HEALTH_PORT` | `6003`, `8001` | A2A and health listeners |
+| `ADVERTISED_URL` | `http://intent:<INTENT_PORT>` | JSON-RPC URL on the agent card; must match the protocol, hostname and port of the ingress or Istio VirtualService callers use (see below) |
 | `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Model used for extraction |
 | `LLM_TIMEOUT_SECONDS`, `REQUEST_TIMEOUT_SECONDS` | `3.0`, `10.0` | Per LLM call, and for the whole request |
 | `VALIDATION_MAX_RETRIES` | `1` | Extra attempts after an off-schema answer (`0` disables) |
@@ -118,6 +119,16 @@ Commonly tuned optional settings:
 | `CACHE_BACKEND`, `REDIS_URL` | `memory`, - | `redis` shares the schema cache between instances; `REDIS_URL` is then required |
 | `EXPECTED_TOKEN_AUDIENCE` | `intent_agent` | Required `aud` of the caller's token. Published in the public agent card, so a client can request the right token |
 | `LOG_LEVEL` | `INFO` | Python log level (`.env.example` sets `DEBUG` for local runs) |
+
+`ADVERTISED_URL` is published on the agent card and never checked or derived from the deployment, so
+it has to be kept in step with it by hand: its protocol, hostname and port must be the ones callers
+actually use to reach the agent - the Kubernetes Ingress (`ingress.hosts`, `ingress.tls`) or the Istio
+VirtualService (`istio.virtualService.hosts`, `gateways`) in the Helm chart, or whatever gateway fronts
+it elsewhere. For example `https://intent-agent.example.com` for a TLS ingress on that host. It does not
+follow `INTENT_PORT`, which is only the container port behind the ingress. Clients that discover the
+agent through its card call this URL, so a mismatch (`http://` in front of a TLS ingress, a port the
+ingress doesn't serve, an internal hostname) makes the agent unreachable for them. The agent logs a
+warning at startup when it is unset. In the chart it is `app.advertisedUrl`.
 
 ### Audit log
 

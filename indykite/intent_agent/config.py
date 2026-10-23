@@ -40,7 +40,11 @@ class Settings(BaseSettings):
     health_port: _Port = 8001
     # skipcq: BAN-B104  # noqa: ERA001 - looks like code, is a suppression directive
     bind_host: IPvAnyAddress = IPv4Address("0.0.0.0")  # noqa: S104 - reachable from outside container
-    advertised_host: str = "intent"
+    # JSON-RPC endpoint the agent card advertises, independent of the listening address: set it to
+    # the public URL (scheme, host, port and path) when callers reach the agent through an
+    # ingress/gateway - it must match the protocol, hostname and port callers actually use, as it is
+    # only published, never checked. Unset falls back to http://intent:<intent_port>.
+    advertised_url: HttpUrl | None = None
     intent_agent_name: str = "intent_agent"
     log_level: _LogLevel = "INFO"
 

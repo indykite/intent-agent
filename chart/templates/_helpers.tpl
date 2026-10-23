@@ -202,6 +202,16 @@ for why that isn't silently allowed to produce an invalid/mismatched hostname in
 {{- end -}}
 
 {{/*
+Fail fast if ingress.enabled has no hosts - the schema accepts the empty default, but the rendered
+Ingress would have no rules and no default backend, which Kubernetes rejects at install/upgrade.
+*/}}
+{{- define "service.validateIngress" -}}
+{{- if and ((.Values.ingress).enabled) (not (.Values.ingress).hosts) }}
+{{- fail "ingress.hosts must list at least one host when ingress.enabled is true" }}
+{{- end }}
+{{- end }}
+
+{{/*
 Fail fast if autoscaling.minReplicas exceeds maxReplicas - the schema validates each field
 independently, so this combination passes Helm validation but Kubernetes rejects the HPA.
 */}}

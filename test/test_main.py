@@ -126,3 +126,32 @@ def test_main_routes_warnings_through_logging_before_serving(monkeypatch, mocker
         log_level=settings.log_level.lower(),
         log_config=mocker.ANY,
     )
+
+
+def _run_main_with_mocks(mocker, settings):
+    mocker.patch("indykite.intent_agent.__main__.Settings", return_value=settings)
+    mocker.patch("indykite.intent_agent.__main__.logging.config.dictConfig")
+    mocker.patch("indykite.intent_agent.__main__.logging.captureWarnings")
+    fake_agent = mocker.Mock(get_cached_schema=mocker.Mock(return_value=None))
+    mocker.patch("indykite.intent_agent.__main__.build_app", return_value=(mocker.Mock(), fake_agent))
+    mocker.patch("indykite.intent_agent.__main__._start_observability_server")
+    mocker.patch("indykite.intent_agent.__main__.uvicorn.run")
+    main()
+
+
+def test_main_warns_when_advertised_url_is_unset(monkeypatch, mocker, caplog, baseline_env):
+    baseline_env()
+    monkeypatch.delenv("ADVERTISED_URL", raising=False)
+
+    _run_main_with_mocks(mocker, Settings(_env_file=None))
+
+    assert "ADVERTISED_URL is not set" in caplog.text
+
+
+def test_main_does_not_warn_when_advertised_url_is_set(monkeypatch, mocker, caplog, baseline_env):
+    baseline_env()
+    monkeypatch.setenv("ADVERTISED_URL", "https://intent-agent.example.com")
+
+    _run_main_with_mocks(mocker, Settings(_env_file=None))
+
+    assert "ADVERTISED_URL is not set" not in caplog.text

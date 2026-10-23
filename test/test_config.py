@@ -124,6 +124,8 @@ def test_ik_app_agent_key_does_not_leak_in_repr(monkeypatch):
         ("INDYKITE_BASE_URL", "ftp://ikg.example.com"),
         ("INTROSPECT_URL", "not-a-url"),
         ("INTROSPECT_URL", "ftp://idp.example.com/introspect"),
+        ("ADVERTISED_URL", "intent-agent.example.com"),
+        ("ADVERTISED_URL", "ftp://intent-agent.example.com"),
     ],
 )
 def test_rejects_malformed_url(monkeypatch, env_var, bad_url):
