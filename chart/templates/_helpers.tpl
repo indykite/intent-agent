@@ -245,6 +245,17 @@ Create the name of the service account to use
 {{- end }}
 
 {{/*
+Create the name of the service account to use for the post-sync hook
+*/}}
+{{- define "service.postSyncHookServiceAccountName" -}}
+{{- if .Values.postSyncHook.serviceAccount.create }}
+{{- default (include "service.suffixedName" (list . "-post-sync-sa")) .Values.postSyncHook.serviceAccount.name }}
+{{- else }}
+{{- default "default" .Values.postSyncHook.serviceAccount.name }}
+{{- end }}
+{{- end }}
+
+{{/*
 Common annotations
 */}}
 {{- define "service.annotations" -}}

@@ -1,0 +1,69 @@
+{{- if .Values.postSyncHook.enabled }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "service.suffixedName" (list . "-post-sync") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "service.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: {{ .Values.postSyncHook.hookDeletePolicy }}
+    {{- with .Values.postSyncHook.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  backoffLimit: {{ .Values.postSyncHook.backoffLimit }}
+  {{- if not (kindIs "invalid" .Values.postSyncHook.ttlSecondsAfterFinished) }}
+  ttlSecondsAfterFinished: {{ .Values.postSyncHook.ttlSecondsAfterFinished }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- /* Deliberately not service.selectorLabels: the Service selects on those, and a running
+             hook pod would otherwise become an endpoint for ports it does not serve. */}}
+        app.kubernetes.io/name: {{ include "service.suffixedName" (list . "-post-sync") }}
+        app.kubernetes.io/instance: {{ .Release.Name | trunc 63 | trimSuffix "-" }}
+        app.kubernetes.io/component: post-sync
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "service.postSyncHookServiceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ .Values.postSyncHook.podSecurityContext.runAsUser }}
+        runAsGroup: {{ .Values.postSyncHook.podSecurityContext.runAsGroup }}
+        fsGroup: {{ .Values.postSyncHook.podSecurityContext.fsGroup }}
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: post-sync
+          image: "{{ .Values.postSyncHook.image.repository }}:{{ .Values.postSyncHook.image.tag }}"
+          imagePullPolicy: {{ .Values.postSyncHook.image.pullPolicy }}
+          {{- if or .Values.postSyncHook.env .Values.postSyncHook.envFromSecrets }}
+          env:
+            {{- range $key, $value := .Values.postSyncHook.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- range .Values.postSyncHook.envFromSecrets }}
+            - name: {{ .envVarName }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName }}
+                  key: {{ .secretKey }}
+            {{- end }}
+          {{- end }}
+          {{- with .Values.postSyncHook.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

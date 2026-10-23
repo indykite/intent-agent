@@ -284,3 +284,31 @@ istio:
 
 labels:
   environment: ""
+
+postSyncHook:
+  enabled: false
+  image:
+    repository: europe-west1-docker.pkg.dev/placeholder
+    tag: "latest"
+    pullPolicy: Always
+  # argocd.argoproj.io/hook-delete-policy, comma-separated. The Job has a fixed name, so keep
+  # BeforeHookCreation: without it a retained Job blocks the next sync from recreating the hook.
+  hookDeletePolicy: BeforeHookCreation,HookSucceeded
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 600
+  podSecurityContext:
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+  env: {}
+  envFromSecrets: []
+  #  envFromSecrets:
+  #    - envVarName: FOO
+  #      secretName: app-secret
+  #      secretKey: foo-key
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+  resources: {}
+  annotations: {}
