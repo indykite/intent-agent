@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.5.0](https://github.com/indykite/intent-agent/compare/v0.4.2...v0.5.0) (2026-10-27)
+
+
+### Features
+
+* helm chart argo post sync hook ([#121](https://github.com/indykite/intent-agent/issues/121)) ([b99891c](https://github.com/indykite/intent-agent/commit/b99891c32ec0f8b59a5ac2180c68e4b167ea41b1))
+* ingress support in helm chart ([#116](https://github.com/indykite/intent-agent/issues/116)) ([5205832](https://github.com/indykite/intent-agent/commit/52058320e5d1233cfd552c7f73a5a9117a781374))
+
+
+### Bug Fixes
+
+* certifi compromised intermediate ca keys ([#122](https://github.com/indykite/intent-agent/issues/122)) ([af39212](https://github.com/indykite/intent-agent/commit/af39212271779a068fb179ea05841855fa19cca7))
+* delete each task once its message is answered ([#118](https://github.com/indykite/intent-agent/issues/118)) ([32d54e0](https://github.com/indykite/intent-agent/commit/32d54e0e8b5cabb764c417a3b4e62ff5b2ca0451))
+
+
+### Documentation
+
+* link the Intent Agent guide ([#125](https://github.com/indykite/intent-agent/issues/125)) ([064b674](https://github.com/indykite/intent-agent/commit/064b674ba053792874a993565fed392fc3f44cfd))
+
 ## [0.4.2](https://github.com/indykite/intent-agent/compare/v0.4.1...v0.4.2) (2026-10-20)
 
 
