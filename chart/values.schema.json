@@ -745,9 +745,7 @@
           "enum": [
             "BeforeHookCreation",
             "BeforeHookCreation,HookSucceeded",
-            "BeforeHookCreation,HookFailed",
-            "HookSucceeded",
-            "HookFailed"
+            "BeforeHookCreation,HookFailed"
           ]
         },
         "podSecurityContext": {
@@ -843,6 +841,9 @@
               }
             }
           }
+        },
+        "podAnnotations": {
+          "type": "object"
         },
         "annotations": {
           "type": "object"

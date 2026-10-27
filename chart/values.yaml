@@ -291,8 +291,9 @@ postSyncHook:
     repository: europe-west1-docker.pkg.dev/placeholder
     tag: "latest"
     pullPolicy: Always
-  # argocd.argoproj.io/hook-delete-policy, comma-separated. The Job has a fixed name, so keep
-  # BeforeHookCreation: without it a retained Job blocks the next sync from recreating the hook.
+  # argocd.argoproj.io/hook-delete-policy, comma-separated. The Job has a fixed name, so
+  # BeforeHookCreation is required: without it a retained Job blocks the next sync from recreating
+  # the hook. Allowed: BeforeHookCreation | BeforeHookCreation,HookSucceeded | BeforeHookCreation,HookFailed
   hookDeletePolicy: BeforeHookCreation,HookSucceeded
   backoffLimit: 0
   ttlSecondsAfterFinished: 600
@@ -312,3 +313,8 @@ postSyncHook:
     annotations: {}
   resources: {}
   annotations: {}
+  # Annotations on the hook pod (postSyncHook.annotations goes on the Job). With a conventional
+  # Istio sidecar the proxy outlives the hook container and the Job never finishes, so a hook that
+  # needs no mesh access can set sidecar.istio.io/inject: "false"; one that does can use
+  # proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}' with a native sidecar.
+  podAnnotations: {}

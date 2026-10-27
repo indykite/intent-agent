@@ -20,6 +20,10 @@ spec:
   {{- end }}
   template:
     metadata:
+      {{- with .Values.postSyncHook.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       labels:
         {{- /* Deliberately not service.selectorLabels: the Service selects on those, and a running
              hook pod would otherwise become an endpoint for ports it does not serve. */}}
