@@ -10,7 +10,7 @@ dynamic = ["version"]
 
 # https://docs.astral.sh/uv/concepts/projects/dependencies/
 dependencies = [
-    "a2a-sdk[http-server]==1.2.2",
+    "a2a-sdk[http-server]==1.2.3",
     "cel-python==0.5.0",
     "dogpile.cache[redis]==1.5.0",
     "httpx2==2.13.1",
