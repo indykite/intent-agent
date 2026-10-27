@@ -26,6 +26,9 @@ What it does:
 
 What it does not do: make authorization decisions. A decision is the downstream engine's job.
 
+For a walkthrough of the Intent Agent in use with the Agent Gateway, see the
+[Intent Agent guide](https://developer.indykite.com/guides/guide-intent-agent).
+
 ## Quick start
 
 Each release publishes the image to Docker Hub as `docker.io/indykite/intent-agent`, with a Helm chart
