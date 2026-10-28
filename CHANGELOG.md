@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.0](https://github.com/indykite/intent-agent/compare/v0.5.0...v1.0.0) (2026-10-28)
+
+
+### Documentation
+
+* note that Release-As needs a file change ([#127](https://github.com/indykite/intent-agent/issues/127)) ([86152cb](https://github.com/indykite/intent-agent/commit/86152cb09a318dc1fa5b37e74b666c5978d8559a))
+
+
+### Miscellaneous Chores
+
+* release 1.0.0 ([#126](https://github.com/indykite/intent-agent/issues/126)) ([a8e096c](https://github.com/indykite/intent-agent/commit/a8e096c8e0adea58e4c7dc887b59f5b9784696af))
+
 ## [0.5.0](https://github.com/indykite/intent-agent/compare/v0.4.2...v0.5.0) (2026-10-27)
 
 
