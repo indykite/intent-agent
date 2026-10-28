@@ -89,6 +89,11 @@ request, or revert the squash commit with `git revert <sha>` in a pull request.
 release-please keeps a release pull request open. Don't merge it while the latest eval run on
 `master` is red: check **Actions** → **Golden eval suite**, filtered on the `master` branch.
 
+To force a specific version (for example `1.0.0`), merge a commit whose message ends with a
+`Release-As: 1.0.0` footer. The commit has to change a file outside the `release-please` workflow's
+`paths-ignore` list: an empty commit runs no `release-please` workflow at all, so no release pull
+request appears until a later merge touches such a file.
+
 ## Labels used by automation
 
 Don't delete or rename these; the bots look them up:
