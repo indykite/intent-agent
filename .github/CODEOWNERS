@@ -3,10 +3,7 @@
 
 # Global rule set for everything, and special cases exclude later
 
-# The codeowners include not only AI/ML team, but specific people who are working
-# outside of AI/ML team. They are added directly instead of creating a new team.
-
-* @indykite/ai-ml-team @cowan-macady
+* @indykite/ai-ml-team
 
 #
 # CI/CD, SAST & linting configs
