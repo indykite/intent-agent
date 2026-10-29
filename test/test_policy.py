@@ -3,12 +3,16 @@
 import json
 import threading
 import time
+from http import HTTPStatus
 
 import httpx2
 import jwt
 import pytest
+from dogpile.cache.api import NO_VALUE
+from dogpile.cache.backends.redis import RedisBackend
 from dogpile.cache.region import make_region
 
+from indykite.intent_agent.dependency_status import IKG, REDIS, DependencyStatus
 from indykite.intent_agent.policy import (
     _FAILURE_CACHE_SECONDS,
     PolicyClient,
@@ -432,3 +436,44 @@ def test_get_cached_falls_back_to_stale_policies_when_refresh_fails(mocker, capl
 
     assert client.get_cached(_SUBJECT_TYPE) == (_POLICIES, True)
     assert "platform unreachable" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        pytest.param(200, "ok", id="ok"),
+        pytest.param(503, "error", id="server-error"),
+        pytest.param(401, "error", id="auth-rejected"),
+        pytest.param(404, None, id="answered-4xx-says-nothing-about-ikg"),
+    ],
+)
+def test_fetch_records_ikg_state(mocker, code, expected):
+    status = DependencyStatus()
+    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=1, cache=_memory_cache())
+    client.dependency_status = status
+    response = _mock_response(mocker) if code == HTTPStatus.OK else _mock_status_error_response(mocker, code)
+    _mock_sync_client(mocker, response=response)
+
+    client.get_cached(_SUBJECT_TYPE)
+
+    assert (status.get(IKG).status if status.get(IKG) else None) == expected
+
+
+def test_redis_cache_access_records_redis_state(mocker):
+    status = DependencyStatus()
+    cache = mocker.Mock(actual_backend=mocker.Mock(spec=RedisBackend), get=mocker.Mock(return_value=NO_VALUE))
+    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
+    client.dependency_status = status
+
+    cache.get_or_create = mocker.Mock(side_effect=ConnectionError)
+    assert client.get_cached(_SUBJECT_TYPE) == (None, True)
+    assert (status.get(REDIS).status, status.get(REDIS).detail) == ("error", "ConnectionError")
+
+    cache.get_or_create = mocker.Mock(return_value=[])
+    assert client.get_cached(_SUBJECT_TYPE) == ([], False)
+    assert status.get(REDIS).status == "ok"
+
+    status.record_error(REDIS, "ConnectionError")
+    cache.get = mocker.Mock(return_value=[])
+    assert client.get_cached(_SUBJECT_TYPE) == ([], False)
+    assert status.get(REDIS).status == "ok"

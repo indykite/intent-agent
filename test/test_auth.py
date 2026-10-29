@@ -12,6 +12,7 @@ from starlette.routing import Route
 from starlette.testclient import TestClient
 
 from indykite.intent_agent import auth
+from indykite.intent_agent.dependency_status import INTROSPECTION, DependencyStatus
 
 _INTROSPECT_CONFIG = auth.IntrospectionConfig(
     introspect_url="https://idp.example.com/introspect",
@@ -342,3 +343,36 @@ def test_add_bearer_security_declares_the_token_the_middleware_requires():
     (requirement,) = card.security_requirements
     assert list(requirement.schemes) == [name]
     assert list(requirement.schemes[name].list) == []
+
+
+@pytest.mark.parametrize(
+    ("claims", "failure", "expected"),
+    [
+        pytest.param({"active": True, "sub": "iag"}, None, "ok", id="accepted"),
+        pytest.param(None, auth.TokenValidationError("nope", auth.TokenFailure.CALLER), "ok", id="caller-fault"),
+        pytest.param(None, auth.TokenValidationError("nope", auth.TokenFailure.SERVICE), "error", id="service-fault"),
+        pytest.param(None, auth.TokenValidationError("nope", auth.TokenFailure.PROVIDER), "error", id="provider-fault"),
+    ],
+)
+def test_middleware_records_introspection_state(mocker, claims, failure, expected):
+    """An inactive token is the caller's fault - the IdP answered fine; any other refusal is the IdP's or ours."""
+    status = DependencyStatus()
+    mocker.patch.object(auth, "validate_access_token", mocker.AsyncMock(return_value=claims, side_effect=failure))
+
+    async def _endpoint(_request):
+        return PlainTextResponse("ok")
+
+    async def _on_rejected(_request, _message):
+        return None
+
+    middleware = Middleware(
+        auth.BearerAuthMiddleware,
+        config=_INTROSPECT_CONFIG,
+        on_rejected=_on_rejected,
+        dependency_status=status,
+    )
+    client = TestClient(Starlette(routes=[Route("/", _endpoint, methods=["POST"], middleware=[middleware])]))
+
+    client.post("/", headers={"Authorization": "Bearer t"})
+
+    assert status.get(INTROSPECTION).status == expected

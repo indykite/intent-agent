@@ -24,6 +24,7 @@ IKG = "ikg"
 INTROSPECTION = "token_introspection"
 GEMINI = "gemini"
 AUDIT_WEBHOOK = "audit_webhook"
+AUDIT_FILE = "audit_file"
 REDIS = "redis"
 SCHEMA = "schema"
 

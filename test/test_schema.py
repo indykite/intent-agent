@@ -7,8 +7,10 @@ from concurrent.futures import ThreadPoolExecutor
 import httpx2
 import jwt
 import pytest
+from dogpile.cache.backends.redis import RedisBackend
 from dogpile.cache.region import make_region
 
+from indykite.intent_agent.dependency_status import IKG, REDIS, DependencyStatus
 from indykite.intent_agent.errors import InvalidAppAgentKeyError
 from indykite.intent_agent.schema import SchemaClient, _cache_key, _make_async_creation_runner
 
@@ -301,3 +303,39 @@ def test_async_refresh_logs_when_the_cache_write_itself_fails(mocker, caplog):
     assert client.get_cached() == _SCHEMA
     _wait_for_async_refresh(executor)
     assert any("schema_refresh_failed" in record.getMessage() for record in caplog.records)
+
+
+def test_load_records_ikg_state(mocker):
+    status = DependencyStatus()
+    client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=_memory_cache(), dependency_status=status)
+
+    _mock_sync_client(mocker, side_effect=httpx2.ConnectError("x"))
+    client.load()
+    assert (status.get(IKG).status, status.get(IKG).detail) == ("error", "ConnectError")
+
+    _mock_sync_client(mocker, response=_mock_response(mocker))
+    client.load()
+    assert status.get(IKG).status == "ok"
+
+
+def test_redis_cache_access_records_redis_state(mocker):
+    status = DependencyStatus()
+    cache = mocker.Mock(actual_backend=mocker.Mock(spec=RedisBackend))
+    client = SchemaClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache, dependency_status=status)
+
+    cache.get = mocker.Mock(side_effect=ConnectionError)
+    assert client.get_cached() is None
+    assert (status.get(REDIS).status, status.get(REDIS).detail) == ("error", "ConnectionError")
+
+    cache.get = mocker.Mock(return_value={"graph": {}})
+    assert client.get_cached() == {"graph": {}}
+    assert status.get(REDIS).status == "ok"
+
+
+def test_memory_cache_access_records_nothing():
+    status = DependencyStatus()
+    SchemaClient(
+        "https://ikg.example.com", _APP_AGENT_KEY, cache=_memory_cache(), dependency_status=status
+    ).get_cached()
+
+    assert status.get(REDIS) is None

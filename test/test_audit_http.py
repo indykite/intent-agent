@@ -6,6 +6,7 @@ import httpx2
 import pytest
 
 from indykite.intent_agent.audit.http import HttpConfig, HttpSender, probe
+from indykite.intent_agent.dependency_status import AUDIT_WEBHOOK, DependencyStatus
 
 _URL = "https://audit.example.com/records"
 
@@ -199,3 +200,45 @@ def test_probe_sends_options_with_the_api_key_and_returns_the_status(mocker):
     assert asyncio.run(probe(config)) == HTTPStatus.METHOD_NOT_ALLOWED
     assert seen[0].method == "OPTIONS"
     assert seen[0].headers["X-API-Key"] == "k"
+
+
+@pytest.mark.parametrize(
+    ("response", "status", "detail"),
+    [
+        pytest.param(httpx2.Response(HTTPStatus.NO_CONTENT), "ok", "", id="2xx"),
+        pytest.param(httpx2.Response(HTTPStatus.INTERNAL_SERVER_ERROR), "error", "status 500", id="5xx"),
+        pytest.param(
+            httpx2.Response(HTTPStatus.FOUND, headers={"Location": "https://x"}), "error", "status 302", id="3xx"
+        ),
+    ],
+)
+def test_delivery_records_audit_webhook_state(audit_message, response, status, detail):
+    """Only a 2xx is a delivery - the client doesn't follow redirects."""
+    store = DependencyStatus()
+    sender = HttpSender(
+        HttpConfig(url=_URL, method="POST", auth_type="no-auth"),
+        transport=httpx2.MockTransport(lambda _request: response),
+        dependency_status=store,
+    )
+
+    _send_and_close(sender, audit_message())
+
+    assert (store.get(AUDIT_WEBHOOK).status, store.get(AUDIT_WEBHOOK).detail) == (status, detail)
+
+
+def test_unreachable_receiver_records_the_exception_class(audit_message):
+    store = DependencyStatus()
+
+    def responder(_request):
+        message = "no route"
+        raise httpx2.ConnectError(message)
+
+    sender = HttpSender(
+        HttpConfig(url=_URL, method="POST", auth_type="no-auth"),
+        transport=httpx2.MockTransport(responder),
+        dependency_status=store,
+    )
+
+    _send_and_close(sender, audit_message())
+
+    assert (store.get(AUDIT_WEBHOOK).status, store.get(AUDIT_WEBHOOK).detail) == ("error", "ConnectError")

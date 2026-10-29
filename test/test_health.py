@@ -5,6 +5,7 @@ import pytest
 
 from indykite.intent_agent.config import Settings
 from indykite.intent_agent.dependency_status import (
+    AUDIT_FILE,
     AUDIT_WEBHOOK,
     GEMINI,
     IKG,
@@ -12,7 +13,6 @@ from indykite.intent_agent.dependency_status import (
     REDIS,
     SCHEMA,
     DependencyStatus,
-    describe_failure,
 )
 from indykite.intent_agent.health import DISABLED, HealthChecker
 from indykite.intent_agent.version import __version__
@@ -37,7 +37,7 @@ def _all_ok(_request):
     return httpx2.Response(200, json={"active": False})
 
 
-def _seed_all_ok(status, *, extra=()):
+def _seed_all_ok(status, *, extra=(AUDIT_FILE,)):
     for name in (IKG, INTROSPECTION, GEMINI, *extra):
         status.record_ok(name)
     status.record_ok(SCHEMA, version="abc")
@@ -50,14 +50,6 @@ def _enable_webhook_and_redis(settings):
     settings.audit_http_auth_type = "no-auth"
     settings.cache_backend = "redis"
     settings.redis_url = "redis://redis:6379"
-
-
-def test_describe_failure_names_status_or_class_only():
-    request = httpx2.Request("GET", "https://secret.example.com/?key=hunter2")
-    status_error = httpx2.HTTPStatusError("boom", request=request, response=httpx2.Response(503, request=request))
-
-    assert describe_failure(status_error) == "status 503"
-    assert describe_failure(httpx2.ConnectError("secret-url")) == "ConnectError"
 
 
 def test_report_is_unknown_until_something_is_recorded(settings):
@@ -78,6 +70,7 @@ def test_report_reflects_recorded_state_without_any_io(settings):
     assert report["version"] == __version__
     assert report["schema"]["version"] == "abc"
     assert {name: check["status"] for name, check in report["checks"].items()} == {
+        AUDIT_FILE: "ok",
         AUDIT_WEBHOOK: DISABLED,
         GEMINI: "ok",
         IKG: "ok",
@@ -212,6 +205,19 @@ def test_probe_does_not_overwrite_state_recorded_by_traffic(mocker, settings):
 
     assert (status.get(GEMINI).status, status.get(GEMINI).source) == ("ok", "traffic")
     assert status.get(IKG).status == "error"
+
+
+def test_audit_file_probe_checks_the_directory_is_writable(mocker, settings, tmp_path):
+    _route(mocker, _all_ok)
+    settings.audit_file_storage_path = tmp_path
+    status = DependencyStatus()
+    asyncio.run(HealthChecker(settings, status).probe_all())
+    assert (status.get(AUDIT_FILE).status, status.get(AUDIT_FILE).source) == ("ok", "startup")
+
+    settings.audit_file_storage_path = tmp_path / "missing"
+    status = DependencyStatus()
+    asyncio.run(HealthChecker(settings, status).probe_all())
+    assert status.get(AUDIT_FILE).detail == "audit directory is not writable"
 
 
 def test_webhook_and_redis_probed_only_when_configured(mocker, settings):

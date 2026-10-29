@@ -47,7 +47,7 @@ def build_http_config(settings: Settings) -> HttpConfig:
 
 
 def build_sender(settings: Settings, dependency_status: DependencyStatus | None = None) -> Sender:
-    """Construct the sender AUDIT_DELIVERY names. A webhook sender reports each delivery to dependency_status."""
+    """Construct the sender AUDIT_DELIVERY names. The sender reports each delivery to dependency_status."""
     sender: Sender
     if settings.audit_delivery == "webhook":
         sender = HttpSender(build_http_config(settings), dependency_status=dependency_status)
@@ -59,7 +59,7 @@ def build_sender(settings: Settings, dependency_status: DependencyStatus | None 
             rotation_interval_seconds=settings.audit_file_rotation_interval_seconds,
             rotation_max_bytes=settings.audit_file_rotation_max_bytes,
         )
-        sender = FileSender(file_config, service=settings.intent_agent_name)
+        sender = FileSender(file_config, service=settings.intent_agent_name, dependency_status=dependency_status)
     if settings.audit_async:
         return AsyncSender(sender, buffer_size=settings.audit_async_buffer_size)
     return sender

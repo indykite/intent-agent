@@ -10,6 +10,7 @@ the status code or exception class only, never a response body or a URL carrying
 
 import asyncio
 import logging
+import os
 import time
 from collections.abc import Awaitable, Callable
 from http import HTTPStatus
@@ -22,6 +23,7 @@ from indykite.intent_agent.audit import http as audit_http
 from indykite.intent_agent.audit.sender import build_http_config
 from indykite.intent_agent.config import Settings
 from indykite.intent_agent.dependency_status import (
+    AUDIT_FILE,
     AUDIT_WEBHOOK,
     GEMINI,
     IKG,
@@ -84,6 +86,7 @@ class HealthChecker:
             INTROSPECTION: True,
             GEMINI: True,
             AUDIT_WEBHOOK: self._settings.audit_delivery == "webhook",
+            AUDIT_FILE: self._settings.audit_delivery == "file",
             REDIS: self._settings.cache_backend == "redis",
         }
 
@@ -96,6 +99,7 @@ class HealthChecker:
             INTROSPECTION: self._probe_introspection,
             GEMINI: self._probe_gemini,
             AUDIT_WEBHOOK: self._probe_audit_webhook,
+            AUDIT_FILE: self._probe_audit_file,
             REDIS: self._probe_redis,
         }
         enabled = [name for name, used in self._dependencies().items() if used]
@@ -192,6 +196,13 @@ class HealthChecker:
         status = await audit_http.probe(build_http_config(self._settings))
         if status >= HTTPStatus.INTERNAL_SERVER_ERROR:
             raise _unexpected_status(status)
+
+    async def _probe_audit_file(self) -> None:
+        """The audit directory exists and is writable by this process."""
+        path = self._settings.audit_file_storage_path
+        if path is None or not path.is_dir() or not os.access(path, os.W_OK):
+            message = "audit directory is not writable"
+            raise _ProbeFailedError(message)
 
     async def _probe_redis(self) -> None:
         """Redis answers PING."""
