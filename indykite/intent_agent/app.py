@@ -153,7 +153,7 @@ def build_app(
     """
     agent = IntentAgent(settings, llm=llm, schema_client=schema_client, policy_client=policy_client)
     agent.preload_schema()
-    sender = audit_sender or build_sender(settings)
+    sender = audit_sender or build_sender(settings, agent.dependency_status)
 
     agent_card = agent.build_agent_card()
     auth.add_bearer_security(agent_card, settings.expected_token_audience)
@@ -175,6 +175,7 @@ def build_app(
             timeout_seconds=settings.introspect_timeout_seconds,
         ),
         on_rejected=executor.audit_rejected_request,
+        dependency_status=agent.dependency_status,
     )
     rpc_routes = [
         Route(route.path, route.endpoint, methods=route.methods, name=route.name, middleware=[authenticated])

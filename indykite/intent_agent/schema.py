@@ -8,9 +8,11 @@ from typing import Any
 import httpx2
 import jwt
 from dogpile.cache.api import NO_VALUE, CacheMutex, KeyType, ValuePayload
+from dogpile.cache.backends.redis import RedisBackend
 from dogpile.cache.region import AsyncCreator, CacheRegion, make_region
 
 from indykite.intent_agent.config import Settings
+from indykite.intent_agent.dependency_status import IKG, REDIS, DependencyStatus, describe_failure
 from indykite.intent_agent.errors import InvalidAppAgentKeyError
 
 logger = logging.getLogger(__name__)
@@ -103,13 +105,20 @@ class SchemaClient:
         *,
         timeout_seconds: float = 30.0,
         cache: CacheRegion,
+        dependency_status: DependencyStatus | None = None,
     ) -> None:
-        """Store the connection details; no request is made until load()/preload()."""
+        """Store the connection details; no request is made until load()/preload().
+
+        dependency_status (when given) is told how every fetch went (`ikg`) and, with a Redis
+        cache, how every cache access went (`redis`) - what /health reports.
+        """
         self._base_url = base_url
         self._app_agent_key = app_agent_key
         self._timeout_seconds = timeout_seconds
         self._cache = cache
         self._cache_key = _cache_key(app_agent_key)
+        self._status = dependency_status
+        self._cache_is_redis = isinstance(getattr(cache, "actual_backend", None), RedisBackend)
 
     def load(self) -> dict[str, Any] | None:
         """Fetch the graph schema from the IndyKite platform; None on any failure, never raises."""
@@ -125,9 +134,13 @@ class SchemaClient:
                 logger.debug("Schema response: status=%s body[:500]=%r", resp.status_code, resp.text[:500])
                 resp.raise_for_status()
                 schema = resp.json()
-        except (httpx2.HTTPError, ValueError):
+        except (httpx2.HTTPError, ValueError) as exc:
             logger.exception("Failed to load data schema from %s", url)
+            if self._status is not None:
+                self._status.record_error(IKG, describe_failure(exc))
             return None
+        if self._status is not None:
+            self._status.record_ok(IKG)
         logger.info("Loaded data schema from %s", url)
         return schema
 
@@ -145,13 +158,17 @@ class SchemaClient:
         """
         try:
             cached = self.peek_cached()
+            if self._status is not None and self._cache_is_redis:
+                self._status.record_ok(REDIS)
             if cached is not None:
                 return cached
             return self._cache.get_or_create(
                 self._cache_key, self.load, should_cache_fn=lambda schema: schema is not None
             )
-        except Exception:
+        except Exception as exc:
             logger.exception("Cache backend failed while fetching the schema")
+            if self._status is not None and self._cache_is_redis:
+                self._status.record_error(REDIS, describe_failure(exc))
             return None
 
     def peek_cached(self) -> dict[str, Any] | None:

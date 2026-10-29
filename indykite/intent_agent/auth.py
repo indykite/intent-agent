@@ -21,6 +21,8 @@ from starlette.status import (
 )
 from starlette.types import ASGIApp
 
+from indykite.intent_agent.dependency_status import INTROSPECTION, DependencyStatus
+
 logger = logging.getLogger(__name__)
 
 _AUTHORIZATION_REQUIRED_MESSAGE = "Authorization required"
@@ -180,14 +182,22 @@ def _caller_name(claims: Mapping[str, Any]) -> str:
 class BearerAuthMiddleware(BaseHTTPMiddleware):
     """Introspect every request's Bearer token and set `request.user`, the owner the A2A SDK stores tasks under.
 
-    Refusals are passed to `on_rejected` for auditing.
+    Refusals are passed to `on_rejected` for auditing. `dependency_status` (when given) is told
+    whether the IdP answered, which is what /health reports.
     """
 
-    def __init__(self, app: ASGIApp, config: IntrospectionConfig, on_rejected: RejectionHook) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        config: IntrospectionConfig,
+        on_rejected: RejectionHook,
+        dependency_status: DependencyStatus | None = None,
+    ) -> None:
         """Wrap `app`."""
         super().__init__(app)
         self._config = config
         self._on_rejected = on_rejected
+        self._status = dependency_status
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         """Authenticate the request, then pass it on or refuse it."""
@@ -198,7 +208,9 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         try:
             claims = await validate_access_token(token, self._config)
         except TokenValidationError as exc:
+            self._record_introspection(exc)
             return await self._reject(request, str(exc), _TOKEN_FAILURE_STATUS[exc.failure], token_sent=True)
+        self._record_introspection(None)
         caller = _caller_name(claims)
         if not caller:
             logger.info("Token introspection: active token carries neither sub nor client_id")
@@ -208,6 +220,15 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         request.scope["auth"] = AuthCredentials(["authenticated"])
         request.scope["user"] = SimpleUser(caller)
         return await call_next(request)
+
+    def _record_introspection(self, failure: TokenValidationError | None) -> None:
+        """An inactive token is the caller's problem - the IdP answered fine; any other refusal is the IdP's or ours."""
+        if self._status is None:
+            return
+        if failure is None or failure.failure is TokenFailure.CALLER:
+            self._status.record_ok(INTROSPECTION)
+        else:
+            self._status.record_error(INTROSPECTION, str(failure))
 
     async def _reject(self, request: Request, message: str, status: int, *, token_sent: bool) -> Response:
         """Report the refusal first, while the body is still readable, then answer it (RFC 6750 3)."""

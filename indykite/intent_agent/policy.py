@@ -12,9 +12,11 @@ from typing import Any
 
 import httpx2
 from dogpile.cache.api import NO_VALUE
+from dogpile.cache.backends.redis import RedisBackend
 from dogpile.cache.region import CacheRegion, make_region
 
 from indykite.intent_agent.config import Settings
+from indykite.intent_agent.dependency_status import IKG, REDIS, DependencyStatus, describe_failure
 from indykite.intent_agent.errors import InvalidAppAgentKeyError
 from indykite.intent_agent.schema import app_agent_key_gid
 
@@ -33,6 +35,15 @@ def _is_client_error(exc: httpx2.HTTPStatusError) -> bool:
     """True for a 4xx that retrying will not fix (408 and 429 are retried like a 5xx)."""
     status = exc.response.status_code
     return status in _CLIENT_ERROR_STATUS_RANGE and status not in _RETRYABLE_CLIENT_ERROR_STATUSES
+
+
+def _is_answered(exc: Exception) -> bool:
+    """True if the platform answered with a client error that isn't an auth rejection."""
+    return (
+        isinstance(exc, httpx2.HTTPStatusError)
+        and _is_client_error(exc)
+        and exc.response.status_code not in {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN}
+    )
 
 
 def _failure_backoff_seconds(cache: CacheRegion) -> float:
@@ -113,12 +124,17 @@ class PolicyClient:
         retry_attempts: int = 3,
         cache: CacheRegion,
     ) -> None:
-        """Store the connection details; no request is made until get_cached()."""
+        """Store the connection details; no request is made until get_cached().
+
+        Set `dependency_status` afterwards to be told how every fetch went (`ikg`) - what
+        /health reports.
+        """
         self._base_url = base_url
         self._app_agent_key = app_agent_key
         self._timeout_seconds = timeout_seconds
         self._retry_attempts = retry_attempts
         self._cache = cache
+        self.dependency_status: DependencyStatus | None = None
 
     def _load(self, subject_type: str) -> tuple[list[dict[str, Any]] | None, str]:
         """Fetch this subject_type's policies from the IndyKite platform.
@@ -157,9 +173,15 @@ class PolicyClient:
             except (httpx2.HTTPError, ValueError, TypeError) as exc:
                 last_error = exc
                 continue
+            if self.dependency_status is not None:
+                self.dependency_status.record_ok(IKG)
             logger.info("Loaded %d polic%s from %s", len(results), "y" if len(results) == 1 else "ies", url)
             return results, ""
         reason = f"{last_error}"
+        # A 4xx other than 401/403 (e.g. no policies for this subject type) means the platform
+        # answered, so it says nothing against `ikg`; a rejected key or an outage does.
+        if self.dependency_status is not None and last_error is not None and not _is_answered(last_error):
+            self.dependency_status.record_error(IKG, describe_failure(last_error))
         logger.warning(
             "Failed to load policies from %s after %d attempt%s: %s",
             url,
@@ -168,6 +190,15 @@ class PolicyClient:
             reason,
         )
         return None, reason
+
+    def _record_cache(self, *, error: Exception | None = None) -> None:
+        """Tell /health how the latest cache access went - only a Redis cache is a dependency."""
+        if self.dependency_status is None or not isinstance(getattr(self._cache, "actual_backend", None), RedisBackend):
+            return
+        if error is None:
+            self.dependency_status.record_ok(REDIS)
+        else:
+            self.dependency_status.record_error(REDIS, describe_failure(error))
 
     def get_cached(self, subject_type: str) -> tuple[list[dict[str, Any]] | None, bool]:
         """Return (policies, fetch_failed) for subject_type, refreshing on a cache miss; never raises.
@@ -179,6 +210,7 @@ class PolicyClient:
         try:
             resolved, cached_result = self.peek_cached(subject_type)
             if resolved:
+                self._record_cache()
                 return cached_result, cached_result is None
             cache_key = _cache_key(self._app_agent_key, subject_type)
             # The region TTL would still treat an elapsed _FailedFetch as fresh, so evict it first.
@@ -209,9 +241,11 @@ class PolicyClient:
                 return _FailedFetch(expires_at=time.time() + _failure_backoff_seconds(self._cache), reason=reason)
 
             result = self._cache.get_or_create(cache_key, _fetch_or_cache_failure)
-        except Exception:
+        except Exception as exc:
             logger.exception("Cache backend failed while fetching policies for subject_type %r", subject_type)
+            self._record_cache(error=exc)
             return None, True
+        self._record_cache()
         if isinstance(result, _FailedFetch):
             return None, True
         return result, fetch_failed

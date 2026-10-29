@@ -56,6 +56,18 @@ curl http://localhost:8001/health
 curl http://localhost:6003/.well-known/agent-card.json
 ```
 
+`/health` returns JSON: the agent `version`, the data `schema` state (status + version hash) and the
+state of each dependency in use - `ikg`, `token_introspection`, `gemini`, plus `audit_webhook` and
+`redis` when configured (`disabled` otherwise). `/health` makes no network calls itself: every entry is
+the outcome of the latest real call this process made to that dependency (schema/policy fetch,
+introspection, LLM call, audit delivery, cache access), with `checked_at` and a `source` of `traffic`.
+Once at startup each dependency is probed once to seed that state (`source: startup`, bounded by
+`HEALTH_CHECK_TIMEOUT_SECONDS`), so one that has seen no traffic yet still has a state - the startup
+probe also checks the Gemini API key/model (metadata read, no tokens spent). The state is only as fresh
+as the last call. `/health` is always HTTP 200 while the process serves - an outage shows as
+`"status": "degraded"` in the body, so liveness/readiness probes don't restart pods over a dependency no
+restart can fix.
+
 Send a prompt. This is the A2A JSON-RPC transport, not a REST API: note the `A2A-Version` header,
 the `SendMessage` method name, the `ROLE_USER` role and the caller's `subject_type`/`subject_id`
 in `message.metadata`. The Bearer token authenticates the calling client (via RFC 7662 token

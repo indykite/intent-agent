@@ -5,7 +5,7 @@ from http import HTTPStatus
 import httpx2
 import pytest
 
-from indykite.intent_agent.audit.http import HttpConfig, HttpSender
+from indykite.intent_agent.audit.http import HttpConfig, HttpSender, probe
 
 _URL = "https://audit.example.com/records"
 
@@ -180,3 +180,22 @@ def test_mtls_loads_the_client_certificate(tmp_path, caplog, audit_message):
 
     assert seen == ["POST"]
     assert "started auditing through HTTP with mTLS" in caplog.text
+
+
+def test_probe_sends_options_with_the_api_key_and_returns_the_status(mocker):
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx2.Response(HTTPStatus.METHOD_NOT_ALLOWED)
+
+    real = httpx2.AsyncClient
+    mocker.patch(
+        "indykite.intent_agent.audit.http.httpx2.AsyncClient",
+        side_effect=lambda **kwargs: real(transport=httpx2.MockTransport(handler), **kwargs),
+    )
+    config = HttpConfig(url="https://audit.example.com/r", method="POST", auth_type="api-key", api_key="k")
+
+    assert asyncio.run(probe(config)) == HTTPStatus.METHOD_NOT_ALLOWED
+    assert seen[0].method == "OPTIONS"
+    assert seen[0].headers["X-API-Key"] == "k"
