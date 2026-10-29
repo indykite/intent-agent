@@ -121,17 +121,17 @@ jobs:
 
       - name: Check the Gemini API key is available
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.INTENT_AGENT_GEMINI_API_KEY }}
         run: |
           if [ -z "$GEMINI_API_KEY" ]; then
-            echo "::error::GEMINI_API_KEY secret is not set - the eval suite needs a real Gemini key"
+            echo "::error::INTENT_AGENT_GEMINI_API_KEY secret is not set - the eval suite needs a real Gemini key"
             exit 1
           fi
 
       - name: Run golden eval suite
         id: evals
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.INTENT_AGENT_GEMINI_API_KEY }}
           # Settings needs these to construct; the suite serves fixture schemas in-process and
           # never introspects a token or writes an audit record, so placeholders are enough.
           INDYKITE_BASE_URL: https://ikg.invalid
