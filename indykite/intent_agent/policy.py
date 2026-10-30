@@ -67,6 +67,14 @@ class _FailedFetch:
     reason: str
 
 
+@dataclass(frozen=True, slots=True)
+class PolicyFetchOptions:
+    """How long one policy fetch attempt may take, and how many attempts one fetch makes."""
+
+    timeout_seconds: float = 30.0
+    retry_attempts: int = 3
+
+
 def build_policy_cache(settings: Settings) -> CacheRegion:
     """Build the policy cache region (Redis or memory, per CACHE_BACKEND).
 
@@ -120,21 +128,22 @@ class PolicyClient:
         base_url: str,
         app_agent_key: str,
         *,
-        timeout_seconds: float = 30.0,
-        retry_attempts: int = 3,
+        fetch: PolicyFetchOptions | None = None,
         cache: CacheRegion,
+        dependency_status: DependencyStatus | None = None,
     ) -> None:
         """Store the connection details; no request is made until get_cached().
 
-        Set `dependency_status` afterwards to be told how every fetch went (`ikg`) - what
-        /health reports.
+        dependency_status (when given) is told how every fetch went (`ikg`) and, with a Redis
+        cache, how every cache access went (`redis`) - what /health reports.
         """
+        fetch = fetch or PolicyFetchOptions()
         self._base_url = base_url
         self._app_agent_key = app_agent_key
-        self._timeout_seconds = timeout_seconds
-        self._retry_attempts = retry_attempts
+        self._timeout_seconds = fetch.timeout_seconds
+        self._retry_attempts = fetch.retry_attempts
         self._cache = cache
-        self.dependency_status: DependencyStatus | None = None
+        self._status = dependency_status
 
     def _load(self, subject_type: str) -> tuple[list[dict[str, Any]] | None, str]:
         """Fetch this subject_type's policies from the IndyKite platform.
@@ -173,15 +182,15 @@ class PolicyClient:
             except (httpx2.HTTPError, ValueError, TypeError) as exc:
                 last_error = exc
                 continue
-            if self.dependency_status is not None:
-                self.dependency_status.record_ok(IKG)
+            if self._status is not None:
+                self._status.record_ok(IKG)
             logger.info("Loaded %d polic%s from %s", len(results), "y" if len(results) == 1 else "ies", url)
             return results, ""
         reason = f"{last_error}"
         # A 4xx other than 401/403 (e.g. no policies for this subject type) means the platform
         # answered, so it says nothing against `ikg`; a rejected key or an outage does.
-        if self.dependency_status is not None and last_error is not None and not _is_answered(last_error):
-            self.dependency_status.record_error(IKG, describe_failure(last_error))
+        if self._status is not None and last_error is not None and not _is_answered(last_error):
+            self._status.record_error(IKG, describe_failure(last_error))
         logger.warning(
             "Failed to load policies from %s after %d attempt%s: %s",
             url,
@@ -193,12 +202,12 @@ class PolicyClient:
 
     def _record_cache(self, *, error: Exception | None = None) -> None:
         """Tell /health how the latest cache access went - only a Redis cache is a dependency."""
-        if self.dependency_status is None or not isinstance(getattr(self._cache, "actual_backend", None), RedisBackend):
+        if self._status is None or not isinstance(getattr(self._cache, "actual_backend", None), RedisBackend):
             return
         if error is None:
-            self.dependency_status.record_ok(REDIS)
+            self._status.record_ok(REDIS)
         else:
-            self.dependency_status.record_error(REDIS, describe_failure(error))
+            self._status.record_error(REDIS, describe_failure(error))
 
     def get_cached(self, subject_type: str) -> tuple[list[dict[str, Any]] | None, bool]:
         """Return (policies, fetch_failed) for subject_type, refreshing on a cache miss; never raises.

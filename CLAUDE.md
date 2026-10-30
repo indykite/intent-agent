@@ -166,7 +166,7 @@ re-opened by other separately-installed `indykite.*` packages instead of closed 
 package. Actual code always goes in sibling module (`config.py`, `agent.py`, a `test_*.py` file,
 ...), never in `__init__.py`.
 
-Eight modules carry whole service:
+These modules carry whole service:
 
 - **`config.py`** — `Settings(BaseSettings)` single source of runtime config, loaded from
   environment or `.env`. `gemini_api_key` has no default, so constructing `Settings()` fails
@@ -226,9 +226,21 @@ Eight modules carry whole service:
   `add_bearer_security` declares the same Bearer token on the agent card (`app.py` applies it to
   `build_agent_card`'s card): an HTTP auth `security_schemes` entry naming `EXPECTED_TOKEN_AUDIENCE`
   plus a matching `security_requirements`. The challenge and the card share `_BEARER_AUTH_SCHEME`.
+- **`dependency_status.py`** — `DependencyStatus`, the thread-safe store of each outside
+  dependency's latest outcome (`ikg`, `token_introspection`, `gemini`, `audit_webhook`/`audit_file`,
+  `redis`, plus the `schema` state and hash). The real calls record into it (`SchemaClient`,
+  `PolicyClient`, `BearerAuthMiddleware`, the LLM call, the audit senders), as `traffic`;
+  `startup_calls()` labels the schema preload's records `startup`. Failure details are a status
+  code or exception class only (`describe_failure`), never a body or a URL.
+- **`health.py`** — `HealthChecker`: `report()` builds the `/health` body (version, schema state,
+  one check per dependency, `disabled` for an unused audit sink or Redis) from `DependencyStatus`
+  alone, no I/O; `probe_all()` runs once at startup and probes, in parallel under
+  `HEALTH_CHECK_TIMEOUT_SECONDS`, only the dependencies nothing has recorded yet.
 - **`__main__.py`** — process entrypoint (`python -m indykite.intent_agent`). Wires `Settings()`,
-  calls `build_app`, starts background health server on `HEALTH_PORT` (default 8001) using
-  stdlib `http.server` — deliberately **not** part of main Starlette app, second listener —
+  calls `build_app`, seeds the health state with `HealthChecker.probe_all`, starts the
+  observability Starlette app on `HEALTH_PORT` (default 8001) on a background thread —
+  deliberately **not** part of main app, second listener — serving `/health` (JSON, always 200,
+  `degraded` in the body so probes never restart a pod over a dependency outage) and `/metrics`,
   then `uvicorn.run`s main app on `INTENT_PORT` (default 6003).
 
 **Skills / progressive disclosure.** `skills/<name>/SKILL.md` (YAML frontmatter + markdown body)

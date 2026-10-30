@@ -23,7 +23,7 @@ from pydantic import BaseModel
 from indykite.intent_agent import skills
 from indykite.intent_agent.audit.message import Outcome, policy_version, schema_version
 from indykite.intent_agent.config import Settings
-from indykite.intent_agent.dependency_status import GEMINI, SCHEMA, DependencyStatus, describe_failure
+from indykite.intent_agent.dependency_status import GEMINI, SCHEMA, DependencyStatus, describe_failure, startup_calls
 from indykite.intent_agent.errors import (
     IntentValidationError,
     SubjectTypeMismatchError,
@@ -37,7 +37,7 @@ from indykite.intent_agent.errors import (
     validation_feedback_error,
 )
 from indykite.intent_agent.input_schema import build_input_schema, render_schema_summary
-from indykite.intent_agent.policy import PolicyClient, build_policy_cache
+from indykite.intent_agent.policy import PolicyClient, PolicyFetchOptions, build_policy_cache
 from indykite.intent_agent.schema import SchemaClient, build_schema_cache
 from indykite.intent_agent.subject_binding import (
     PolicyContext,
@@ -271,11 +271,10 @@ class IntentAgent:
         self._policy_client = policy_client or PolicyClient(
             str(settings.indykite_base_url),
             settings.ik_app_agent_key.get_secret_value(),
-            timeout_seconds=settings.policy_fetch_timeout_seconds,
-            retry_attempts=settings.policy_fetch_retry_attempts,
+            fetch=PolicyFetchOptions(settings.policy_fetch_timeout_seconds, settings.policy_fetch_retry_attempts),
             cache=build_policy_cache(settings),
+            dependency_status=self.dependency_status,
         )
-        self._policy_client.dependency_status = self.dependency_status
         self.discovered_skills = skills.discover_skills()
         self.system_prompt = skills.build_skill_catalog_prompt(self.discovered_skills)
         self.skill_registry = {s["name"]: s for s in self.discovered_skills}
@@ -295,9 +294,10 @@ class IntentAgent:
 
         A missing or unpopulated schema is only logged; run_extraction retries it per request.
         """
-        self._schema_client.preload()
-        schema = self.get_cached_schema()
-        self._record_schema(schema)
+        with startup_calls():
+            self._schema_client.preload()
+            schema = self.get_cached_schema()
+            self._record_schema(schema)
         if schema is None:
             logger.warning(
                 "Data schema unavailable at cold start - will keep retrying on every request until it's populated",

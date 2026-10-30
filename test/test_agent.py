@@ -15,7 +15,7 @@ from indykite.intent_agent.agent import IntentAgent, RequestSubject, _policy_blo
 from indykite.intent_agent.app import build_app
 from indykite.intent_agent.audit.message import Outcome, schema_version
 from indykite.intent_agent.config import Settings
-from indykite.intent_agent.dependency_status import GEMINI, SCHEMA, DependencyStatus
+from indykite.intent_agent.dependency_status import GEMINI, IKG, SCHEMA, DependencyStatus
 from indykite.intent_agent.errors import (
     llm_timeout_error,
     no_intent_error,
@@ -1163,3 +1163,13 @@ def test_schema_state_is_recorded(monkeypatch, mocker, schema, status, detail):
 
     assert (store.get(SCHEMA).status, store.get(SCHEMA).detail) == (status, detail)
     assert bool(store.get(SCHEMA).version) == (status == "ok")
+
+
+def test_schema_preload_records_startup_state(monkeypatch, mocker):
+    agent, status = _agent_with_status(monkeypatch, mocker, mocker.Mock())
+    agent._schema_client.preload.side_effect = lambda: status.record_ok(IKG)
+    agent._schema_client.get_cached.return_value = {"graph": {"nodes": {"Person": {}}}}
+
+    agent.preload_schema()
+
+    assert (status.get(IKG).source, status.get(SCHEMA).source) == ("startup", "startup")

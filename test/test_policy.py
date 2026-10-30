@@ -16,6 +16,7 @@ from indykite.intent_agent.dependency_status import IKG, REDIS, DependencyStatus
 from indykite.intent_agent.policy import (
     _FAILURE_CACHE_SECONDS,
     PolicyClient,
+    PolicyFetchOptions,
     _cache_key,
     _FailedFetch,
     _failure_backoff_seconds,
@@ -175,7 +176,9 @@ def test_get_cached_retries_then_succeeds(mocker, kind):
     """A failed attempt (HTTP error or malformed body) is retried and a later success is returned."""
     failure = _one_failure(mocker, kind)
     client_mock = _mock_sync_client(mocker, side_effect=[failure, failure, _mock_response(mocker)])
-    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=3, cache=_memory_cache())
+    client = PolicyClient(
+        "https://ikg.example.com", _APP_AGENT_KEY, fetch=PolicyFetchOptions(retry_attempts=3), cache=_memory_cache()
+    )
 
     assert client.get_cached(_SUBJECT_TYPE) == (_POLICIES, False)
     assert client_mock.get.call_count == _RETRY_ATTEMPTS
@@ -187,7 +190,9 @@ def test_get_cached_returns_none_after_exhausting_retries(mocker, caplog, kind):
     caplog.set_level("WARNING")
     failure = _one_failure(mocker, kind)
     client_mock = _mock_sync_client(mocker, side_effect=[failure] * _RETRY_ATTEMPTS)
-    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=3, cache=_memory_cache())
+    client = PolicyClient(
+        "https://ikg.example.com", _APP_AGENT_KEY, fetch=PolicyFetchOptions(retry_attempts=3), cache=_memory_cache()
+    )
 
     assert client.get_cached(_SUBJECT_TYPE) == (None, True)
     assert client_mock.get.call_count == _RETRY_ATTEMPTS
@@ -201,7 +206,9 @@ def test_get_cached_truncates_a_malformed_body_in_the_warning_log(mocker, caplog
     caplog.set_level("WARNING")
     huge_body = {"not_results": "x" * huge_body_size}
     _mock_sync_client(mocker, response=_mock_malformed_response(mocker, json_value=huge_body))
-    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=1, cache=_memory_cache())
+    client = PolicyClient(
+        "https://ikg.example.com", _APP_AGENT_KEY, fetch=PolicyFetchOptions(retry_attempts=1), cache=_memory_cache()
+    )
 
     assert client.get_cached(_SUBJECT_TYPE) == (None, True)
     assert "xxxxxxxxxx" in caplog.text
@@ -213,7 +220,9 @@ def test_get_cached_does_not_retry_a_4xx_response(mocker, caplog):
     caplog.set_level("WARNING")
     forbidden = _mock_status_error_response(mocker, 403)
     client_mock = _mock_sync_client(mocker, response=forbidden)
-    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=3, cache=_memory_cache())
+    client = PolicyClient(
+        "https://ikg.example.com", _APP_AGENT_KEY, fetch=PolicyFetchOptions(retry_attempts=3), cache=_memory_cache()
+    )
 
     assert client.get_cached(_SUBJECT_TYPE) == (None, True)
     assert client_mock.get.call_count == 1
@@ -225,7 +234,9 @@ def test_get_cached_still_retries_a_5xx_response(mocker):
     """A 5xx is retried like a connection error."""
     server_error = _mock_status_error_response(mocker, 503)
     client_mock = _mock_sync_client(mocker, side_effect=[server_error] * _RETRY_ATTEMPTS)
-    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=3, cache=_memory_cache())
+    client = PolicyClient(
+        "https://ikg.example.com", _APP_AGENT_KEY, fetch=PolicyFetchOptions(retry_attempts=3), cache=_memory_cache()
+    )
 
     assert client.get_cached(_SUBJECT_TYPE) == (None, True)
     assert client_mock.get.call_count == _RETRY_ATTEMPTS
@@ -236,7 +247,9 @@ def test_get_cached_still_retries_408_and_429(mocker, status):
     """408 and 429 are transient, so they are retried like a 5xx."""
     transient = _mock_status_error_response(mocker, status)
     client_mock = _mock_sync_client(mocker, side_effect=[transient] * _RETRY_ATTEMPTS)
-    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=3, cache=_memory_cache())
+    client = PolicyClient(
+        "https://ikg.example.com", _APP_AGENT_KEY, fetch=PolicyFetchOptions(retry_attempts=3), cache=_memory_cache()
+    )
 
     assert client.get_cached(_SUBJECT_TYPE) == (None, True)
     assert client_mock.get.call_count == _RETRY_ATTEMPTS
@@ -246,7 +259,9 @@ def test_get_cached_caches_a_failure_briefly(mocker):
     """A failed fetch is cached for a short backoff, so the next call makes no new request."""
     error = httpx2.ConnectTimeout("connect timed out")
     client_mock = _mock_sync_client(mocker, side_effect=error)
-    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=3, cache=_memory_cache())
+    client = PolicyClient(
+        "https://ikg.example.com", _APP_AGENT_KEY, fetch=PolicyFetchOptions(retry_attempts=3), cache=_memory_cache()
+    )
 
     assert client.get_cached(_SUBJECT_TYPE) == (None, True)
     assert client_mock.get.call_count == _RETRY_ATTEMPTS
@@ -259,7 +274,9 @@ def test_get_cached_retries_again_once_the_failure_backoff_expires(mocker):
     """Once the failure backoff expires, the next call fetches again."""
     error = httpx2.ConnectTimeout("connect timed out")
     client_mock = _mock_sync_client(mocker, side_effect=[error] * _RETRY_ATTEMPTS + [_mock_response(mocker)])
-    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=3, cache=_memory_cache())
+    client = PolicyClient(
+        "https://ikg.example.com", _APP_AGENT_KEY, fetch=PolicyFetchOptions(retry_attempts=3), cache=_memory_cache()
+    )
     assert client.get_cached(_SUBJECT_TYPE) == (None, True)
     assert client_mock.get.call_count == _RETRY_ATTEMPTS
 
@@ -363,7 +380,9 @@ def test_peek_cached_never_fetches(mocker):
 
     error = httpx2.ConnectTimeout("connect timed out")
     client_mock.get.side_effect = error
-    failing_client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=1, cache=_memory_cache())
+    failing_client = PolicyClient(
+        "https://ikg.example.com", _APP_AGENT_KEY, fetch=PolicyFetchOptions(retry_attempts=1), cache=_memory_cache()
+    )
     failing_client.get_cached(_SUBJECT_TYPE)
     assert failing_client.peek_cached(_SUBJECT_TYPE) == (True, None)
 
@@ -428,7 +447,9 @@ def test_get_cached_falls_back_to_stale_policies_when_refresh_fails(mocker, capl
     caplog.set_level("WARNING")
     cache = make_region().configure("dogpile.cache.memory", expiration_time=100)
     client_mock = _mock_sync_client(mocker, response=_mock_response(mocker))
-    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=1, cache=cache)
+    client = PolicyClient(
+        "https://ikg.example.com", _APP_AGENT_KEY, fetch=PolicyFetchOptions(retry_attempts=1), cache=cache
+    )
     assert client.get_cached(_SUBJECT_TYPE) == (_POLICIES, False)
     _expire(cache)
 
@@ -449,8 +470,13 @@ def test_get_cached_falls_back_to_stale_policies_when_refresh_fails(mocker, capl
 )
 def test_fetch_records_ikg_state(mocker, code, expected):
     status = DependencyStatus()
-    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, retry_attempts=1, cache=_memory_cache())
-    client.dependency_status = status
+    client = PolicyClient(
+        "https://ikg.example.com",
+        _APP_AGENT_KEY,
+        fetch=PolicyFetchOptions(retry_attempts=1),
+        cache=_memory_cache(),
+        dependency_status=status,
+    )
     response = _mock_response(mocker) if code == HTTPStatus.OK else _mock_status_error_response(mocker, code)
     _mock_sync_client(mocker, response=response)
 
@@ -462,8 +488,7 @@ def test_fetch_records_ikg_state(mocker, code, expected):
 def test_redis_cache_access_records_redis_state(mocker):
     status = DependencyStatus()
     cache = mocker.Mock(actual_backend=mocker.Mock(spec=RedisBackend), get=mocker.Mock(return_value=NO_VALUE))
-    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache)
-    client.dependency_status = status
+    client = PolicyClient("https://ikg.example.com", _APP_AGENT_KEY, cache=cache, dependency_status=status)
 
     cache.get_or_create = mocker.Mock(side_effect=ConnectionError)
     assert client.get_cached(_SUBJECT_TYPE) == (None, True)

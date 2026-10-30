@@ -92,7 +92,8 @@ class HealthChecker:
 
     async def probe_all(self) -> None:
         """Probe every dependency in use once, in parallel, and record the outcome as `startup`
-        state. A dependency that traffic has already recorded since keeps its newer state.
+        state. A dependency something already recorded (the schema preload records `ikg`, `schema`
+        and, with Redis, `redis`) is not probed, and keeps its state.
         """
         probes: dict[str, Callable[[], Awaitable[None]]] = {
             IKG: self._probe_ikg,
@@ -102,8 +103,8 @@ class HealthChecker:
             AUDIT_FILE: self._probe_audit_file,
             REDIS: self._probe_redis,
         }
-        enabled = [name for name, used in self._dependencies().items() if used]
-        await asyncio.gather(*(self._run_probe(name, probes[name]) for name in enabled))
+        unrecorded = [name for name, used in self._dependencies().items() if used and self._status.get(name) is None]
+        await asyncio.gather(*(self._run_probe(name, probes[name]) for name in unrecorded))
 
     async def _run_probe(self, name: str, probe: Callable[[], Awaitable[None]]) -> None:
         """Run one probe under the timeout and record its outcome, unless traffic got there first."""

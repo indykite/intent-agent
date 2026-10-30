@@ -8,6 +8,9 @@ only - never a response body or a URL that could carry a credential.
 """
 
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -27,6 +30,9 @@ AUDIT_WEBHOOK = "audit_webhook"
 AUDIT_FILE = "audit_file"
 REDIS = "redis"
 SCHEMA = "schema"
+
+# Per thread/task, so a request served while startup work runs elsewhere still records `traffic`.
+_current_source: ContextVar[Source] = ContextVar("dependency_source", default="traffic")
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,13 +70,13 @@ class DependencyStatus:
         self._lock = threading.Lock()
         self._states: dict[str, DependencyState] = {}
 
-    def record_ok(self, name: str, *, source: Source = "traffic", detail: str = "", version: str = "") -> None:
-        """A call to `name` just succeeded."""
-        self._record(name, OK, source, detail, version)
+    def record_ok(self, name: str, *, source: Source | None = None, detail: str = "", version: str = "") -> None:
+        """A call to `name` just succeeded. `source` defaults to the one `startup_calls` sets, else `traffic`."""
+        self._record(name, OK, source or _current_source.get(), detail, version)
 
-    def record_error(self, name: str, detail: str, *, source: Source = "traffic", version: str = "") -> None:
-        """A call to `name` just failed, for the reason in `detail`."""
-        self._record(name, ERROR, source, detail, version)
+    def record_error(self, name: str, detail: str, *, source: Source | None = None, version: str = "") -> None:
+        """A call to `name` just failed, for the reason in `detail`. `source` defaults like record_ok's."""
+        self._record(name, ERROR, source or _current_source.get(), detail, version)
 
     def get(self, name: str) -> DependencyState | None:
         """The latest outcome recorded for `name`, if any."""
@@ -81,3 +87,13 @@ class DependencyStatus:
         state = DependencyState(status, datetime.now(UTC).isoformat(timespec="seconds"), source, detail, version)
         with self._lock:
             self._states[name] = state
+
+
+@contextmanager
+def startup_calls() -> Iterator[None]:
+    """Record the calls made inside this block (in this thread or task) as `startup`, not `traffic`."""
+    token = _current_source.set("startup")
+    try:
+        yield
+    finally:
+        _current_source.reset(token)

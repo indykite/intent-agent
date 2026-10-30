@@ -196,13 +196,20 @@ def test_probe_all_times_out_a_slow_dependency(mocker, settings):
     assert (status.get(GEMINI).status, status.get(GEMINI).detail) == ("error", "timed out")
 
 
-def test_probe_does_not_overwrite_state_recorded_by_traffic(mocker, settings):
-    _route(mocker, lambda _request: httpx2.Response(500))
+def test_probe_all_skips_a_dependency_already_recorded(mocker, settings):
+    probed_hosts = []
+
+    def handler(request):
+        probed_hosts.append(request.url.host)
+        return httpx2.Response(500)
+
+    _route(mocker, handler)
     status = DependencyStatus()
     status.record_ok(GEMINI)
 
     asyncio.run(HealthChecker(settings, status).probe_all())
 
+    assert "generativelanguage.googleapis.com" not in probed_hosts
     assert (status.get(GEMINI).status, status.get(GEMINI).source) == ("ok", "traffic")
     assert status.get(IKG).status == "error"
 
