@@ -49,13 +49,13 @@ jobs:
 
     steps:
       - name: actions/checkout
-        uses: indykite/.github/.github/actions/git-checkout@090400ef7730777de9f272c7a833c04c80373f07 # master
+        uses: indykite/.github/.github/actions/git-checkout@f8d1bb0617b01f9e97c8b90c424e155e766d56ed # master
 
       - name: Install uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0 - https://github.com/astral-sh/setup-uv/releases
 
       - name: Build Python project using composite action
-        uses: indykite/.github/.github/actions/python-build@090400ef7730777de9f272c7a833c04c80373f07 # master
+        uses: indykite/.github/.github/actions/python-build@f8d1bb0617b01f9e97c8b90c424e155e766d56ed # master
         id: build_python
         env:
           CUDA_VISIBLE_DEVICES: ""
