@@ -2,7 +2,7 @@
 # https://sourcery.ai/blog/python-docker/
 # https://fastapi.tiangolo.com/deployment/docker/#dockerfile
 # Supports multi-arch
-FROM python:3.13-trixie@sha256:90b30ab329c01caa6b7d221bb0e2ab034109044ed38d933d3c2711f4386c1004 AS python-deps
+FROM python:3.13-trixie@sha256:6a9220edda062e9223ea0784740a535987299420b96fbfd520b89bbd3e772485 AS python-deps
 
 # Setup env
 ENV LANG=C.UTF-8 \
@@ -25,7 +25,7 @@ COPY indykite ./indykite
 
 #
 ### Production image
-FROM gcr.io/distroless/python3-debian13@sha256:0db804f397ca31a1498c9d94c3c1df53fe49ac8007e5942b1cb547c1c3355c09 AS runtime
+FROM gcr.io/distroless/python3-debian13@sha256:9a1ed29d41d7695245ff86bc2e08684d3dd253a3f9c8ca45677427f9f4fe3598 AS runtime
 
 # Setup env
 ENV LANG=C.UTF-8 \
