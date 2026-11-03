@@ -4,3 +4,12 @@ licenses:
     paths:
       - "LICENSE"
     statement: "Repository's own LICENSE file, not a third-party dependency license"
+vulnerabilities:
+  - id: CVE-2026-119194
+    statement: 'See workflow run: https://github.com/indykite/intent-agent/actions/runs/41646036146; generated 2026-11-03T13:38:07Z by trivy-notify'
+  - id: CVE-2026-119195
+    statement: 'See workflow run: https://github.com/indykite/intent-agent/actions/runs/41646036146; generated 2026-11-03T13:38:07Z by trivy-notify'
+  - id: CVE-2026-119196
+    statement: 'See workflow run: https://github.com/indykite/intent-agent/actions/runs/41646036146; generated 2026-11-03T13:38:07Z by trivy-notify'
+  - id: CVE-2026-119197
+    statement: 'See workflow run: https://github.com/indykite/intent-agent/actions/runs/41646036146; generated 2026-11-03T13:38:07Z by trivy-notify'
