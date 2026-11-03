@@ -214,17 +214,22 @@ def test_probe_all_skips_a_dependency_already_recorded(mocker, settings):
     assert status.get(IKG).status == "error"
 
 
-def test_audit_file_probe_checks_the_directory_is_writable(mocker, settings, tmp_path):
+@pytest.mark.parametrize(
+    ("subdir", "expected"),
+    [
+        pytest.param("", ("ok", ""), id="writable"),
+        pytest.param("missing", ("error", "audit directory is not writable"), id="missing"),
+    ],
+)
+def test_audit_file_probe_checks_the_directory_is_writable(mocker, settings, tmp_path, subdir, expected):
     _route(mocker, _all_ok)
-    settings.audit_file_storage_path = tmp_path
+    settings.audit_file_storage_path = tmp_path / subdir
     status = DependencyStatus()
-    asyncio.run(HealthChecker(settings, status).probe_all())
-    assert (status.get(AUDIT_FILE).status, status.get(AUDIT_FILE).source) == ("ok", "startup")
 
-    settings.audit_file_storage_path = tmp_path / "missing"
-    status = DependencyStatus()
     asyncio.run(HealthChecker(settings, status).probe_all())
-    assert status.get(AUDIT_FILE).detail == "audit directory is not writable"
+
+    audit = status.get(AUDIT_FILE)
+    assert (audit.status, audit.detail, audit.source) == (*expected, "startup")
 
 
 def test_webhook_and_redis_probed_only_when_configured(mocker, settings):

@@ -45,7 +45,6 @@ def test_health_returns_the_checker_report(mocker):
 
 
 def test_health_stays_200_when_degraded(mocker):
-    """A dependency outage must not fail the liveness/readiness probes - a restart can't fix it."""
     app = build_observability_app(_health_checker(mocker, {"status": "degraded"}))
     response = TestClient(app).get("/health")
     assert response.status_code == HTTPStatus.OK

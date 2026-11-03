@@ -57,14 +57,15 @@ curl http://localhost:6003/.well-known/agent-card.json
 ```
 
 `/health` returns JSON: the agent `version`, the data `schema` state (status + version hash) and the
-state of each dependency in use - `ikg`, `token_introspection`, `gemini`, plus `audit_webhook` and
-`redis` when configured (`disabled` otherwise). `/health` makes no network calls itself: every entry is
-the outcome of the latest real call this process made to that dependency (schema/policy fetch,
-introspection, LLM call, audit delivery, cache access), with `checked_at` and a `source` of `traffic`.
-Once at startup each dependency is probed once to seed that state (`source: startup`, bounded by
+state of each dependency in use - `ikg`, `token_introspection`, `gemini`, the audit sink (`audit_webhook`
+or `audit_file`, whichever `AUDIT_DELIVERY` selects) and `redis` when `CACHE_BACKEND=redis` (`disabled`
+otherwise). `/health` makes no network calls itself: every entry is the outcome of the latest real call
+this process made to that dependency (schema/policy fetch, introspection, LLM call, audit delivery,
+cache access), with `checked_at` and a `source` of `traffic`. At startup the schema fetch records its
+outcome (`source: startup`), and each dependency still without one is probed once (bounded by
 `HEALTH_CHECK_TIMEOUT_SECONDS`), so one that has seen no traffic yet still has a state - the startup
-probe also checks the Gemini API key/model (metadata read, no tokens spent). The state is only as fresh
-as the last call. `/health` is always HTTP 200 while the process serves - an outage shows as
+probe also checks the Gemini API key/model (metadata read, no tokens spent) and that the audit
+directory is writable. The state is only as fresh as the last call. `/health` is always HTTP 200 while the process serves - an outage shows as
 `"status": "degraded"` in the body, so liveness/readiness probes don't restart pods over a dependency no
 restart can fix.
 
@@ -128,6 +129,7 @@ Commonly tuned optional settings:
 | `ADVERTISED_URL` | `http://intent:<INTENT_PORT>` | JSON-RPC URL on the agent card; must match the protocol, hostname and port of the ingress or Istio VirtualService callers use (see below) |
 | `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Model used for extraction |
 | `LLM_TIMEOUT_SECONDS`, `REQUEST_TIMEOUT_SECONDS` | `3.0`, `10.0` | Per LLM call, and for the whole request |
+| `HEALTH_CHECK_TIMEOUT_SECONDS` | `3.0` | Bound on each startup probe that seeds `/health` |
 | `VALIDATION_MAX_RETRIES` | `1` | Extra attempts after an off-schema answer (`0` disables) |
 | `TOOL_CALL_MAX_ITERATIONS` | `5` | Tool-call rounds before giving up |
 | `SCHEMA_REFRESH_TTL_MINUTES`, `POLICY_REFRESH_TTL_MINUTES` | `5.0` | How long a cached schema / policy list is served |

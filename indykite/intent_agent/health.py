@@ -107,7 +107,7 @@ class HealthChecker:
         await asyncio.gather(*(self._run_probe(name, probes[name]) for name in unrecorded))
 
     async def _run_probe(self, name: str, probe: Callable[[], Awaitable[None]]) -> None:
-        """Run one probe under the timeout and record its outcome, unless traffic got there first."""
+        """Run one probe under the timeout and record its outcome, unless a real call recorded it first."""
         started = time.monotonic()
         failure = ""
         try:
