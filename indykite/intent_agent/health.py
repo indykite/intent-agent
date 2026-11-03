@@ -1,6 +1,4 @@
-"""The `/health` report: agent version, the data schema's state and the last known state of every
-dependency this deployment uses (IKG, token introspection, Gemini, plus the audit webhook and
-Redis when configured).
+"""The `/health` report: agent version, schema state and the last known state of each dependency in use.
 
 `/health` never makes a network call: it reads what `DependencyStatus` recorded from the real
 calls the process made. `HealthChecker.probe_all` runs one probe per dependency at startup to seed
@@ -91,9 +89,10 @@ class HealthChecker:
         }
 
     async def probe_all(self) -> None:
-        """Probe every dependency in use once, in parallel, and record the outcome as `startup`
-        state. A dependency something already recorded (the schema preload records `ikg`, `schema`
-        and, with Redis, `redis`) is not probed, and keeps its state.
+        """Probe every dependency in use once, in parallel, and record each outcome as `startup` state.
+
+        A dependency something already recorded (the schema preload records `ikg`, `schema` and,
+        with Redis, `redis`) is not probed, and keeps its state.
         """
         probes: dict[str, Callable[[], Awaitable[None]]] = {
             IKG: self._probe_ikg,

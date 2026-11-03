@@ -311,6 +311,7 @@ class IntentAgent:
 
     def _record_schema(self, schema: dict[str, Any] | None, version: str | None = None) -> None:
         """Note the schema state /health reports: usable, not populated yet, or unavailable.
+
         `version` is the schema's hash when the caller already computed it.
         """
         if schema is None:

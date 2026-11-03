@@ -45,8 +45,10 @@ class HttpSender:
         transport: httpx2.AsyncBaseTransport | None = None,
         dependency_status: DependencyStatus | None = None,
     ) -> None:
-        """Build the HTTP client for the configured auth type. `transport` is for tests only.
-        dependency_status (when given) is told how every delivery went - what /health reports.
+        """Build the HTTP client for the configured auth type.
+
+        `transport` is for tests only. dependency_status (when given) is told how every delivery
+        went - what /health reports.
         """
         self._status = dependency_status
         self._url = config.url
@@ -111,10 +113,10 @@ def _mtls_context(config: HttpConfig) -> ssl.SSLContext:
 
 
 async def probe(config: HttpConfig) -> int:
-    """Reachability check for the health endpoint: one OPTIONS request to the webhook URL with
-    the configured credentials, returning the status code. Nothing is delivered - a real record
-    is never faked - so a 4xx/405 still proves the receiver answers, but not that it would
-    accept a record. Raises httpx2.HTTPError if it can't be reached.
+    """Send one OPTIONS request to the webhook URL and return its status code.
+
+    No record is delivered, so a 4xx proves the receiver answers, not that it would accept a
+    record. Raises httpx2.HTTPError if it can't be reached.
     """
     headers = {config.api_key_header: config.api_key} if config.auth_type == "api-key" else {}
     verify: ssl.SSLContext | bool = _mtls_context(config) if config.auth_type == "mTLS" else True
