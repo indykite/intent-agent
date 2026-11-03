@@ -17,16 +17,11 @@
     "group:recommended"
   ],
   // Transitive dependencies (e.g. pyasn1 via google-auth) are only in uv.lock, so the pep621 manager
-  // never proposes them; refresh the lock file weekly and raise OSV advisories as PRs at any time.
+  // never proposes them. The shared config already raises OSV advisories as PRs; it leaves lock file
+  // maintenance disabled.
   "lockFileMaintenance": {
     "enabled": true,
     "schedule": ["before 6am on monday"]
-  },
-  "osvVulnerabilityAlerts": true,
-  "vulnerabilityAlerts": {
-    "enabled": true,
-    "schedule": ["at any time"],
-    "addLabels": ["security"]
   },
   "customManagers": [
     {
