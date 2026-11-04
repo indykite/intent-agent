@@ -24,6 +24,9 @@ def settings(baseline_env):
     return Settings(_env_file=None)
 
 
+_NOT_RFC_7662 = "response is not an RFC 7662 introspection answer"
+
+
 def _route(mocker, handler):
     """Make every AsyncClient the startup probes build talk to `handler` instead of the network."""
     real = httpx2.AsyncClient
@@ -123,11 +126,16 @@ def test_probe_all_seeds_startup_state(mocker, settings):
 @pytest.mark.parametrize(
     ("host", "code", "detail"),
     [
-        ("generativelanguage.googleapis.com", 400, "API key rejected (400)"),
-        ("generativelanguage.googleapis.com", 404, "model 'gemini-3.5-flash-lite' not found"),
-        ("ikg.example.com", 403, "app agent key rejected (403)"),
-        ("idp.example.com", 401, "client credentials rejected (401)"),
-        ("idp.example.com", 503, "unexpected status 503"),
+        pytest.param("generativelanguage.googleapis.com", 400, "API key rejected (400)", id="gemini-bad-key"),
+        pytest.param(
+            "generativelanguage.googleapis.com",
+            404,
+            "model 'gemini-3.5-flash-lite' not found",
+            id="gemini-unknown-model",
+        ),
+        pytest.param("ikg.example.com", 403, "app agent key rejected (403)", id="ikg-bad-key"),
+        pytest.param("idp.example.com", 401, "client credentials rejected (401)", id="idp-bad-credentials"),
+        pytest.param("idp.example.com", 503, "unexpected status 503", id="idp-unavailable"),
     ],
 )
 def test_probe_all_names_the_failing_dependency(mocker, settings, host, code, detail):
@@ -148,12 +156,11 @@ def test_probe_all_names_the_failing_dependency(mocker, settings, host, code, de
 @pytest.mark.parametrize(
     ("response", "detail"),
     [
-        (httpx2.Response(200, text="<html>login</html>"), "response is not JSON"),
-        (httpx2.Response(200, json=["active"]), "response is not an RFC 7662 introspection answer"),
-        (httpx2.Response(200, json={"active": "no"}), "response is not an RFC 7662 introspection answer"),
-        (httpx2.Response(200, json={}), "response is not an RFC 7662 introspection answer"),
+        pytest.param(httpx2.Response(200, text="<html>login</html>"), "response is not JSON", id="html"),
+        pytest.param(httpx2.Response(200, json=["active"]), _NOT_RFC_7662, id="not-object"),
+        pytest.param(httpx2.Response(200, json={"active": "no"}), _NOT_RFC_7662, id="active-not-bool"),
+        pytest.param(httpx2.Response(200, json={}), _NOT_RFC_7662, id="no-active"),
     ],
-    ids=["html", "not-object", "active-not-bool", "no-active"],
 )
 def test_introspection_probe_needs_a_real_rfc_7662_answer(mocker, settings, response, detail):
     _route(
@@ -232,12 +239,24 @@ def test_audit_file_probe_checks_the_directory_is_writable(mocker, settings, tmp
     assert (audit.status, audit.detail, audit.source) == (*expected, "startup")
 
 
-def test_webhook_and_redis_probed_only_when_configured(mocker, settings):
+@pytest.mark.parametrize(
+    ("probe_status", "ping_error", "expected"),
+    [
+        pytest.param(405, None, {AUDIT_WEBHOOK: ("ok", ""), REDIS: ("ok", "")}, id="reachable"),
+        pytest.param(
+            502,
+            ConnectionError,
+            {AUDIT_WEBHOOK: ("error", "unexpected status 502"), REDIS: ("error", "ConnectionError")},
+            id="down",
+        ),
+    ],
+)
+def test_webhook_and_redis_are_probed_when_configured(mocker, settings, probe_status, ping_error, expected):
     _enable_webhook_and_redis(settings)
     _route(mocker, _all_ok)
-    probe = mocker.patch("indykite.intent_agent.health.audit_http.probe", mocker.AsyncMock(return_value=405))
+    probe = mocker.patch("indykite.intent_agent.health.audit_http.probe", mocker.AsyncMock(return_value=probe_status))
     redis = mocker.patch("indykite.intent_agent.health.Redis.from_url")
-    redis.return_value.ping = mocker.AsyncMock()
+    redis.return_value.ping = mocker.AsyncMock(side_effect=ping_error)
     redis.return_value.aclose = mocker.AsyncMock()
     status = DependencyStatus()
 
@@ -245,21 +264,4 @@ def test_webhook_and_redis_probed_only_when_configured(mocker, settings):
 
     probe.assert_awaited_once()
     redis.return_value.aclose.assert_awaited_once()
-    assert status.get(AUDIT_WEBHOOK).status == "ok"
-    assert status.get(REDIS).status == "ok"
-
-
-def test_webhook_5xx_and_redis_down_are_errors(mocker, settings):
-    _enable_webhook_and_redis(settings)
-    _route(mocker, _all_ok)
-    mocker.patch("indykite.intent_agent.health.audit_http.probe", mocker.AsyncMock(return_value=502))
-    redis = mocker.patch("indykite.intent_agent.health.Redis.from_url")
-    redis.return_value.ping = mocker.AsyncMock(side_effect=ConnectionError)
-    redis.return_value.aclose = mocker.AsyncMock()
-    status = DependencyStatus()
-
-    asyncio.run(HealthChecker(settings, status).probe_all())
-
-    assert status.get(AUDIT_WEBHOOK).detail == "unexpected status 502"
-    assert status.get(REDIS).detail == "ConnectionError"
-    redis.return_value.aclose.assert_awaited_once()
+    assert {name: (status.get(name).status, status.get(name).detail) for name in expected} == expected

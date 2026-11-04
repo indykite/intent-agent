@@ -2,6 +2,7 @@ import time
 from http import HTTPStatus
 
 import httpx2
+import pytest
 from prometheus_client import REGISTRY
 from starlette.applications import Starlette
 from starlette.responses import PlainTextResponse
@@ -36,19 +37,18 @@ def _instrumented_client():
     return TestClient(app)
 
 
-def test_health_returns_the_checker_report(mocker):
-    report = {"status": "ok", "version": "1.2.3"}
+@pytest.mark.parametrize(
+    "report",
+    [
+        pytest.param({"status": "ok", "version": "1.2.3"}, id="ok"),
+        pytest.param({"status": "degraded"}, id="degraded"),
+    ],
+)
+def test_health_returns_the_checker_report_with_200(mocker, report):
     app = build_observability_app(_health_checker(mocker, report))
     response = TestClient(app).get("/health")
     assert response.status_code == HTTPStatus.OK
     assert response.json() == report
-
-
-def test_health_stays_200_when_degraded(mocker):
-    app = build_observability_app(_health_checker(mocker, {"status": "degraded"}))
-    response = TestClient(app).get("/health")
-    assert response.status_code == HTTPStatus.OK
-    assert response.json() == {"status": "degraded"}
 
 
 def test_metrics_returns_prometheus_exposition_format(mocker):

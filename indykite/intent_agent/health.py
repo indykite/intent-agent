@@ -142,12 +142,9 @@ class HealthChecker:
             raise _unexpected_status(response.status_code)
 
     async def _probe_introspection(self) -> None:
-        """The IdP answers an introspection call authenticated with our own client credentials.
+        """The IdP answers an introspection call with our client credentials in RFC 7662 shape.
 
-        The token is a dummy: an RFC 7662 answer (a JSON object with a boolean `active`, false
-        here) proves reachability, that the client credentials are accepted and that the endpoint
-        is really an introspection endpoint - not a proxy or login page answering 200, which
-        validate_access_token would reject on every request.
+        The token is a dummy; `active: false` is the expected answer.
         """
         async with httpx2.AsyncClient(timeout=self._settings.health_check_timeout_seconds) as client:
             response = await client.post(

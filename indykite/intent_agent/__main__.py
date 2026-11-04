@@ -53,13 +53,7 @@ class MetricsMiddleware(BaseHTTPMiddleware):
 
 
 def _health(health_checker: HealthChecker) -> Callable[[Request], Awaitable[JSONResponse]]:
-    """Build the GET /health handler (Dockerfile HEALTHCHECK, liveness and readiness probes).
-
-    Always 200 while the process serves: a dependency outage shows as `"status": "degraded"` in
-    the body, not a failing probe - a 5xx here would have Kubernetes restart every pod (liveness)
-    or pull them all from the Service (readiness) because Gemini or the IdP is down, which no
-    restart can fix.
-    """
+    """Build the GET /health handler: always 200, an outage shows as `"status": "degraded"` in the body."""
 
     async def handler(_request: Request) -> JSONResponse:
         return JSONResponse(health_checker.report())

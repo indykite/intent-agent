@@ -1,10 +1,7 @@
-"""The last known state of every outside dependency, as seen by the calls this process really made.
+"""The latest outcome of every outside dependency, as recorded by the calls this process made.
 
-`/health` reads this instead of probing: each component records the outcome of its own real calls
-(schema/policy fetch -> `ikg`, introspection, LLM invocation -> `gemini`, audit delivery, cache
-access -> `redis`), and the startup probes in `health.py` seed it once so a dependency that has
-seen no traffic yet still has a state. Failure details name a status code or exception class
-only - never a response body or a URL that could carry a credential.
+`DependencyStatus` is thread-safe: fetches record from worker threads, everything else from the
+event loop. Failure details are a status code or exception class only (`describe_failure`).
 """
 
 import threading
