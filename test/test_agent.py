@@ -15,6 +15,7 @@ from indykite.intent_agent.agent import IntentAgent, RequestSubject, _policy_blo
 from indykite.intent_agent.app import build_app
 from indykite.intent_agent.audit.message import Outcome, schema_version
 from indykite.intent_agent.config import Settings
+from indykite.intent_agent.dependency_status import GEMINI, IKG, SCHEMA, DependencyStatus
 from indykite.intent_agent.errors import (
     llm_timeout_error,
     no_intent_error,
@@ -1116,3 +1117,59 @@ def test_agent_card_default_url_follows_the_listening_port(
     )
 
     assert agent.build_agent_card().supported_interfaces[0].url == expected_url
+
+
+def _agent_with_status(monkeypatch, mocker, llm):
+    status = DependencyStatus()
+    agent = IntentAgent(
+        _full_settings(monkeypatch),
+        llm=llm,
+        schema_client=_fake_schema_client(mocker),
+        policy_client=_fake_policy_client(mocker),
+        dependency_status=status,
+    )
+    return agent, status
+
+
+def test_llm_calls_record_gemini_state(monkeypatch, mocker):
+    llm = mocker.Mock(ainvoke=mocker.AsyncMock(side_effect=[ConnectionError, "answer"]))
+    agent, status = _agent_with_status(monkeypatch, mocker, mocker.Mock())
+
+    with pytest.raises(ConnectionError):
+        asyncio.run(agent._invoke_llm(llm, []))
+    assert (status.get(GEMINI).status, status.get(GEMINI).detail) == ("error", "ConnectionError")
+
+    asyncio.run(agent._invoke_llm(llm, []))
+    assert status.get(GEMINI).status == "ok"
+
+
+@pytest.mark.parametrize(
+    ("schema", "status", "detail"),
+    [
+        pytest.param(None, "error", "no schema cached - the next request retries the fetch", id="unavailable"),
+        pytest.param(
+            {"graph": {"nodes": {"_Application": {}}}},
+            "error",
+            "schema fetched but the data model is not populated",
+            id="not-populated",
+        ),
+        pytest.param({"graph": {"nodes": {"Person": {}}}}, "ok", "", id="usable"),
+    ],
+)
+def test_schema_state_is_recorded(monkeypatch, mocker, schema, status, detail):
+    agent, store = _agent_with_status(monkeypatch, mocker, mocker.Mock())
+
+    agent._record_schema(schema)
+
+    assert (store.get(SCHEMA).status, store.get(SCHEMA).detail) == (status, detail)
+    assert bool(store.get(SCHEMA).version) == (status == "ok")
+
+
+def test_schema_preload_records_startup_state(monkeypatch, mocker):
+    agent, status = _agent_with_status(monkeypatch, mocker, mocker.Mock())
+    agent._schema_client.preload.side_effect = lambda: status.record_ok(IKG)
+    agent._schema_client.get_cached.return_value = {"graph": {"nodes": {"Person": {}}}}
+
+    agent.preload_schema()
+
+    assert (status.get(IKG).source, status.get(SCHEMA).source) == ("startup", "startup")

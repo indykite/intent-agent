@@ -13,6 +13,7 @@ from typing import Literal
 import httpx2
 
 from indykite.intent_agent.audit.message import AuditMessage
+from indykite.intent_agent.dependency_status import AUDIT_WEBHOOK, DependencyStatus, describe_failure
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +38,19 @@ class HttpConfig:
 class HttpSender:
     """Delivers audit records to a webhook."""
 
-    def __init__(self, config: HttpConfig, *, transport: httpx2.AsyncBaseTransport | None = None) -> None:
-        """Build the HTTP client for the configured auth type. `transport` is for tests only."""
+    def __init__(
+        self,
+        config: HttpConfig,
+        *,
+        transport: httpx2.AsyncBaseTransport | None = None,
+        dependency_status: DependencyStatus | None = None,
+    ) -> None:
+        """Build the HTTP client for the configured auth type.
+
+        `transport` is for tests only. dependency_status (when given) is told how every delivery
+        went - what /health reports.
+        """
+        self._status = dependency_status
         self._url = config.url
         self._method = config.method
         self._headers: dict[str, str] = {"Content-Type": "application/json"}
@@ -65,14 +77,24 @@ class HttpSender:
                 content=message.to_json().encode("utf-8"),
                 headers=self._headers,
             )
-        except httpx2.HTTPError:
+        except httpx2.HTTPError as exc:
             logger.exception("audit: failed to send HTTP request")
+            if self._status is not None:
+                self._status.record_error(AUDIT_WEBHOOK, describe_failure(exc))
             return
         if response.status_code >= HTTPStatus.BAD_REQUEST:
             logger.error(
                 "audit: failed to send HTTP request, unexpected status code",
                 extra={"status_code": response.status_code},
             )
+        # Only a 2xx is a delivery: the client doesn't follow redirects, so a 3xx never reached
+        # the redirect target either.
+        if self._status is None:
+            return
+        if response.is_success:
+            self._status.record_ok(AUDIT_WEBHOOK)
+        else:
+            self._status.record_error(AUDIT_WEBHOOK, f"status {response.status_code}")
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""
@@ -88,3 +110,16 @@ def _mtls_context(config: HttpConfig) -> ssl.SSLContext:
     context.minimum_version = ssl.TLSVersion.TLSv1_3
     context.load_cert_chain(certfile=config.mtls_certificate_file_path, keyfile=config.mtls_private_key_path)
     return context
+
+
+async def probe(config: HttpConfig) -> int:
+    """Send one OPTIONS request to the webhook URL and return its status code.
+
+    No record is delivered, so a 4xx proves the receiver answers, not that it would accept a
+    record. Raises httpx2.HTTPError if it can't be reached.
+    """
+    headers = {config.api_key_header: config.api_key} if config.auth_type == "api-key" else {}
+    verify: ssl.SSLContext | bool = _mtls_context(config) if config.auth_type == "mTLS" else True
+    async with httpx2.AsyncClient(verify=verify, timeout=config.timeout_seconds) as client:
+        response = await client.options(config.url, headers=headers)
+    return response.status_code

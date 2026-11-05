@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Literal
 
 from indykite.intent_agent.audit.message import FIELD_NAMES, AuditMessage
+from indykite.intent_agent.dependency_status import AUDIT_FILE, DependencyStatus, describe_failure
 
 logger = logging.getLogger(__name__)
 
@@ -38,10 +39,14 @@ class FileConfig:
 class FileSender:
     """Appends audit records to a rotating file. Safe to call from multiple threads."""
 
-    def __init__(self, config: FileConfig, *, service: str) -> None:
-        """Create the storage directory if missing and open the first audit file."""
+    def __init__(self, config: FileConfig, *, service: str, dependency_status: DependencyStatus | None = None) -> None:
+        """Create the storage directory if missing and open the first audit file.
+
+        dependency_status (when given) is told how every write went - what /health reports.
+        """
         self._config = config
         self._service = service
+        self._status = dependency_status
         self._lock = threading.Lock()
         self._file: io.TextIOWrapper | None = None
         self._opened_at = 0.0
@@ -81,8 +86,13 @@ class FileSender:
                 logger.exception("audit: rotate file")
             try:
                 self._bytes_written += self._append(message)
-            except OSError:
+            except OSError as exc:
                 logger.exception("audit: write record")
+                if self._status is not None:
+                    self._status.record_error(AUDIT_FILE, describe_failure(exc))
+            else:
+                if self._status is not None:
+                    self._status.record_ok(AUDIT_FILE)
 
     def _rotate_if_needed(self) -> None:
         """Open a fresh file when the configured strategy's threshold has been crossed."""

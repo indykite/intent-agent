@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from indykite.intent_agent import skills
 from indykite.intent_agent.audit.message import Outcome, policy_version, schema_version
 from indykite.intent_agent.config import Settings
+from indykite.intent_agent.dependency_status import GEMINI, SCHEMA, DependencyStatus, describe_failure, startup_calls
 from indykite.intent_agent.errors import (
     IntentValidationError,
     SubjectTypeMismatchError,
@@ -36,7 +37,7 @@ from indykite.intent_agent.errors import (
     validation_feedback_error,
 )
 from indykite.intent_agent.input_schema import build_input_schema, render_schema_summary
-from indykite.intent_agent.policy import PolicyClient, build_policy_cache
+from indykite.intent_agent.policy import PolicyClient, PolicyFetchOptions, build_policy_cache
 from indykite.intent_agent.schema import SchemaClient, build_schema_cache
 from indykite.intent_agent.subject_binding import (
     PolicyContext,
@@ -241,6 +242,7 @@ class IntentAgent:
         llm: BaseChatModel | None = None,
         schema_client: SchemaClient | None = None,
         policy_client: PolicyClient | None = None,
+        dependency_status: DependencyStatus | None = None,
     ) -> None:
         """Build the LLM, discover skills, and set up the schema/policy clients.
 
@@ -248,6 +250,9 @@ class IntentAgent:
         executor is per instance because ThreadPoolExecutor.shutdown() is irreversible.
         """
         self.settings = settings
+        # What /health reports: every real call this agent makes (schema/policy fetch, cache,
+        # LLM) records its outcome here - see dependency_status.py.
+        self.dependency_status = dependency_status or DependencyStatus()
         self._fetch_executor = ThreadPoolExecutor(
             max_workers=settings.fetch_executor_max_workers, thread_name_prefix="intent-agent-fetch"
         )
@@ -261,13 +266,14 @@ class IntentAgent:
             settings.ik_app_agent_key.get_secret_value(),
             timeout_seconds=settings.schema_fetch_timeout_seconds,
             cache=build_schema_cache(settings, self._fetch_executor),
+            dependency_status=self.dependency_status,
         )
         self._policy_client = policy_client or PolicyClient(
             str(settings.indykite_base_url),
             settings.ik_app_agent_key.get_secret_value(),
-            timeout_seconds=settings.policy_fetch_timeout_seconds,
-            retry_attempts=settings.policy_fetch_retry_attempts,
+            fetch=PolicyFetchOptions(settings.policy_fetch_timeout_seconds, settings.policy_fetch_retry_attempts),
             cache=build_policy_cache(settings),
+            dependency_status=self.dependency_status,
         )
         self.discovered_skills = skills.discover_skills()
         self.system_prompt = skills.build_skill_catalog_prompt(self.discovered_skills)
@@ -288,8 +294,10 @@ class IntentAgent:
 
         A missing or unpopulated schema is only logged; run_extraction retries it per request.
         """
-        self._schema_client.preload()
-        schema = self.get_cached_schema()
+        with startup_calls():
+            self._schema_client.preload()
+            schema = self.get_cached_schema()
+            self._record_schema(schema)
         if schema is None:
             logger.warning(
                 "Data schema unavailable at cold start - will keep retrying on every request until it's populated",
@@ -300,6 +308,18 @@ class IntentAgent:
                 "Data schema fetched but the data model isn't populated yet at cold start - "
                 "will keep retrying on every request until it's populated",
             )
+
+    def _record_schema(self, schema: dict[str, Any] | None, version: str | None = None) -> None:
+        """Note the schema state /health reports: usable, not populated yet, or unavailable.
+
+        `version` is the schema's hash when the caller already computed it.
+        """
+        if schema is None:
+            self.dependency_status.record_error(SCHEMA, "no schema cached - the next request retries the fetch")
+        elif schema_has_no_node_types(schema):
+            self.dependency_status.record_error(SCHEMA, "schema fetched but the data model is not populated")
+        else:
+            self.dependency_status.record_ok(SCHEMA, version=version or schema_version(schema))
 
     def get_cached_schema(self) -> dict[str, Any] | None:
         """Return the cached schema, fetching it if not cached; None if unavailable.
@@ -535,10 +555,11 @@ class IntentAgent:
         try:
             async with asyncio.timeout(self.settings.request_timeout_seconds) as deadline:
                 schema = await self._run_in_fetch_executor(self.get_cached_schema)
+                version = schema_version(schema)
+                self._record_schema(schema, version)
                 refusal = self._schema_refusal(schema, subject.type, prompt)
                 if refusal is not None:
                     return refusal
-                version = schema_version(schema)
 
                 phase = _Phase.POLICY_FETCH
                 policies, policy_fetch_failed = await self._run_in_fetch_executor(
@@ -679,8 +700,14 @@ class IntentAgent:
 
     async def _invoke_llm(self, llm: Runnable[Any, BaseMessage], messages: list[BaseMessage]) -> BaseMessage:
         """One LLM call, bounded by LLM_TIMEOUT_SECONDS - raises TimeoutError past it."""
-        async with asyncio.timeout(self.settings.llm_timeout_seconds):
-            return await llm.ainvoke(messages)
+        try:
+            async with asyncio.timeout(self.settings.llm_timeout_seconds):
+                response = await llm.ainvoke(messages)
+        except Exception as exc:
+            self.dependency_status.record_error(GEMINI, describe_failure(exc))
+            raise
+        self.dependency_status.record_ok(GEMINI)
+        return response
 
     async def _run_tool_call_loop(
         self,

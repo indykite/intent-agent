@@ -10,6 +10,7 @@ from indykite.intent_agent.audit.file import FileConfig, FileSender
 from indykite.intent_agent.audit.http import HttpConfig, HttpSender
 from indykite.intent_agent.audit.message import AuditMessage
 from indykite.intent_agent.config import Settings
+from indykite.intent_agent.dependency_status import DependencyStatus
 
 
 class Sender(Protocol):
@@ -30,22 +31,26 @@ def _required[T](value: T | None, env_var: str) -> T:
     return value
 
 
-def build_sender(settings: Settings) -> Sender:
-    """Construct the sender AUDIT_DELIVERY names."""
+def build_http_config(settings: Settings) -> HttpConfig:
+    """The webhook delivery config for these settings (AUDIT_DELIVERY=webhook)."""
+    api_key = settings.audit_http_api_key
+    return HttpConfig(
+        url=str(_required(settings.audit_http_url, "AUDIT_HTTP_URL")),
+        method=_required(settings.audit_http_method, "AUDIT_HTTP_METHOD"),
+        auth_type=_required(settings.audit_http_auth_type, "AUDIT_HTTP_AUTH_TYPE"),
+        api_key=api_key.get_secret_value() if api_key else "",
+        api_key_header=settings.audit_http_api_key_header,
+        mtls_certificate_file_path=settings.audit_http_mtls_certificate_file_path,
+        mtls_private_key_path=settings.audit_http_mtls_private_key_path,
+        timeout_seconds=settings.audit_http_timeout_seconds,
+    )
+
+
+def build_sender(settings: Settings, dependency_status: DependencyStatus | None = None) -> Sender:
+    """Construct the sender AUDIT_DELIVERY names. The sender reports each delivery to dependency_status."""
     sender: Sender
     if settings.audit_delivery == "webhook":
-        api_key = settings.audit_http_api_key
-        config = HttpConfig(
-            url=str(_required(settings.audit_http_url, "AUDIT_HTTP_URL")),
-            method=_required(settings.audit_http_method, "AUDIT_HTTP_METHOD"),
-            auth_type=_required(settings.audit_http_auth_type, "AUDIT_HTTP_AUTH_TYPE"),
-            api_key=api_key.get_secret_value() if api_key else "",
-            api_key_header=settings.audit_http_api_key_header,
-            mtls_certificate_file_path=settings.audit_http_mtls_certificate_file_path,
-            mtls_private_key_path=settings.audit_http_mtls_private_key_path,
-            timeout_seconds=settings.audit_http_timeout_seconds,
-        )
-        sender = HttpSender(config)
+        sender = HttpSender(build_http_config(settings), dependency_status=dependency_status)
     else:
         file_config = FileConfig(
             storage_path=_required(settings.audit_file_storage_path, "AUDIT_FILE_STORAGE_PATH"),
@@ -54,7 +59,7 @@ def build_sender(settings: Settings) -> Sender:
             rotation_interval_seconds=settings.audit_file_rotation_interval_seconds,
             rotation_max_bytes=settings.audit_file_rotation_max_bytes,
         )
-        sender = FileSender(file_config, service=settings.intent_agent_name)
+        sender = FileSender(file_config, service=settings.intent_agent_name, dependency_status=dependency_status)
     if settings.audit_async:
         return AsyncSender(sender, buffer_size=settings.audit_async_buffer_size)
     return sender

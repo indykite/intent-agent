@@ -39,6 +39,7 @@ app:
   llmTimeoutSeconds: 3.0 # LLM_TIMEOUT_SECONDS
   requestTimeoutSeconds: 10.0 # REQUEST_TIMEOUT_SECONDS
   validationMaxRetries: 1 # VALIDATION_MAX_RETRIES
+  healthCheckTimeoutSeconds: 3.0 # HEALTH_CHECK_TIMEOUT_SECONDS
 
   indykiteBaseUrl: "https://placeholder.example.com" # INDYKITE_BASE_URL
   # llmTimeoutSeconds/schemaFetchTimeoutSeconds/policyFetchTimeoutSeconds must each stay <=

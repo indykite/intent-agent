@@ -79,6 +79,8 @@ spec:
               value: {{ .Values.app.requestTimeoutSeconds | quote }}
             - name: VALIDATION_MAX_RETRIES
               value: {{ .Values.app.validationMaxRetries | int64 | quote }}
+            - name: HEALTH_CHECK_TIMEOUT_SECONDS
+              value: {{ .Values.app.healthCheckTimeoutSeconds | quote }}
             - name: INDYKITE_BASE_URL
               value: {{ .Values.app.indykiteBaseUrl | quote }}
             - name: SCHEMA_FETCH_TIMEOUT_SECONDS

@@ -9,6 +9,7 @@ import pytest
 
 from evals.fixtures import Fixture, load_fixture
 from indykite.intent_agent.audit.message import AuditMessage, Outcome
+from indykite.intent_agent.config import Settings
 
 _DEFAULTS: dict[str, Any] = {
     "timestamp": "2026-09-07T10:15:04.123456Z",
@@ -39,6 +40,15 @@ def audit_message():
         return AuditMessage(**{**_DEFAULTS, **overrides})
 
     return _build
+
+
+@pytest.fixture(autouse=True)
+def _isolated_settings_env(monkeypatch):
+    """Drop every Settings env var inherited from the developer's shell (a local GEMINI_API_KEY,
+    SCHEMA_FETCH_TIMEOUT_SECONDS, REDIS_URL, ...) so tests see only what they set themselves.
+    """
+    for field in Settings.model_fields:
+        monkeypatch.delenv(field.upper(), raising=False)
 
 
 @pytest.fixture

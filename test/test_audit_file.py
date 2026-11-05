@@ -8,6 +8,7 @@ import pytest
 
 from indykite.intent_agent.audit.file import FileConfig, FileSender
 from indykite.intent_agent.audit.message import FIELD_NAMES, Outcome
+from indykite.intent_agent.dependency_status import AUDIT_FILE, DependencyStatus
 
 _ONE_DAY_SECONDS = 24 * 60 * 60
 _EXPECTED_ROTATED_FILES = 2
@@ -205,3 +206,29 @@ def test_failed_rotation_keeps_the_current_file(tmp_path, caplog, mocker, audit_
         "req-1",
         "req-2",
     ]
+
+
+def test_writes_record_audit_file_state(tmp_path, mocker, audit_message):
+    store = DependencyStatus()
+    sender = FileSender(
+        FileConfig(
+            storage_path=tmp_path / "audit",
+            file_format="json",
+            rotation_strategy="time",
+            rotation_interval_seconds=float(_ONE_DAY_SECONDS),
+            rotation_max_bytes=100 * 1024 * 1024,
+        ),
+        service="intent_agent",
+        dependency_status=store,
+    )
+
+    async def _run():
+        await sender.send(audit_message())
+        first = store.get(AUDIT_FILE).status
+        mocker.patch.object(FileSender, "_append", side_effect=OSError)
+        await sender.send(audit_message())
+        await sender.close()
+        return first
+
+    assert asyncio.run(_run()) == "ok"
+    assert (store.get(AUDIT_FILE).status, store.get(AUDIT_FILE).detail) == ("error", "OSError")

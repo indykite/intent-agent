@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     llm_timeout_seconds: PositiveFloat = 3.0
     # Whole-extraction deadline: schema/policy fetch, every LLM call and retry (not introspection).
     request_timeout_seconds: PositiveFloat = 10.0
+    # /health reports what the real calls recorded (see dependency_status.py); this only bounds
+    # the one-off probe of each dependency at startup that seeds that state - sized to stay
+    # inside the Docker HEALTHCHECK's start period.
+    health_check_timeout_seconds: PositiveFloat = 3.0
     # Extra LLM attempts after a validation failure; 0 disables retry.
     validation_max_retries: NonNegativeInt = 1
 

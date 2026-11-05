@@ -2,6 +2,7 @@ import time
 from http import HTTPStatus
 
 import httpx2
+import pytest
 from prometheus_client import REGISTRY
 from starlette.applications import Starlette
 from starlette.responses import PlainTextResponse
@@ -18,8 +19,12 @@ from indykite.intent_agent.config import Settings
 from indykite.intent_agent.logging_config import build_logging_config
 
 
-def _client():
-    return TestClient(build_observability_app())
+def _health_checker(mocker, report=None):
+    return mocker.Mock(report=mocker.Mock(return_value=report or {"status": "ok"}))
+
+
+def _client(mocker):
+    return TestClient(build_observability_app(_health_checker(mocker)))
 
 
 async def _ping(_request):
@@ -32,21 +37,29 @@ def _instrumented_client():
     return TestClient(app)
 
 
-def test_health_returns_ok():
-    response = _client().get("/health")
+@pytest.mark.parametrize(
+    "report",
+    [
+        pytest.param({"status": "ok", "version": "1.2.3"}, id="ok"),
+        pytest.param({"status": "degraded"}, id="degraded"),
+    ],
+)
+def test_health_returns_the_checker_report_with_200(mocker, report):
+    app = build_observability_app(_health_checker(mocker, report))
+    response = TestClient(app).get("/health")
     assert response.status_code == HTTPStatus.OK
-    assert response.text == "ok"
+    assert response.json() == report
 
 
-def test_metrics_returns_prometheus_exposition_format():
-    response = _client().get("/metrics")
+def test_metrics_returns_prometheus_exposition_format(mocker):
+    response = _client(mocker).get("/metrics")
     assert response.status_code == HTTPStatus.OK
     assert "text/plain" in response.headers["content-type"]
     assert "# HELP" in response.text
 
 
-def test_unknown_path_returns_404():
-    response = _client().get("/nope")
+def test_unknown_path_returns_404(mocker):
+    response = _client(mocker).get("/nope")
     assert response.status_code == HTTPStatus.NOT_FOUND
 
 
@@ -74,8 +87,8 @@ def _wait_until_started(server):
     assert server.started
 
 
-def test_start_observability_server_binds_and_serves_health_in_background():
-    server = _start_observability_server("127.0.0.1", 0, build_logging_config("INFO"))
+def test_start_observability_server_binds_and_serves_health_in_background(mocker):
+    server = _start_observability_server("127.0.0.1", 0, build_logging_config("INFO"), _health_checker(mocker))
     try:
         _wait_until_started(server)
         port = server.servers[0].sockets[0].getsockname()[1]
@@ -83,7 +96,7 @@ def test_start_observability_server_binds_and_serves_health_in_background():
         response = httpx2.get(f"http://127.0.0.1:{port}/health")
 
         assert response.status_code == HTTPStatus.OK
-        assert response.text == "ok"
+        assert response.json() == {"status": "ok"}
     finally:
         server.should_exit = True
 
@@ -91,7 +104,7 @@ def test_start_observability_server_binds_and_serves_health_in_background():
 def test_start_observability_server_runs_on_background_daemon_thread(mocker):
     thread_cls = mocker.patch("indykite.intent_agent.__main__.threading.Thread")
 
-    server = _start_observability_server("127.0.0.1", 0, build_logging_config("INFO"))
+    server = _start_observability_server("127.0.0.1", 0, build_logging_config("INFO"), _health_checker(mocker))
 
     thread_cls.assert_called_once_with(target=server.run, daemon=True)
     thread_cls.return_value.start.assert_called_once()
@@ -109,6 +122,8 @@ def test_main_routes_warnings_through_logging_before_serving(monkeypatch, mocker
     fake_agent = mocker.Mock(get_cached_schema=mocker.Mock(return_value=None))
     fake_app = mocker.Mock()
     build_app_mock = mocker.patch("indykite.intent_agent.__main__.build_app", return_value=(fake_app, fake_agent))
+    health_checker = mocker.patch("indykite.intent_agent.__main__.HealthChecker").return_value
+    health_checker.probe_all = mocker.AsyncMock()
     start_observability_mock = mocker.patch("indykite.intent_agent.__main__._start_observability_server")
     uvicorn_run_mock = mocker.patch("indykite.intent_agent.__main__.uvicorn.run")
 
@@ -118,7 +133,10 @@ def test_main_routes_warnings_through_logging_before_serving(monkeypatch, mocker
     capture_warnings.assert_called_once_with(capture=True)
     build_app_mock.assert_called_once_with(settings)
     fake_app.add_middleware.assert_called_once_with(MetricsMiddleware)
-    start_observability_mock.assert_called_once()
+    health_checker.probe_all.assert_awaited_once()
+    start_observability_mock.assert_called_once_with(
+        str(settings.bind_host), settings.health_port, mocker.ANY, health_checker
+    )
     uvicorn_run_mock.assert_called_once_with(
         fake_app,
         host=str(settings.bind_host),

@@ -3,10 +3,12 @@
 Serves the A2A app on `INTENT_PORT` and `/health` + `/metrics` on `HEALTH_PORT` in a background thread.
 """
 
+import asyncio
 import logging
 import logging.config
 import threading
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import uvicorn
@@ -14,11 +16,12 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
-from starlette.responses import PlainTextResponse, Response
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from indykite.intent_agent.app import build_app
 from indykite.intent_agent.config import Settings
+from indykite.intent_agent.health import HealthChecker
 from indykite.intent_agent.logging_config import build_logging_config
 
 logger = logging.getLogger(__name__)
@@ -49,9 +52,13 @@ class MetricsMiddleware(BaseHTTPMiddleware):
         return response
 
 
-async def _health(_request: Request) -> PlainTextResponse:
-    """Respond 200 to GET /health for the Dockerfile's HEALTHCHECK."""
-    return PlainTextResponse("ok")
+def _health(health_checker: HealthChecker) -> Callable[[Request], Awaitable[JSONResponse]]:
+    """Build the GET /health handler: always 200, an outage shows as `"status": "degraded"` in the body."""
+
+    async def handler(_request: Request) -> JSONResponse:
+        return JSONResponse(health_checker.report())
+
+    return handler
 
 
 async def _metrics(_request: Request) -> Response:
@@ -59,15 +66,17 @@ async def _metrics(_request: Request) -> Response:
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-def build_observability_app() -> Starlette:
+def build_observability_app(health_checker: HealthChecker) -> Starlette:
     """Build the Starlette app serving `/health` and `/metrics`."""
-    return Starlette(routes=[Route("/health", _health), Route("/metrics", _metrics)])
+    return Starlette(routes=[Route("/health", _health(health_checker)), Route("/metrics", _metrics)])
 
 
-def _start_observability_server(bind_host: str, port: int, logging_config: dict[str, Any]) -> uvicorn.Server:
+def _start_observability_server(
+    bind_host: str, port: int, logging_config: dict[str, Any], health_checker: HealthChecker
+) -> uvicorn.Server:
     """Start the observability app on a background daemon thread and return the server."""
     config = uvicorn.Config(
-        build_observability_app(),
+        build_observability_app(health_checker),
         host=bind_host,
         port=port,
         log_level="warning",
@@ -99,7 +108,11 @@ def main() -> None:
     app, agent = build_app(settings)
     app.add_middleware(MetricsMiddleware)
 
-    _start_observability_server(str(settings.bind_host), settings.health_port, logging_config)
+    # One probe per dependency seeds the state /health reports (see health.py); everything after
+    # comes from the real calls. Runs before the servers start so the first /health already has it.
+    health_checker = HealthChecker(settings, agent.dependency_status)
+    asyncio.run(health_checker.probe_all())
+    _start_observability_server(str(settings.bind_host), settings.health_port, logging_config, health_checker)
     logger.info(
         "Starting %s on port %d (observability on %d, LLM: Gemini %s)",
         settings.intent_agent_name,
