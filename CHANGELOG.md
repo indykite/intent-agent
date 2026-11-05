@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.0](https://github.com/indykite/intent-agent/compare/v1.0.0...v1.1.0) (2026-11-05)
+
+
+### Features
+
+* healthcheck improvements ([#91](https://github.com/indykite/intent-agent/issues/91)) ([33af2d5](https://github.com/indykite/intent-agent/commit/33af2d5b9805f427ba0b177c3f4bf65537adc2de))
+
+
+### Bug Fixes
+
+* **deps:** update pyasn1 to 0.6.5 ([#135](https://github.com/indykite/intent-agent/issues/135)) ([d3ef7c4](https://github.com/indykite/intent-agent/commit/d3ef7c40219663651341b4dc728d0ec8751e5acb))
+* update gemini variable name ([#130](https://github.com/indykite/intent-agent/issues/130)) ([5959fe6](https://github.com/indykite/intent-agent/commit/5959fe68cd12e931cb15428a2dc59e8a142413ad))
+
 ## [1.0.0](https://github.com/indykite/intent-agent/compare/v0.5.0...v1.0.0) (2026-10-28)
 
 
