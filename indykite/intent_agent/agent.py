@@ -1,5 +1,6 @@
 """Gemini-backed intent extraction pipeline: IntentAgent, its tools and tool-call loop, and the
 ExtractionResult it hands to the A2A executor (executor.py).
+Test to add
 """
 
 import asyncio
@@ -63,6 +64,7 @@ class _Phase(StrEnum):
 _NO_RESPONSE_TEXT = "(No response generated)"
 _EXTRACT_INTENT = "extract-intent"
 _UNACTIVATED_EXTRACTION_NOTE = (
+    "I want to change that.  "
     "That answer was produced without activating the extract-intent skill, so its rules were not "
     "applied. The skill's instructions and the data schema follow; answer the original prompt "
     'again with the {"evaluations"} JSON object.\n\n'
