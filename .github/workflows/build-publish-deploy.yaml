@@ -45,13 +45,13 @@ jobs:
     if: github.event_name == 'release'
     steps:
       - name: actions/checkout
-        uses: indykite/.github/.github/actions/git-checkout@f8d1bb0617b01f9e97c8b90c424e155e766d56ed # master
+        uses: indykite/.github/.github/actions/git-checkout@4a19484f7c6b6b09ee22dac63f0c6c9edb691097 # master
 
       - name: Install uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0 - https://github.com/astral-sh/setup-uv/releases
 
       - name: Build project using composite action
-        uses: indykite/.github/.github/actions/python-build@f8d1bb0617b01f9e97c8b90c424e155e766d56ed # master
+        uses: indykite/.github/.github/actions/python-build@4a19484f7c6b6b09ee22dac63f0c6c9edb691097 # master
         id: build_python
         with:
           codecov-token: ${{ secrets.CODECOV_TOKEN }}
@@ -84,7 +84,7 @@ jobs:
       PYTHONUNBUFFERED: 1
     steps:
       - name: actions/checkout
-        uses: indykite/.github/.github/actions/git-checkout@f8d1bb0617b01f9e97c8b90c424e155e766d56ed # master
+        uses: indykite/.github/.github/actions/git-checkout@4a19484f7c6b6b09ee22dac63f0c6c9edb691097 # master
 
       - name: Extract version name
         id: extract-version
@@ -143,7 +143,7 @@ jobs:
       image-tag: ${{ needs.version.outputs.image-tag }}
     steps:
       - name: Check out repo
-        uses: indykite/.github/.github/actions/git-checkout@f8d1bb0617b01f9e97c8b90c424e155e766d56ed # master
+        uses: indykite/.github/.github/actions/git-checkout@4a19484f7c6b6b09ee22dac63f0c6c9edb691097 # master
 
       - name: Determine target registries
         id: registries
@@ -182,7 +182,7 @@ jobs:
             type=raw,value=${{ needs.version.outputs.image-tag }},enable=${{ needs.version.outputs.image-tag != '' }}
 
       - name: Setup Docker
-        uses: indykite/.github/.github/actions/docker-setup@f8d1bb0617b01f9e97c8b90c424e155e766d56ed # master
+        uses: indykite/.github/.github/actions/docker-setup@4a19484f7c6b6b09ee22dac63f0c6c9edb691097 # master
         with:
           workload-identity-provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER_MGMT }}
           gcp-service-account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
@@ -215,7 +215,7 @@ jobs:
     if: ${{ !cancelled() && needs.version.result == 'success' }}
     steps:
       - name: actions/checkout
-        uses: indykite/.github/.github/actions/git-checkout@f8d1bb0617b01f9e97c8b90c424e155e766d56ed # master
+        uses: indykite/.github/.github/actions/git-checkout@4a19484f7c6b6b09ee22dac63f0c6c9edb691097 # master
 
       # chart/Chart.yaml's appVersion is release-please-managed and only correct for an actual
       # release - a PR/master package still carries the base release appVersion at this point.
@@ -254,7 +254,7 @@ jobs:
         run: helm dependency build chart/
 
       - name: Publish chart
-        uses: indykite/.github/.github/actions/chart-publish@f8d1bb0617b01f9e97c8b90c424e155e766d56ed # master
+        uses: indykite/.github/.github/actions/chart-publish@4a19484f7c6b6b09ee22dac63f0c6c9edb691097 # master
         with:
           workload-identity-provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER_MGMT }}
           gcp-service-account: ${{ secrets.GCP_SERVICE_ACCOUNT }}

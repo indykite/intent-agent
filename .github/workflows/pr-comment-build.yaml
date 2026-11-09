@@ -25,10 +25,10 @@ jobs:
     runs-on: ubuntu-slim
     steps:
       - name: actions/checkout
-        uses: indykite/.github/.github/actions/git-checkout@f8d1bb0617b01f9e97c8b90c424e155e766d56ed # master
+        uses: indykite/.github/.github/actions/git-checkout@4a19484f7c6b6b09ee22dac63f0c6c9edb691097 # master
 
       - name: Comment Artifact URL on PR
-        uses: indykite/.github/.github/actions/artifact-to-comment@f8d1bb0617b01f9e97c8b90c424e155e766d56ed # master
+        uses: indykite/.github/.github/actions/artifact-to-comment@4a19484f7c6b6b09ee22dac63f0c6c9edb691097 # master
         with:
           artifact-name: code-coverage
           artifact-title: Code Coverage
