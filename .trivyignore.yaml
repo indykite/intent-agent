@@ -4,3 +4,6 @@ licenses:
     paths:
       - "LICENSE"
     statement: "Repository's own LICENSE file, not a third-party dependency license"
+vulnerabilities:
+  - id: CVE-2026-126360
+    statement: 'See workflow run: https://github.com/indykite/intent-agent/actions/runs/43535146779; generated 2026-11-14T00:35:30Z by trivy-notify'
