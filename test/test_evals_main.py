@@ -163,7 +163,7 @@ def test_missing_settings_are_a_usage_error(suite, run_suite, monkeypatch, caplo
     monkeypatch.delenv("GEMINI_API_KEY")
 
     assert main(["--fixtures", str(suite)]) == EXIT_USAGE
-    assert "gemini_api_key" in caplog.text
+    assert "GEMINI_API_KEY is required" in caplog.text
     run_suite.assert_not_awaited()
 
 

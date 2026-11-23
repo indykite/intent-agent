@@ -1,4 +1,4 @@
-"""Gemini-backed intent extraction pipeline: IntentAgent, its tools and tool-call loop, and the
+"""Intent extraction pipeline: IntentAgent, its tools and tool-call loop, and the
 ExtractionResult it hands to the A2A executor (executor.py).
 """
 
@@ -17,9 +17,9 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import StructuredTool, tool
-from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel
 
+from indykite.intent_agent import llm as llm_provider
 from indykite.intent_agent import skills
 from indykite.intent_agent.audit.message import Outcome, policy_version, schema_version
 from indykite.intent_agent.config import Settings
@@ -256,11 +256,7 @@ class IntentAgent:
         self._fetch_executor = ThreadPoolExecutor(
             max_workers=settings.fetch_executor_max_workers, thread_name_prefix="intent-agent-fetch"
         )
-        self._llm = llm or ChatGoogleGenerativeAI(
-            model=settings.gemini_model,
-            api_key=settings.gemini_api_key,
-            temperature=0,
-        )
+        self._llm = llm or llm_provider.build_chat_model(settings)
         self._schema_client = schema_client or SchemaClient(
             str(settings.indykite_base_url),
             settings.ik_app_agent_key.get_secret_value(),
@@ -617,10 +613,8 @@ class IntentAgent:
         """Bind this request's tools and structured-output schema to the LLM."""
         policies = policy_context.policies
         tools = self._build_tools(schema, policies, policy_fetch_failed=policy_context.fetch_failed)
-        llm_with_tools = self._llm.bind_tools(
-            tools,
-            response_mime_type="application/json",
-            response_schema=build_input_schema(schema, policies),
+        llm_with_tools = llm_provider.bind_structured_output(
+            self.settings.llm_provider, self._llm, tools, build_input_schema(schema, policies)
         )
         return llm_with_tools, _RequestContext(tools=tools, policy_context=policy_context, schema=schema)
 

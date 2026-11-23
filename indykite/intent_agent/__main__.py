@@ -114,11 +114,12 @@ def main() -> None:
     asyncio.run(health_checker.probe_all())
     _start_observability_server(str(settings.bind_host), settings.health_port, logging_config, health_checker)
     logger.info(
-        "Starting %s on port %d (observability on %d, LLM: Gemini %s)",
+        "Starting %s on port %d (observability on %d, LLM: %s %s)",
         settings.intent_agent_name,
         settings.intent_port,
         settings.health_port,
-        settings.gemini_model,
+        settings.llm_provider,
+        settings.llm_model,
     )
     logger.info("Data schema: %s", "loaded" if agent.get_cached_schema() else "unavailable")
 

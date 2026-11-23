@@ -75,7 +75,7 @@ def build_agents(
 ) -> dict[Path, IntentAgent]:
     """One IntentAgent per distinct data model, serving that model's schema and policies.
 
-    `llm` (a test double) is shared by all of them; None builds the configured Gemini model.
+    `llm` (a test double) is shared by all of them; None builds the configured provider's model.
     """
     by_model = {fixture.schema_path: fixture for fixture in fixtures}
     return {
