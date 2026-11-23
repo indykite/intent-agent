@@ -371,17 +371,8 @@ def test_rejected_request_without_a_readable_message_is_still_audited(baseline_e
     assert record.context_id == ""
 
 
-@pytest.mark.parametrize(
-    ("model", "provider"),
-    [
-        ("gemini-3.5-flash-lite", "gemini"),
-        ("gemini-3.1-flash-lite", "gemini"),
-        ("models/gemini-3.5-flash-lite", "gemini"),
-        ("claude-sonnet-5", "claude"),
-    ],
-)
-def test_llm_provider_is_derived_from_the_configured_model(baseline_env, monkeypatch, mocker, model, provider):
-    """llm_provider is the family prefix of the configured GEMINI_MODEL."""
+@pytest.mark.parametrize("model", ["gemini-3.1-flash-lite", "models/gemini-3.5-flash-lite", "some-tuned-model"])
+def test_llm_provider_is_the_configured_provider_whatever_the_model_name(baseline_env, monkeypatch, mocker, model):
     baseline_env()
     monkeypatch.setenv("GEMINI_MODEL", model)
     executor, sender, _agent = _executor(
@@ -391,7 +382,7 @@ def test_llm_provider_is_derived_from_the_configured_model(baseline_env, monkeyp
     _execute(executor, _context({"authorization": "Bearer good-token"}), mocker)
 
     record = _sole_record(sender)
-    assert record.llm_provider == provider
+    assert record.llm_provider == "gemini"
     assert record.llm_model == model
 
 

@@ -21,6 +21,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _Port = Annotated[int, Field(ge=1, le=65535)]
 _LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+LlmProvider = Literal["gemini"]
 _AuditDelivery = Literal["file", "webhook"]
 _AuditHttpMethod = Literal["POST", "PUT"]
 _AuditHttpAuthType = Literal["mTLS", "no-auth", "api-key"]
@@ -48,7 +49,9 @@ class Settings(BaseSettings):
     intent_agent_name: str = "intent_agent"
     log_level: _LogLevel = "INFO"
 
-    gemini_api_key: SecretStr = Field(min_length=1)
+    llm_provider: LlmProvider = "gemini"
+    # Required when LLM_PROVIDER is `gemini`.
+    gemini_api_key: SecretStr | None = Field(min_length=1, default=None)
     gemini_model: str = Field(min_length=1, default="gemini-3.5-flash-lite")
     # Bounds concurrent schema/policy fetches, not request concurrency.
     fetch_executor_max_workers: PositiveInt = 8
@@ -114,6 +117,26 @@ class Settings(BaseSettings):
     def _uppercase_http_method(cls, value: object) -> object:
         """Accept `post`/`put` in any case, like the IAG does, before the Literal check."""
         return value.upper() if isinstance(value, str) else value
+
+    @property
+    def llm_model(self) -> str:
+        """The configured LLM_PROVIDER's model, read from that provider's own setting (GEMINI_MODEL).
+
+        Derived, not a setting: there is no LLM_MODEL variable.
+        """
+        models: dict[LlmProvider, str] = {"gemini": self.gemini_model}
+        return models[self.llm_provider]
+
+    @model_validator(mode="after")
+    def _require_llm_provider_api_key(self) -> "Settings":
+        """Reject an LLM_PROVIDER whose own API key is missing or blank."""
+        api_keys: dict[LlmProvider, tuple[str, SecretStr | None]] = {"gemini": ("GEMINI_API_KEY", self.gemini_api_key)}
+        env_var, api_key = api_keys[self.llm_provider]
+        # SecretStr isn't stripped by str_strip_whitespace, so catch a whitespace-only key here.
+        if api_key is None or not api_key.get_secret_value().strip():
+            message = f"{env_var} is required when LLM_PROVIDER is {self.llm_provider!r}"
+            raise ValueError(message)
+        return self
 
     @model_validator(mode="after")
     def _require_webhook_config(self) -> "Settings":

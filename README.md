@@ -114,7 +114,7 @@ if any of these is missing or blank:
 
 | Setting | Meaning |
 | --- | --- |
-| `GEMINI_API_KEY` | Google Gemini API key used for extraction |
+| `GEMINI_API_KEY` | Google Gemini API key used for extraction (required while `LLM_PROVIDER` is `gemini`) |
 | `INDYKITE_BASE_URL` | IndyKite platform base URL; the graph schema and policies are fetched from it |
 | `IK_APP_AGENT_KEY` | IndyKite AppAgent credential sent as `X-IK-ClientKey` |
 | `INTROSPECT_URL` | RFC 7662 token introspection endpoint of the identity provider |
@@ -127,6 +127,7 @@ Commonly tuned optional settings:
 | --- | --- | --- |
 | `INTENT_PORT`, `HEALTH_PORT` | `6003`, `8001` | A2A and health listeners |
 | `ADVERTISED_URL` | `http://intent:<INTENT_PORT>` | JSON-RPC URL on the agent card; must match the protocol, hostname and port of the ingress or Istio VirtualService callers use (see below) |
+| `LLM_PROVIDER` | `gemini` | LLM provider used for extraction; `gemini` is the only one supported |
 | `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Model used for extraction |
 | `LLM_TIMEOUT_SECONDS`, `REQUEST_TIMEOUT_SECONDS` | `3.0`, `10.0` | Per LLM call, and for the whole request |
 | `HEALTH_CHECK_TIMEOUT_SECONDS` | `3.0` | Bound on each startup probe that seeds `/health` |

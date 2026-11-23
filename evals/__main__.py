@@ -1,12 +1,12 @@
-"""Run the golden eval suite against the configured Gemini model and gate on the result.
+"""Run the golden eval suite against the configured LLM and gate on the result.
 
     uv run python -m evals
     uv run python -m evals --only 'adversarial_*' --concurrency 4
     uv run python -m evals --markdown report.md --json report.json
 
-Settings come from the environment / `.env` like the service's own (GEMINI_API_KEY at minimum;
-GEMINI_MODEL and VALIDATION_MAX_RETRIES are what is under test, so they are read the same way
-rather than overridden here). The two timeouts are the exception: the suite runs under its own,
+Settings come from the environment / `.env` like the service's own (the LLM provider's API key at
+minimum; LLM_PROVIDER, its model and VALIDATION_MAX_RETRIES are what is under test, so they are
+read the same way rather than overridden here). The two timeouts are the exception: the suite runs under its own,
 generous ones (--llm-timeout / --request-timeout, see runner.DEFAULT_*_TIMEOUT_SECONDS) so that a
 slow provider registers as latency - the p95 gate's job - rather than as a wrong answer. The other
 required settings - introspection, platform URL, audit delivery - aren't used by the suite but
@@ -149,7 +149,7 @@ def main(argv: list[str]) -> int:
         return EXIT_USAGE
 
     logger.info(
-        "Running %d fixture(s) against %s (concurrency %d)", len(fixtures), settings.gemini_model, args.concurrency
+        "Running %d fixture(s) against %s (concurrency %d)", len(fixtures), settings.llm_model, args.concurrency
     )
     results = asyncio.run(
         run_suite(
@@ -161,7 +161,7 @@ def main(argv: list[str]) -> int:
     )
     report = build_report(
         results,
-        model=settings.gemini_model,
+        model=settings.llm_model,
         min_correctness=args.min_correctness,
         max_p95_latency=args.max_p95_latency,
         full_suite=args.only is None,

@@ -84,11 +84,6 @@ def _require_metadata_string(metadata: dict[str, Any], key: str) -> str:
     return value.strip()
 
 
-def _llm_provider(model: str) -> str:
-    """Return the provider family of a model name, e.g. "models/gemini-3.5-flash-lite" -> "gemini"."""
-    return model.rsplit("/", 1)[-1].split("-", 1)[0]
-
-
 class _RequestAudit:
     """Accumulates one request's audit fields so every exit path yields one record via `record()`."""
 
@@ -139,8 +134,8 @@ class _RequestAudit:
             evaluations=result.evaluations,
             schema_version=result.schema_version,
             policy_version=result.policy_version,
-            llm_provider=_llm_provider(self._settings.gemini_model),
-            llm_model=self._settings.gemini_model,
+            llm_provider=self._settings.llm_provider,
+            llm_model=self._settings.llm_model,
             latency_ms=latency_ms,
             validation_retries=result.validation_retries,
             policy_fetch_failed=result.policy_fetch_failed,

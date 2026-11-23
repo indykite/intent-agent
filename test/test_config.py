@@ -63,7 +63,8 @@ def test_defaults(monkeypatch):
     assert settings.intent_port == _DEFAULT_INTENT_PORT
     assert settings.health_port == _DEFAULT_HEALTH_PORT
     assert settings.intent_agent_name == "intent_agent"
-    assert settings.gemini_model == "gemini-3.5-flash-lite"
+    assert settings.llm_provider == "gemini"
+    assert settings.llm_model == "gemini-3.5-flash-lite"
     assert settings.redis_url is None
     assert settings.schema_refresh_ttl_minutes == _DEFAULT_SCHEMA_REFRESH_TTL_MINUTES
     assert settings.policy_refresh_ttl_minutes == _DEFAULT_POLICY_REFRESH_TTL_MINUTES
@@ -83,6 +84,8 @@ def test_defaults(monkeypatch):
     ("env_var", "value"),
     [
         pytest.param("GEMINI_API_KEY", "   ", id="blank_gemini_api_key"),
+        pytest.param("LLM_PROVIDER", "   ", id="blank_llm_provider"),
+        pytest.param("LLM_PROVIDER", "llama", id="unknown_llm_provider"),
         pytest.param("IK_APP_AGENT_KEY", "   ", id="blank_ik_app_agent_key"),
         pytest.param("INDYKITE_BASE_URL", "   ", id="blank_indykite_base_url"),
         pytest.param("BIND_HOST", "not-an-ip", id="malformed_bind_host"),
@@ -100,6 +103,19 @@ def test_rejects_invalid_setting(monkeypatch, env_var, value):
     monkeypatch.setenv(env_var, value)
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
+
+
+def test_missing_provider_api_key_names_the_variable_and_the_provider(monkeypatch):
+    _set_baseline_env(monkeypatch)
+    monkeypatch.delenv("GEMINI_API_KEY")
+    with pytest.raises(ValidationError, match="GEMINI_API_KEY is required when LLM_PROVIDER is 'gemini'"):
+        Settings(_env_file=None)
+
+
+def test_llm_model_is_the_configured_providers_model(monkeypatch):
+    _set_baseline_env(monkeypatch)
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
+    assert Settings(_env_file=None).llm_model == "gemini-3.1-flash-lite"
 
 
 def test_gemini_api_key_does_not_leak_in_repr(monkeypatch):
