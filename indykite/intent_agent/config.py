@@ -120,7 +120,10 @@ class Settings(BaseSettings):
 
     @property
     def llm_model(self) -> str:
-        """The model name of the configured LLM_PROVIDER."""
+        """The configured LLM_PROVIDER's model, read from that provider's own setting (GEMINI_MODEL).
+
+        Derived, not a setting: there is no LLM_MODEL variable.
+        """
         models: dict[LlmProvider, str] = {"gemini": self.gemini_model}
         return models[self.llm_provider]
 

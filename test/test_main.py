@@ -173,3 +173,13 @@ def test_main_does_not_warn_when_advertised_url_is_set(monkeypatch, mocker, capl
     _run_main_with_mocks(mocker, Settings(_env_file=None))
 
     assert "ADVERTISED_URL is not set" not in caplog.text
+
+
+def test_main_logs_the_llm_provider_and_model_at_startup(monkeypatch, mocker, caplog, baseline_env):
+    caplog.set_level("INFO")
+    baseline_env()
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
+
+    _run_main_with_mocks(mocker, Settings(_env_file=None))
+
+    assert "LLM: gemini gemini-3.1-flash-lite" in caplog.text

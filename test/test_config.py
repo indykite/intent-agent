@@ -64,7 +64,6 @@ def test_defaults(monkeypatch):
     assert settings.health_port == _DEFAULT_HEALTH_PORT
     assert settings.intent_agent_name == "intent_agent"
     assert settings.llm_provider == "gemini"
-    assert settings.gemini_model == "gemini-3.5-flash-lite"
     assert settings.llm_model == "gemini-3.5-flash-lite"
     assert settings.redis_url is None
     assert settings.schema_refresh_ttl_minutes == _DEFAULT_SCHEMA_REFRESH_TTL_MINUTES
