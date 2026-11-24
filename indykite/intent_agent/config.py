@@ -21,7 +21,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _Port = Annotated[int, Field(ge=1, le=65535)]
 _LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
-LlmProvider = Literal["gemini"]
+LlmProvider = Literal["gemini", "openai"]
+# The name OpenAI requires on a JSON-schema response format. The model sees it: not a setting.
+OPENAI_RESPONSE_FORMAT_NAME = "intent_extraction"
 _AuditDelivery = Literal["file", "webhook"]
 _AuditHttpMethod = Literal["POST", "PUT"]
 _AuditHttpAuthType = Literal["mTLS", "no-auth", "api-key"]
@@ -53,6 +55,11 @@ class Settings(BaseSettings):
     # Required when LLM_PROVIDER is `gemini`.
     gemini_api_key: SecretStr | None = Field(min_length=1, default=None)
     gemini_model: str = Field(min_length=1, default="gemini-3.5-flash-lite")
+    # Both required when LLM_PROVIDER is `openai`; the model has no default.
+    openai_api_key: SecretStr | None = Field(min_length=1, default=None)
+    openai_model: str | None = Field(min_length=1, default=None)
+    # An OpenAI-compatible endpoint (a proxy or gateway) to call instead of api.openai.com.
+    openai_base_url: HttpUrl | None = None
     # Bounds concurrent schema/policy fetches, not request concurrency.
     fetch_executor_max_workers: PositiveInt = 8
     tool_call_max_iterations: PositiveInt = 5
@@ -120,21 +127,32 @@ class Settings(BaseSettings):
 
     @property
     def llm_model(self) -> str:
-        """The configured LLM_PROVIDER's model, read from that provider's own setting (GEMINI_MODEL).
+        """The configured LLM_PROVIDER's model, read from that provider's own setting (GEMINI_MODEL, OPENAI_MODEL).
 
         Derived, not a setting: there is no LLM_MODEL variable.
         """
-        models: dict[LlmProvider, str] = {"gemini": self.gemini_model}
+        models: dict[LlmProvider, str] = {"gemini": self.gemini_model, "openai": self.openai_model or ""}
         return models[self.llm_provider]
 
     @model_validator(mode="after")
     def _require_llm_provider_api_key(self) -> "Settings":
         """Reject an LLM_PROVIDER whose own API key is missing or blank."""
-        api_keys: dict[LlmProvider, tuple[str, SecretStr | None]] = {"gemini": ("GEMINI_API_KEY", self.gemini_api_key)}
+        api_keys: dict[LlmProvider, tuple[str, SecretStr | None]] = {
+            "gemini": ("GEMINI_API_KEY", self.gemini_api_key),
+            "openai": ("OPENAI_API_KEY", self.openai_api_key),
+        }
         env_var, api_key = api_keys[self.llm_provider]
         # SecretStr isn't stripped by str_strip_whitespace, so catch a whitespace-only key here.
         if api_key is None or not api_key.get_secret_value().strip():
             message = f"{env_var} is required when LLM_PROVIDER is {self.llm_provider!r}"
+            raise ValueError(message)
+        return self
+
+    @model_validator(mode="after")
+    def _require_openai_model(self) -> "Settings":
+        """Reject LLM_PROVIDER=openai with no OPENAI_MODEL - there is no default to fall back to."""
+        if self.llm_provider == "openai" and self.openai_model is None:
+            message = "OPENAI_MODEL is required when LLM_PROVIDER is 'openai'"
             raise ValueError(message)
         return self
 

@@ -169,8 +169,8 @@ package. Actual code always goes in sibling module (`config.py`, `agent.py`, a `
 These modules carry whole service:
 
 - **`config.py`** — `Settings(BaseSettings)` single source of runtime config, loaded from
-  environment or `.env`. The configured `llm_provider`'s API key (`gemini_api_key`) is required,
-  so constructing `Settings()` fails fast (`pydantic.ValidationError`) if missing — startup gate,
+  environment or `.env`. The configured `llm_provider`'s API key (`gemini_api_key`, or
+  `openai_api_key` plus `openai_model`, which has no default) is required, so constructing `Settings()` fails fast (`pydantic.ValidationError`) if missing — startup gate,
   not runtime check. New config =
   typed field here; don't reach for `os.getenv` elsewhere.
 - **`agent.py`** — the extraction pipeline: `IntentAgent` class (owns LLM, discovered skills,
@@ -178,8 +178,18 @@ These modules carry whole service:
   takes and the `ExtractionResult` it returns. Delegates skill discovery to `skills.py`, schema
   fetch/cache to `schema.py`'s `SchemaClient`. Knows nothing of A2A transport or auditing.
 - **`llm.py`** — the LLM provider seam: `build_chat_model(settings)` builds the chat model of
-  `LLM_PROVIDER` (`Settings.llm_provider`, default `gemini`), `bind_structured_output` binds a
-  request's tools and structured-output schema the way that provider expects. A new provider is
+  `LLM_PROVIDER` (`Settings.llm_provider`: `gemini`, the default, or `openai`), `bind_structured_output` binds a
+  request's tools and structured-output schema the way that provider expects, `is_timeout` says
+  whether an error is that provider's client timing out (`agent._invoke_llm` raises it as
+  `TimeoutError`, so it becomes `llm_timeout_error`; any other provider error is raised to the
+  executor, which audits it - an OpenAI one as `errors.LlmProviderError` via
+  `without_provider_text`, naming only the error class and status, since OpenAI's own text quotes
+  part of the API key and the executor returns an error's text to the caller). OpenAI: the response schema is sent non-strict (strict mode can't
+  express the free-form `context.parameters`/`qualifiers`; `subject_binding` validates the answer
+  either way) while the tools are strict, no temperature is sent (reasoning models reject one),
+  `OPENAI_BASE_URL` points at an OpenAI-compatible endpoint, and `langchain-openai` picks the
+  Chat Completions or the Responses API by model. `/health` has no OpenAI check yet: the `gemini`
+  check is `disabled` under another provider. A new provider is
   an entry in `_PROVIDERS` here plus its key/model fields in `config.py`
   (`_require_llm_provider_api_key`, `Settings.llm_model`) - not a change to `agent.py`.
 - **`executor.py`** — the A2A leg: `IntentExecutor` reads `subject_type`/`subject_id` off the

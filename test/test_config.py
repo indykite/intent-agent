@@ -105,6 +105,15 @@ def test_rejects_invalid_setting(monkeypatch, env_var, value):
         Settings(_env_file=None)
 
 
+def _set_openai_env(monkeypatch):
+    """Switch the baseline to the OpenAI provider, with no Gemini key."""
+    _set_baseline_env(monkeypatch)
+    monkeypatch.delenv("GEMINI_API_KEY")
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-test-key")
+    monkeypatch.setenv("OPENAI_MODEL", "openai-test-model")
+
+
 def test_missing_provider_api_key_names_the_variable_and_the_provider(monkeypatch):
     _set_baseline_env(monkeypatch)
     monkeypatch.delenv("GEMINI_API_KEY")
@@ -116,6 +125,44 @@ def test_llm_model_is_the_configured_providers_model(monkeypatch):
     _set_baseline_env(monkeypatch)
     monkeypatch.setenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
     assert Settings(_env_file=None).llm_model == "gemini-3.1-flash-lite"
+
+
+def test_openai_provider_needs_no_gemini_key(monkeypatch):
+    _set_openai_env(monkeypatch)
+
+    settings = Settings(_env_file=None)
+
+    assert (settings.llm_provider, settings.llm_model) == ("openai", "openai-test-model")
+    assert settings.openai_base_url is None
+    assert "openai-test-key" not in repr(settings)
+
+
+def test_gemini_provider_ignores_the_openai_settings(monkeypatch):
+    _set_baseline_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_MODEL", "openai-test-model")
+
+    assert Settings(_env_file=None).llm_model == "gemini-3.5-flash-lite"
+
+
+@pytest.mark.parametrize(
+    ("env_var", "value", "message"),
+    [
+        pytest.param("OPENAI_API_KEY", None, "OPENAI_API_KEY is required when LLM_PROVIDER is 'openai'", id="no_key"),
+        pytest.param("OPENAI_API_KEY", "   ", "openai_api_key", id="blank_key"),
+        pytest.param("OPENAI_MODEL", None, "OPENAI_MODEL is required when LLM_PROVIDER is 'openai'", id="no_model"),
+        pytest.param("OPENAI_MODEL", "   ", "openai_model", id="blank_model"),
+        pytest.param("OPENAI_BASE_URL", "not-a-url", "openai_base_url", id="malformed_base_url"),
+        pytest.param("OPENAI_BASE_URL", "ftp://proxy.example.com", "openai_base_url", id="non_http_base_url"),
+    ],
+)
+def test_rejects_invalid_openai_setting(monkeypatch, env_var, value, message):
+    _set_openai_env(monkeypatch)
+    if value is None:
+        monkeypatch.delenv(env_var)
+    else:
+        monkeypatch.setenv(env_var, value)
+    with pytest.raises(ValidationError, match=message):
+        Settings(_env_file=None)
 
 
 def test_gemini_api_key_does_not_leak_in_repr(monkeypatch):

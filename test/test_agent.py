@@ -3,8 +3,10 @@ import json
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+import httpx
 import httpx2
 import jwt
+import openai
 import pytest
 from dogpile.cache.backends.memory import MemoryBackend
 from dogpile.cache.backends.redis import RedisBackend
@@ -17,6 +19,7 @@ from indykite.intent_agent.audit.message import Outcome, schema_version
 from indykite.intent_agent.config import Settings
 from indykite.intent_agent.dependency_status import GEMINI, IKG, SCHEMA, DependencyStatus
 from indykite.intent_agent.errors import (
+    LlmProviderError,
     llm_timeout_error,
     no_intent_error,
     policy_unavailable_error,
@@ -753,6 +756,63 @@ def test_run_extraction_returns_timeout_error_when_llm_call_exceeds_limit(monkey
     assert result.message == llm_timeout_error("rent kitt")["reason"]
     assert mock_ainvoke.call_count == 1
     assert "exceeded 0.0s" in caplog.text
+
+
+_OPENAI_ERROR_TEXT = "Incorrect API key provided: sk-proj-a**********0000"
+
+
+def _openai_error(error_class, status):
+    """An OpenAI client error as the SDK raises it: a timeout (no response) or a `status` answer."""
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    if status is None:
+        return error_class(request=request)
+    return error_class(_OPENAI_ERROR_TEXT, response=httpx.Response(status, request=request), body=None)
+
+
+def test_run_extraction_returns_timeout_error_when_the_openai_client_times_out(monkeypatch, mocker):
+    """The OpenAI client's own timeout is the same llm_timeout_error as LLM_TIMEOUT_SECONDS running out."""
+    agent, mock_ainvoke = _agent_with_responses(
+        monkeypatch,
+        mocker,
+        [_openai_error(openai.APITimeoutError, None)],
+        LLM_PROVIDER="openai",
+        OPENAI_API_KEY="openai-test-key",
+        OPENAI_MODEL="openai-test-model",
+    )
+
+    result = asyncio.run(agent.run_extraction("rent kitt", RequestSubject(id="user-1", type="Customer")))
+
+    assert json.loads(result.text) == llm_timeout_error("rent kitt")
+    assert (result.outcome, result.message) == (Outcome.ERROR, llm_timeout_error("rent kitt")["reason"])
+    assert mock_ainvoke.call_count == 1
+
+
+@pytest.mark.parametrize(
+    ("error_class", "status"),
+    [
+        pytest.param(openai.AuthenticationError, 401, id="rejected-key"),
+        pytest.param(openai.RateLimitError, 429, id="rate-limited"),
+        pytest.param(openai.InternalServerError, 503, id="provider-outage"),
+    ],
+)
+def test_run_extraction_raises_an_openai_error_without_the_providers_text(monkeypatch, mocker, error_class, status):
+    """Raised to the executor like a Gemini failure, but naming only the error class and status."""
+    agent, _mock_ainvoke = _agent_with_responses(
+        monkeypatch,
+        mocker,
+        [_openai_error(error_class, status)],
+        LLM_PROVIDER="openai",
+        OPENAI_API_KEY="openai-test-key",
+        OPENAI_MODEL="openai-test-model",
+    )
+
+    with pytest.raises(LlmProviderError) as raised:
+        asyncio.run(agent.run_extraction("rent kitt", RequestSubject(id="user-1", type="Customer")))
+
+    assert str(raised.value) == f"openai call failed: {error_class.__name__} (status {status})"
+    assert isinstance(raised.value.__cause__, error_class)
+
+    assert agent.dependency_status.get(GEMINI).detail == error_class.__name__
 
 
 def test_run_extraction_enforces_request_deadline_across_calls(monkeypatch, mocker, caplog):
