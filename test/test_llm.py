@@ -1,4 +1,4 @@
-import httpx
+import httpx2
 import pytest
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
@@ -8,9 +8,9 @@ from indykite.intent_agent import llm
 from indykite.intent_agent.config import Settings
 from indykite.intent_agent.errors import LlmProviderError
 
-_OPENAI_REQUEST = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+_OPENAI_REQUEST = httpx2.Request("POST", "https://api.openai.com/v1/chat/completions")
 _OPENAI_TIMEOUT = APITimeoutError(request=_OPENAI_REQUEST)
-_OPENAI_RATE_LIMIT = RateLimitError("slow down", response=httpx.Response(429, request=_OPENAI_REQUEST), body=None)
+_OPENAI_RATE_LIMIT = RateLimitError("slow down", response=httpx2.Response(429, request=_OPENAI_REQUEST), body=None)
 
 
 def _openai_settings(baseline_env, monkeypatch, **env):
@@ -63,6 +63,7 @@ def test_build_chat_model_builds_the_configured_openai_model(baseline_env, monke
     assert model.openai_api_base == expected
     # Unset, so a reasoning model that only takes its default temperature isn't sent one.
     assert model.temperature is None
+    assert model.max_retries == 0
 
 
 def test_openai_binding_asks_for_the_response_schema_without_strict_mode(mocker):
@@ -74,7 +75,7 @@ def test_openai_binding_asks_for_the_response_schema_without_strict_mode(mocker)
 
     assert bound is chat_model.bind_tools.return_value
     chat_model.bind_tools.assert_called_once_with(
-        tools, response_format={"name": "intent_extraction", "schema": response_schema, "strict": False}
+        tools, strict=True, response_format={"name": "intent_extraction", "schema": response_schema, "strict": False}
     )
 
 

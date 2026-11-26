@@ -42,19 +42,23 @@ def _bind_gemini(llm: BaseChatModel, tools: Sequence[StructuredTool], response_s
 
 def _build_openai(settings: Settings) -> BaseChatModel:
     # No temperature: OpenAI's reasoning models reject any value but their default.
-    # No client timeout either: LLM_TIMEOUT_SECONDS bounds each call, as one TimeoutError.
+    # No client retries: a backoff inside LLM_TIMEOUT_SECONDS would turn a 429 or 5xx into a timeout.
+    # No client timeout: LLM_TIMEOUT_SECONDS fires long before the client's own (10 min, 5 s to
+    # connect), so `timeout_errors` only matters once that setting is raised past the client's.
     return ChatOpenAI(
         model=settings.openai_model,
         api_key=settings.openai_api_key,
         base_url=str(settings.openai_base_url) if settings.openai_base_url else None,
+        max_retries=0,
     )
 
 
 def _bind_openai(llm: BaseChatModel, tools: Sequence[StructuredTool], response_schema: dict[str, Any]) -> _BoundModel:
-    # Not strict: strict mode wants every field required and no free-form object, which
-    # context.parameters and context.qualifiers are. The answer is validated afterwards either way.
+    # The answer is not strict: strict mode wants every field required and no free-form object,
+    # which context.parameters and context.qualifiers are. It is validated afterwards either way.
+    # The tools are: the Chat Completions API refuses a response format next to a non-strict tool.
     response_format = {"name": OPENAI_RESPONSE_FORMAT_NAME, "schema": response_schema, "strict": False}
-    return llm.bind_tools(tools, response_format=response_format)
+    return llm.bind_tools(tools, strict=True, response_format=response_format)
 
 
 _PROVIDERS: dict[LlmProvider, _Provider] = {

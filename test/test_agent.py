@@ -3,7 +3,6 @@ import json
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-import httpx
 import httpx2
 import jwt
 import openai
@@ -763,10 +762,10 @@ _OPENAI_ERROR_TEXT = "Incorrect API key provided: sk-proj-a**********0000"
 
 def _openai_error(error_class, status):
     """An OpenAI client error as the SDK raises it: a timeout (no response) or a `status` answer."""
-    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    request = httpx2.Request("POST", "https://api.openai.com/v1/chat/completions")
     if status is None:
         return error_class(request=request)
-    return error_class(_OPENAI_ERROR_TEXT, response=httpx.Response(status, request=request), body=None)
+    return error_class(_OPENAI_ERROR_TEXT, response=httpx2.Response(status, request=request), body=None)
 
 
 def test_run_extraction_returns_timeout_error_when_the_openai_client_times_out(monkeypatch, mocker):

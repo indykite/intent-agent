@@ -115,7 +115,7 @@ if any of these is missing or blank:
 | Setting | Meaning |
 | --- | --- |
 | `GEMINI_API_KEY` | Google Gemini API key used for extraction (required while `LLM_PROVIDER` is `gemini`) |
-| `OPENAI_API_KEY`, `OPENAI_MODEL` | OpenAI API key and model used for extraction (both required when `LLM_PROVIDER` is `openai`; the model has no default) |
+| `OPENAI_API_KEY`, `OPENAI_MODEL` | OpenAI API key and model used for extraction (both required when `LLM_PROVIDER` is `openai`; the model has no default). The default `LLM_TIMEOUT_SECONDS` of 3 s is short for an OpenAI reasoning model: raise it, and `REQUEST_TIMEOUT_SECONDS` with it, if calls time out |
 | `INDYKITE_BASE_URL` | IndyKite platform base URL; the graph schema and policies are fetched from it |
 | `IK_APP_AGENT_KEY` | IndyKite AppAgent credential sent as `X-IK-ClientKey` |
 | `INTROSPECT_URL` | RFC 7662 token introspection endpoint of the identity provider |
@@ -130,7 +130,7 @@ Commonly tuned optional settings:
 | `ADVERTISED_URL` | `http://intent:<INTENT_PORT>` | JSON-RPC URL on the agent card; must match the protocol, hostname and port of the ingress or Istio VirtualService callers use (see below) |
 | `LLM_PROVIDER` | `gemini` | LLM provider used for extraction: `gemini` or `openai` |
 | `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Gemini model used for extraction |
-| `OPENAI_BASE_URL` | unset (`api.openai.com`) | An OpenAI-compatible endpoint (a proxy or gateway) to call instead; Azure OpenAI is not supported |
+| `OPENAI_BASE_URL` | unset (`https://api.openai.com/v1`) | An OpenAI-compatible endpoint (a proxy or gateway) to call instead. Include the version path (`https://llm-proxy.example.com/v1`): the client appends `/chat/completions` or `/responses` directly to it. Azure OpenAI is not supported |
 | `LLM_TIMEOUT_SECONDS`, `REQUEST_TIMEOUT_SECONDS` | `3.0`, `10.0` | Per LLM call, and for the whole request |
 | `HEALTH_CHECK_TIMEOUT_SECONDS` | `3.0` | Bound on each startup probe that seeds `/health` |
 | `VALIDATION_MAX_RETRIES` | `1` | Extra attempts after an off-schema answer (`0` disables) |
