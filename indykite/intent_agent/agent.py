@@ -693,13 +693,22 @@ class IntentAgent:
         )
 
     async def _invoke_llm(self, llm: Runnable[Any, BaseMessage], messages: list[BaseMessage]) -> BaseMessage:
-        """One LLM call, bounded by LLM_TIMEOUT_SECONDS - raises TimeoutError past it."""
+        """One LLM call, bounded by LLM_TIMEOUT_SECONDS - raises TimeoutError past it.
+
+        The provider client's own timeout error is raised as TimeoutError too, and an error whose
+        text can't be shown to a caller as LlmProviderError.
+        """
         try:
             async with asyncio.timeout(self.settings.llm_timeout_seconds):
                 response = await llm.ainvoke(messages)
         except Exception as exc:
             self.dependency_status.record_error(GEMINI, describe_failure(exc))
-            raise
+            if llm_provider.is_timeout(self.settings.llm_provider, exc):
+                raise TimeoutError from exc
+            safe_exc = llm_provider.without_provider_text(self.settings.llm_provider, exc)
+            if safe_exc is exc:
+                raise
+            raise safe_exc from exc
         self.dependency_status.record_ok(GEMINI)
         return response
 

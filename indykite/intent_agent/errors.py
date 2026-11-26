@@ -20,6 +20,10 @@ class IntentValidationError(Exception):
         self.errors = errors
 
 
+class LlmProviderError(Exception):
+    """An LLM provider call failed. Carries the error class and HTTP status only, never the provider's own text."""
+
+
 class InvalidAppAgentKeyError(Exception):
     """Raised when IK_APP_AGENT_KEY isn't a well-formed JWT with a `sub` claim; fails startup."""
 

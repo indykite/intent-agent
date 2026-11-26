@@ -99,6 +99,24 @@ def test_latest_call_wins(settings):
     assert "detail" not in checker.report()["checks"][GEMINI]
 
 
+def test_gemini_check_is_disabled_and_never_probed_under_another_provider(mocker, baseline_env, monkeypatch):
+    baseline_env()
+    monkeypatch.delenv("GEMINI_API_KEY")
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-test-key")
+    monkeypatch.setenv("OPENAI_MODEL", "openai-test-model")
+    requested_hosts = []
+    _route(mocker, lambda request: requested_hosts.append(request.url.host) or _all_ok(request))
+    status = DependencyStatus()
+    checker = HealthChecker(Settings(_env_file=None), status)
+
+    asyncio.run(checker.probe_all())
+
+    assert "generativelanguage.googleapis.com" not in requested_hosts
+    assert status.get(GEMINI) is None
+    assert checker.report()["checks"][GEMINI] == {"status": "disabled"}
+
+
 def test_schema_error_is_degraded(settings):
     status = DependencyStatus()
     _seed_all_ok(status)

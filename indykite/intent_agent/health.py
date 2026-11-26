@@ -82,7 +82,7 @@ class HealthChecker:
         return {
             IKG: True,
             INTROSPECTION: True,
-            GEMINI: True,
+            GEMINI: self._settings.llm_provider == "gemini",
             AUDIT_WEBHOOK: self._settings.audit_delivery == "webhook",
             AUDIT_FILE: self._settings.audit_delivery == "file",
             REDIS: self._settings.cache_backend == "redis",
